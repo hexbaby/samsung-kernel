@@ -38,20 +38,29 @@ struct s2mpb02_data {
 	int num_regulators;
 	struct regulator_dev *rdev[S2MPB02_REGULATOR_MAX];
 	int opmode[S2MPB02_REGULATOR_MAX];
+	int is_enabled;
 };
 
 static int s2m_enable(struct regulator_dev *rdev)
 {
+	int ret;
+
 	struct s2mpb02_data *info = rdev_get_drvdata(rdev);
 	struct i2c_client *i2c = info->iodev->i2c;
 
-	return s2mpb02_update_reg(i2c, rdev->desc->enable_reg,
+	ret = s2mpb02_update_reg(i2c, rdev->desc->enable_reg,
 				  info->opmode[rdev_get_id(rdev)],
-					rdev->desc->enable_mask);
+				  rdev->desc->enable_mask);
+	if(!ret)
+		info->is_enabled = true;
+
+	return ret;
 }
 
 static int s2m_disable_regmap(struct regulator_dev *rdev)
 {
+	int ret;
+
 	struct s2mpb02_data *info = rdev_get_drvdata(rdev);
 	struct i2c_client *i2c = info->iodev->i2c;
 	u8 val;
@@ -61,25 +70,23 @@ static int s2m_disable_regmap(struct regulator_dev *rdev)
 	else
 		val = 0;
 
-	return s2mpb02_update_reg(i2c, rdev->desc->enable_reg,
-				   val, rdev->desc->enable_mask);
+	ret = s2mpb02_update_reg(i2c, rdev->desc->enable_reg,
+				  val, rdev->desc->enable_mask);
+
+	if (!ret)
+		info->is_enabled = false;
+
+	return ret;
 }
 
 static int s2m_is_enabled_regmap(struct regulator_dev *rdev)
 {
 	struct s2mpb02_data *info = rdev_get_drvdata(rdev);
-	struct i2c_client *i2c = info->iodev->i2c;
-	int ret;
-	u8 val;
-
-	ret = s2mpb02_read_reg(i2c, rdev->desc->enable_reg, &val);
-	if (ret < 0)
-		return ret;
 
 	if (rdev->desc->enable_is_inverted)
-		return (val & rdev->desc->enable_mask) == 0;
+		return (info->is_enabled & rdev->desc->enable_mask) == 0;
 	else
-		return (val & rdev->desc->enable_mask) != 0;
+		return (info->is_enabled & rdev->desc->enable_mask) != 0;
 }
 
 static int s2m_get_voltage_sel_regmap(struct regulator_dev *rdev)
@@ -119,8 +126,7 @@ out:
 	return ret;
 }
 
-static int s2m_set_voltage_sel_regmap_buck(struct regulator_dev *rdev,
-					unsigned sel)
+static int s2m_set_voltage_sel_regmap_buck(struct regulator_dev *rdev, unsigned sel)
 {
 	struct s2mpb02_data *info = rdev_get_drvdata(rdev);
 	struct i2c_client *i2c = info->iodev->i2c;
@@ -224,68 +230,47 @@ static struct regulator_ops s2mpb02_buck_ops = {
 static struct regulator_desc regulators[S2MPB02_REGULATOR_MAX] = {
 		/* name, id, ops, min_uv, uV_step, vsel_reg, enable_reg */
 		LDO_DESC("s2mpb02-ldo1", _LDO(1), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_L1CTRL),
-			_REG(_L1CTRL), _TIME(_LDO)),
+			_LDO(_STEP1), _REG(_L1CTRL), _REG(_L1CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo2", _LDO(2), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_L2CTRL),
-			_REG(_L2CTRL), _TIME(_LDO)),
+			_LDO(_STEP1), _REG(_L2CTRL), _REG(_L2CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo3", _LDO(3), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_L3CTRL),
-			_REG(_L3CTRL), _TIME(_LDO)),
-		LDO_DESC("s2mpb02-ldo4", _LDO(4), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_L4CTRL),
-			_REG(_L4CTRL), _TIME(_LDO)),
+			_LDO(_STEP1), _REG(_L3CTRL), _REG(_L3CTRL), _TIME(_LDO)),
+		LDO_DESC("s2mpb02-ldo4", _LDO(4), &_ldo_ops(),_LDO(_MIN1),
+			_LDO(_STEP1), _REG(_L4CTRL), _REG(_L4CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo5", _LDO(5), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_L5CTRL),
-			_REG(_L5CTRL), _TIME(_LDO)),
+			_LDO(_STEP1), _REG(_L5CTRL), _REG(_L5CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo6", _LDO(6), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L6CTRL),
-			_REG(_L6CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L6CTRL), _REG(_L6CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo7", _LDO(7), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L7CTRL),
-			_REG(_L7CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L7CTRL), _REG(_L7CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo8", _LDO(8), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L8CTRL),
-			_REG(_L8CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L8CTRL), _REG(_L8CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo9", _LDO(9), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L9CTRL),
-			_REG(_L9CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L9CTRL), _REG(_L9CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo10", _LDO(10), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L10CTRL),
-			_REG(_L10CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L10CTRL), _REG(_L10CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo11", _LDO(11), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L11CTRL),
-			_REG(_L11CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L11CTRL), _REG(_L11CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo12", _LDO(12), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L12CTRL),
-			_REG(_L12CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L12CTRL), _REG(_L12CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo13", _LDO(13), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L13CTRL),
-			_REG(_L13CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L13CTRL), _REG(_L13CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo14", _LDO(14), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L14CTRL),
-			_REG(_L14CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L14CTRL), _REG(_L14CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo15", _LDO(15), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L15CTRL),
-			_REG(_L15CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L15CTRL), _REG(_L15CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo16", _LDO(16), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L16CTRL),
-			_REG(_L16CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L16CTRL), _REG(_L16CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo17", _LDO(17), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L17CTRL),
-			_REG(_L17CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L17CTRL), _REG(_L17CTRL), _TIME(_LDO)),
 		LDO_DESC("s2mpb02-ldo18", _LDO(18), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP2), _REG(_L18CTRL),
-			_REG(_L18CTRL), _TIME(_LDO)),
+			_LDO(_STEP2), _REG(_L18CTRL), _REG(_L18CTRL), _TIME(_LDO)),
 		BUCK_DESC("s2mpb02-buck1", _BUCK(1), &_buck_ops(), _BUCK(_MIN1),
-			_BUCK(_STEP1), _REG(_B1CTRL2),
-			_REG(_B1CTRL1), _TIME(_BUCK)),
+			_BUCK(_STEP1), _REG(_B1CTRL2), _REG(_B1CTRL1), _TIME(_BUCK)),
 		BUCK_DESC("s2mpb02-buck2", _BUCK(2), &_buck_ops(), _BUCK(_MIN1),
-			_BUCK(_STEP1), _REG(_B2CTRL2),
-			_REG(_B2CTRL1), _TIME(_BUCK)),
+			_BUCK(_STEP1), _REG(_B2CTRL2), _REG(_B2CTRL1), _TIME(_BUCK)),
 		BUCK_DESC("s2mpb02-bb", S2MPB02_BB1, &_buck_ops(), _BUCK(_MIN2),
-			_BUCK(_STEP2), _REG(_BB1CTRL2),
-			_REG(_BB1CTRL1), _TIME(_BB)),
+			_BUCK(_STEP2), _REG(_BB1CTRL2), _REG(_BB1CTRL1), _TIME(_BB)),
 };
 
 #ifdef CONFIG_OF
@@ -363,12 +348,17 @@ static int s2mpb02_pmic_probe(struct platform_device *pdev)
 	struct i2c_client *i2c;
 	int i, ret;
 
-	dev_info(&pdev->dev, "%s\n", __func__);
+	pr_err("<%s> start\n", __func__);
+
 	if (!pdata) {
 		pr_info("[%s:%d] !pdata\n", __FILE__, __LINE__);
 		dev_err(pdev->dev.parent, "No platform init data supplied.\n");
 		return -ENODEV;
 	}
+
+	ret = s2mpb02_read_reg(iodev->i2c, S2MPB02_REG_ID, &S2MPB02_PMIC_REV(iodev));
+	if (ret < 0)
+		return ret;
 
 	if (iodev->dev->of_node) {
 		ret = s2mpb02_pmic_dt_parse_pdata(iodev, pdata);
@@ -387,15 +377,20 @@ static int s2mpb02_pmic_probe(struct platform_device *pdev)
 	s2mpb02->num_regulators = pdata->num_regulators;
 	platform_set_drvdata(pdev, s2mpb02);
 	i2c = s2mpb02->iodev->i2c;
+	pr_info("[%s:%d] pdata->num_regulators:%d\n", __FILE__, __LINE__,
+		pdata->num_regulators);
 
 	for (i = 0; i < pdata->num_regulators; i++) {
 		int id = pdata->regulators[i].id;
+
 		config.dev = &pdev->dev;
 		config.init_data = pdata->regulators[i].initdata;
 		config.driver_data = s2mpb02;
 		config.of_node = pdata->regulators[i].reg_node;
+
 		s2mpb02->opmode[id] = regulators[id].enable_mask;
 		s2mpb02->rdev[i] = regulator_register(&regulators[id], &config);
+
 		if (IS_ERR(s2mpb02->rdev[i])) {
 			ret = PTR_ERR(s2mpb02->rdev[i]);
 			dev_err(&pdev->dev, "regulator init failed for %d\n",
@@ -405,6 +400,7 @@ static int s2mpb02_pmic_probe(struct platform_device *pdev)
 		}
 	}
 
+	pr_err("<%s> end\n", __func__);
 	return 0;
  err:
 	pr_info("[%s:%d] err:\n", __FILE__, __LINE__);
@@ -412,8 +408,8 @@ static int s2mpb02_pmic_probe(struct platform_device *pdev)
 		if (s2mpb02->rdev[i])
 			regulator_unregister(s2mpb02->rdev[i]);
 
-	devm_kfree(&pdev->dev, (void*)s2mpb02);
-
+	kfree(s2mpb02);
+	pr_err("<%s> err end\n", __func__);
 	return ret;
 }
 
@@ -425,6 +421,9 @@ static int s2mpb02_pmic_remove(struct platform_device *pdev)
 	for (i = 0; i < s2mpb02->num_regulators; i++)
 		if (s2mpb02->rdev[i])
 			regulator_unregister(s2mpb02->rdev[i]);
+
+	kfree(s2mpb02->rdev);
+	kfree(s2mpb02);
 
 	return 0;
 }

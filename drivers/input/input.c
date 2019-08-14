@@ -431,17 +431,6 @@ DECLARE_SET_BOOSTER_FUNC(mouse_wheel);
 DECLARE_SET_BOOSTER_FUNC(pen);
 DECLARE_SET_BOOSTER_FUNC(hover);
 
-// ********** Define Reet Booster Functions ********** //
-DECLARE_RESET_BOOSTER_FUNC(touch);
-DECLARE_RESET_BOOSTER_FUNC(multitouch);
-DECLARE_RESET_BOOSTER_FUNC(key);
-DECLARE_RESET_BOOSTER_FUNC(touchkey);
-DECLARE_RESET_BOOSTER_FUNC(keyboard);
-DECLARE_RESET_BOOSTER_FUNC(mouse);
-DECLARE_RESET_BOOSTER_FUNC(mouse_wheel);
-DECLARE_RESET_BOOSTER_FUNC(pen);
-DECLARE_RESET_BOOSTER_FUNC(hover);
-
 // ********** Define State Functions ********** //
 DECLARE_STATE_FUNC(idle)
 {
@@ -449,9 +438,8 @@ DECLARE_STATE_FUNC(idle)
 	glGage = HEADGAGE;
 	if(input_booster_event == BOOSTER_ON) {
 		int i;
-		pr_debug("[Input Booster] %s      State0 : Idle  index : %d, hmp : %d, cpu : %d, time : %d, input_booster_event : %d\n", glGage, _this->index, _this->param[_this->index].hmp_boost, _this->param[_this->index].cpu_freq, _this->param[_this->index].time, input_booster_event);
+		pr_debug("[Input Booster] %s      State0 : Idle  index : %d, cpu : %d, time : %d, input_booster_event : %d\n", glGage, _this->index, _this->param[_this->index].cpu_freq, _this->param[_this->index].time, input_booster_event);
 		_this->index=0;
-		_this->level = -1;
 		for(i=0;i<2;i++) {
 			if(delayed_work_pending(&_this->input_booster_timeout_work[i])) {
 				pr_debug("[Input Booster] ****             cancel the pending workqueue\n");
@@ -463,7 +451,7 @@ DECLARE_STATE_FUNC(idle)
 		_this->index++;
 		CHANGE_STATE_TO(press);
 	} else if(input_booster_event == BOOSTER_OFF) {
-		pr_debug("[Input Booster] %s      Skipped  index : %d, hmp : %d, cpu : %d, input_booster_event : %d\n", glGage, _this->index, _this->param[_this->index].hmp_boost, _this->param[_this->index].cpu_freq, input_booster_event);
+		pr_debug("[Input Booster] %s      Skipped  index : %d, cpu : %d, input_booster_event : %d\n", glGage, _this->index, _this->param[_this->index].cpu_freq, input_booster_event);
 		pr_debug("\n");
 	}
 }
@@ -508,29 +496,26 @@ DECLARE_STATE_FUNC(press)
 	}
 }
 
-void input_booster_disable(struct t_input_booster *_this)
-{
-	schedule_work(&_this->input_booster_reset_booster_work);
-}
-
 // ********** Detect Events ********** //
 void input_booster(struct input_dev *dev)
 {
-	int i, j, iTouchID = -1, iTouchSlot = -1;
-#if defined(CONFIG_SOC_EXYNOS7420) // This code should be working properly in Exynos7420(Noble & Zero2) only.
-	int lcdoffcounter = 0;
-#endif
-	for (i = 0; i < input_count && i < MAX_EVENTS; i++) {
-		if (input_events[i].type == EV_KEY) {
+	int i, j, DetectedCategory = false, iTouchID = -1, iTouchSlot = -1/*,lcdoffcounter = 0*/;
+
+	for(i=0;i<input_count;i++) {
+		if (DetectedCategory) {
+			break;
+		} else if (input_events[i].type == EV_KEY) {
 			switch (input_events[i].code) {
 				case BTN_TOUCH :
 					if(input_events[i+1].type == EV_KEY && input_events[i+1].code == BTN_TOOL_PEN) {
 						if(input_events[i].value && !pen_booster.multi_events) {
 							pr_debug("[Input Booster] PEN EVENT - PRESS\n");
 							RUN_BOOSTER(pen, BOOSTER_ON);
+							DetectedCategory = true;
 						} else if(!input_events[i].value && pen_booster.multi_events) {
 							pr_debug("[Input Booster] PEN EVENT - RELEASE\n");
 							RUN_BOOSTER(pen, BOOSTER_OFF);
+							DetectedCategory = true;
 						}
 					} else if(iTouchID >= 0) { // ***************** Checking Touch Event's ID whethere it is same with previous ID.
 						if(!input_events[i].value && input_events[iTouchID].value < 0) {  // If this event is 'Release'
@@ -544,13 +529,11 @@ void input_booster(struct input_dev *dev)
 					if(input_events[i].value && !hover_booster.multi_events) {
 						pr_debug("[Input Booster] PEN EVENT - HOVER ON\n");
 						RUN_BOOSTER(hover, BOOSTER_ON);
+						DetectedCategory = true;
 					} else if(!input_events[i].value && hover_booster.multi_events) {
 						pr_debug("[Input Booster] PEN EVENT - HOVER OFF\n");
 						RUN_BOOSTER(hover, BOOSTER_OFF);
-						if(pen_booster.multi_events) {
-							pr_debug("[Input Booster] PEN EVENT - RELEASE\n");
-							RUN_BOOSTER(pen, BOOSTER_OFF);
-						}
+						DetectedCategory = true;
 					}
 					break;
 				case KEY_BACK : // ***************** Checking Key & Touch key Event
@@ -558,6 +541,7 @@ void input_booster(struct input_dev *dev)
 						key_back = input_events[i].value;
 						pr_debug("[Input Booster] TOUCHKEY EVENT - %s\n", (input_events[i].value) ? "PRESS" : "RELEASE");
 						RUN_BOOSTER(touchkey, (input_events[i].value) ? BOOSTER_ON : BOOSTER_OFF );
+						DetectedCategory = true;
 					}
 					break;
 				case KEY_HOMEPAGE :
@@ -565,6 +549,7 @@ void input_booster(struct input_dev *dev)
 						key_home = input_events[i].value;
 						pr_debug("[Input Booster] TOUCHKEY EVENT - %s\n", (input_events[i].value) ? "PRESS" : "RELEASE");
 						RUN_BOOSTER(touchkey, (input_events[i].value) ? BOOSTER_ON : BOOSTER_OFF );
+						DetectedCategory = true;
 					}
 					break;
 				case KEY_RECENT :
@@ -572,6 +557,7 @@ void input_booster(struct input_dev *dev)
 						key_recent = input_events[i].value;
 						pr_debug("[Input Booster] TOUCHKEY EVENT - %s\n", (input_events[i].value) ? "PRESS" : "RELEASE");
 						RUN_BOOSTER(touchkey, (input_events[i].value) ? BOOSTER_ON : BOOSTER_OFF );
+						DetectedCategory = true;
 					}
 					break;
 				case KEY_VOLUMEUP :
@@ -579,6 +565,7 @@ void input_booster(struct input_dev *dev)
 				case KEY_POWER :
 					pr_debug("[Input Booster] KEY EVENT - %s\n", (input_events[i].value) ? "PRESS" : "RELEASE");
 					RUN_BOOSTER(key, (input_events[i].value) ? BOOSTER_ON : BOOSTER_OFF );
+					DetectedCategory = true;
 					break;
 				default :
 					break;
@@ -586,7 +573,7 @@ void input_booster(struct input_dev *dev)
 		} else if (input_events[i].type == EV_ABS) {
 			if (input_events[i].code == ABS_MT_TRACKING_ID) {
 				iTouchID = i;
-				if(input_events[iTouchSlot].value < MAX_MULTI_TOUCH_EVENTS && iTouchID < MAX_EVENTS) {
+				if(input_events[iTouchSlot].value < MAX_MULTI_TOUCH_EVENTS && input_events[iTouchSlot].value >= 0 && iTouchID < MAX_EVENTS && iTouchSlot <= MAX_EVENTS) {
 					if(TouchIDs[input_events[iTouchSlot].value] < 0 && input_events[iTouchID].value >= 0) {
 						TouchIDs[input_events[iTouchSlot].value] = input_events[iTouchID].value;
 						if((input_events[iTouchSlot].value >= 0 && touch_booster.multi_events <= 0) || (input_events[iTouchSlot].value == 0 && TouchIDs[1] < 0)) {
@@ -597,7 +584,7 @@ void input_booster(struct input_dev *dev)
 							pr_debug("[Input Booster] MULTI-TOUCH EVENT - PRESS - ID: 0x%x, Slot: 0x%x, multi : %d\n", input_events[iTouchID].value, input_events[iTouchSlot].value, touch_booster.multi_events);
 							touch_booster.multi_events++;
 							RUN_BOOSTER(multitouch, BOOSTER_ON );
-/*
+#if defined(CONFIG_ARCH_EXYNOS)
 							if(delayed_work_pending(&touch_booster.input_booster_timeout_work[0])) {
 								int temp_hmp_boost = touch_booster.param[0].hmp_boost, temp_index = touch_booster.index;
 								pr_debug("[Input Booster] ****             cancel the pending touch booster workqueue\n");
@@ -608,7 +595,7 @@ void input_booster(struct input_dev *dev)
 								touch_booster.param[0].hmp_boost = temp_hmp_boost;
 								touch_booster.index = ( temp_index >= 2 ? 1 : temp_index );
 							}
-*/
+#endif
 						}
 					} else if(TouchIDs[input_events[iTouchSlot].value] >= 0 && input_events[iTouchID].value < 0) {
 						TouchIDs[input_events[iTouchSlot].value] = input_events[iTouchID].value;
@@ -624,23 +611,17 @@ void input_booster(struct input_dev *dev)
 				}
 			} else if (input_events[i].code == ABS_MT_SLOT) {
 				iTouchSlot = i;
-#if defined(CONFIG_SOC_EXYNOS7420) // This code should be working properly in Exynos7420(Noble & Zero2) only.
+				/*
 				if(input_events[iTouchSlot + 1].value < 0) {
 					lcdoffcounter++;
 				}
-				if(lcdoffcounter >= 10) {
-					input_booster_disable(&touch_booster);
-					input_booster_disable(&multitouch_booster);
-					input_booster_disable(&key_booster);
-					input_booster_disable(&touchkey_booster);
-					input_booster_disable(&keyboard_booster);
-					input_booster_disable(&mouse_booster);
-					input_booster_disable(&mouse_wheel_booster);
-					input_booster_disable(&pen_booster);
-					input_booster_disable(&hover_booster);
-					pr_debug("[Input Booster] *****************************\n[Input Booster] All boosters are reset  %d\n[Input Booster] *****************************\n", lcdoffcounter);
+				if(lcdoffcounter >= 10) { 
+					touch_booster.multi_events = 0;
+					multitouch_booster.multi_events = 0;
+					keyboard_booster.multi_events = 0;
+					pr_debug("[Input Booster] Multi events are reset  %d\n", lcdoffcounter);
 				}
-#endif
+				*/
 			}
 		} else if (input_events[i].type == EV_MSC && input_events[i].code == MSC_SCAN) {
 			if (input_events[i+1].type == EV_KEY) {
@@ -650,10 +631,12 @@ void input_booster(struct input_dev *dev)
 					case BTN_MIDDLE :
 						pr_debug("[Input Booster] MOUSE EVENT - %s\n", (input_events[i+1].value) ? "PRESS" : "RELEASE");
 						RUN_BOOSTER(mouse, (input_events[i+1].value) ? BOOSTER_ON : BOOSTER_OFF );
+						DetectedCategory = true;
 						break;
 					default : // ***************** Checking Keyboard Event
 						pr_debug("[Input Booster] KEYBOARD EVENT - %s (multi count %d )\n", (input_events[i+1].value) ? "PRESS" : "RELEASE", keyboard_booster.multi_events);
 						RUN_BOOSTER(keyboard, (input_events[i+1].value) ? BOOSTER_ON : BOOSTER_OFF );
+						//DetectedCategory = true; // keyboard event can be continue in a set.
 						break;
 				}
 			}
@@ -661,6 +644,7 @@ void input_booster(struct input_dev *dev)
 			if (input_events[0].type == EV_KEY && input_events[0].code == BTN_LEFT) {
 				pr_debug("[Input Booster] MOUSE EVENT - %s\n", "WHELL");
 				RUN_BOOSTER(mouse_wheel, BOOSTER_ON);
+				DetectedCategory = true;
 			}
 		}
 	}
@@ -673,10 +657,7 @@ void input_booster_init()
 	struct device_node *np;
 	int nlevels = 0, i;
 
-	printk("[Input Booster] %s\n", __FUNCTION__);
-
 	if(device_tree_infor != NULL){
-		printk("[Input Booster] %s   device_tree_infor is NULL\n", __FUNCTION__);
 		return;
 	}
 
@@ -684,13 +665,12 @@ void input_booster_init()
 
 	if(np == NULL) {
 		ndevice_in_dt = 0;
-		printk("[Input Booster] %s    np is NULL\n", __FUNCTION__);
 		return;
 	}
 
 	// Geting the count of devices.
 	ndevice_in_dt = of_get_child_count(np);
-	printk("[Input Booster] %s   ndevice_in_dt : %d\n", __FUNCTION__, ndevice_in_dt);
+	pr_debug("[Input Booster] %s   ndevice_in_dt : %d\n", __FUNCTION__, ndevice_in_dt);
 
 	device_tree_infor = kcalloc(ABS_CNT, sizeof(struct t_input_booster_device_tree_infor) * ndevice_in_dt, GFP_KERNEL);
 	if(device_tree_infor > 0) {
@@ -703,10 +683,10 @@ void input_booster_init()
 
 			// Geting label.
 			dt_infor->label = of_get_property(cnp, "input_booster,label", NULL);
-			printk("[Input Booster] %s   dt_infor->label : %s\n", __FUNCTION__, dt_infor->label);
+			pr_debug("[Input Booster] %s   dt_infor->label : %s\n", __FUNCTION__, dt_infor->label);
 
 			if (of_property_read_u32(cnp, "input_booster,type", &dt_infor->type)) {
-				printk("Failed to get type property\n");
+				pr_debug("Failed to get type property\n");
 				break;
 			}
 
@@ -715,16 +695,16 @@ void input_booster_init()
 
 			if (plevels && nlevels) {
 				dt_infor->nlevels = nlevels / sizeof(u32);
-				printk("[Input Booster] %s   dt_infor->nlevels : %d\n", __FUNCTION__, dt_infor->nlevels);
+				pr_debug("[Input Booster] %s   dt_infor->nlevels : %d\n", __FUNCTION__, dt_infor->nlevels);
 			} else {
-				printk("Failed to calculate number of frequency.\n");
+				pr_debug("Failed to calculate number of frequency.\n");
 				break;
 			}
 
 			// Allocation the param table.
 			dt_infor->param_tables = kcalloc(ABS_CNT, sizeof(struct t_input_booster_device_tree_param) * dt_infor->nlevels, GFP_KERNEL);
 			if (!dt_infor->param_tables) {
-				printk("Failed to allocate memory of freq_table\n");
+				pr_debug("Failed to allocate memory of freq_table\n");
 				break;
 			}
 
@@ -737,19 +717,12 @@ void input_booster_init()
 				int err = 0;
 
 				err = of_property_read_u32_index(cnp, "input_booster,levels", i, &temp);  dt_infor->param_tables[i].ilevels = (u8)temp;
-				err |= of_property_read_u32_index(cnp, "input_booster,cpu_freqs", i, &dt_infor->param_tables[i].cpu_freq);
-				err |= of_property_read_u32_index(cnp, "input_booster,kfc_freqs", i, &dt_infor->param_tables[i].kfc_freq);
-				err |= of_property_read_u32_index(cnp, "input_booster,mif_freqs", i, &dt_infor->param_tables[i].mif_freq);
-				err |= of_property_read_u32_index(cnp, "input_booster,int_freqs", i, &dt_infor->param_tables[i].int_freq);
-				err |= of_property_read_u32_index(cnp, "input_booster,hmp_boost", i, &temp); dt_infor->param_tables[i].hmp_boost = (u8)temp;
-				err |= of_property_read_u32_index(cnp, "input_booster,head_times", i, &temp); dt_infor->param_tables[i].head_time = (u16)temp;
-				err |= of_property_read_u32_index(cnp, "input_booster,tail_times", i, &temp); dt_infor->param_tables[i].tail_time = (u16)temp;
-				err |= of_property_read_u32_index(cnp, "input_booster,phase_times", i, &temp); dt_infor->param_tables[i].phase_time = (u16)temp;
+				DTSI_TO;
 				if (err) {
-					printk("Failed to get [%d] param table property\n", i);
+					pr_debug("Failed to get [%d] param table property\n", i);
 				}
-
-				printk("[Input Booster] Level %d : frequency[%d,%d,%d,%d] hmp_boost[%d] times[%d,%d,%d]\n", i,
+/*
+				pr_debug("[Input Booster] Level %d : frequency[%d,%d,%d,%d] hmp_boost[%d] times[%d,%d,%d]\n", i,
 					dt_infor->param_tables[i].cpu_freq,
 					dt_infor->param_tables[i].kfc_freq,
 					dt_infor->param_tables[i].mif_freq,
@@ -758,6 +731,7 @@ void input_booster_init()
 					dt_infor->param_tables[i].head_time,
 					dt_infor->param_tables[i].tail_time,
 					dt_infor->param_tables[i].phase_time);
+*/
 			}
 
 			device_count++;
@@ -787,7 +761,7 @@ void input_booster_init()
 
 		sysfs_class = class_create(THIS_MODULE, "input_booster");
 		if (IS_ERR(sysfs_class)) {
-			printk("[Input Booster] Failed to create class\n");
+			pr_debug("[Input Booster] Failed to create class\n");
 			return;
 		}
 
@@ -830,7 +804,6 @@ void input_event(struct input_dev *dev,
 		 unsigned int type, unsigned int code, int value)
 {
 	unsigned long flags;
-	int idx;
 
 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
 
@@ -844,17 +817,14 @@ void input_event(struct input_dev *dev,
 				pr_debug("[Input Booster1] ==============================================\n");
 				input_booster(dev);
 				input_count=0;
-			} else if (input_count < MAX_EVENTS) {
-				pr_debug("[Input Booster1] type = %x, code = %x, value =%x\n", type, code, value);
-				idx = input_count;
-				input_events[idx].type = type;
-				input_events[idx].code = code;
-				input_events[idx].value = value;
-				if (idx < MAX_EVENTS) {
-					input_count = idx + 1 ;
-				}
 			} else {
-				pr_debug("[Input Booster1] type = %x, code = %x, value =%x   Booster Event Exceeded\n", type, code, value);
+				pr_debug("[Input Booster1] type = %x, code = %x, value =%x\n", type, code, value);
+				input_events[input_count].type = type;
+				input_events[input_count].code = code;
+				input_events[input_count].value = value;
+				if(input_count < MAX_EVENTS) {
+					input_count++;
+				}
 			}
 		}
 #endif  // Input Booster -
@@ -1029,7 +999,7 @@ int input_open_device(struct input_handle *handle)
 	if (retval) {
 		dev->users_private--;
 		if (!dev->disabled)
-		dev->users--;
+			dev->users--;
 		if (!--handle->open) {
 			/*
 			 * Make sure we are not delivering any more events
@@ -1093,6 +1063,7 @@ void input_close_device(struct input_handle *handle)
 	mutex_unlock(&dev->mutex);
 }
 EXPORT_SYMBOL(input_close_device);
+
 static int input_enable_device(struct input_dev *dev)
 {
 	int retval;
@@ -1143,16 +1114,19 @@ static int input_disable_device(struct input_dev *dev)
  */
 static void input_dev_release_keys(struct input_dev *dev)
 {
+	bool need_sync = false;
 	int code;
 
 	if (is_event_supported(EV_KEY, dev->evbit, EV_MAX)) {
-		for (code = 0; code <= KEY_MAX; code++) {
-			if (is_event_supported(code, dev->keybit, KEY_MAX) &&
-			    __test_and_clear_bit(code, dev->key)) {
-				input_pass_event(dev, EV_KEY, code, 0);
-			}
+		for_each_set_bit(code, dev->key, KEY_CNT) {
+			input_pass_event(dev, EV_KEY, code, 0);
+			need_sync = true;
 		}
-		input_pass_event(dev, EV_SYN, SYN_REPORT, 1);
+
+		if (need_sync)
+			input_pass_event(dev, EV_SYN, SYN_REPORT, 1);
+
+		memset(dev->key, 0, sizeof(dev->key));
 	}
 }
 
@@ -2129,10 +2103,7 @@ static int input_dev_uevent(struct device *device, struct kobj_uevent_env *env)
 		if (!test_bit(EV_##type, dev->evbit))			\
 			break;						\
 									\
-		for (i = 0; i < type##_MAX; i++) {			\
-			if (!test_bit(i, dev->bits##bit))		\
-				continue;				\
-									\
+		for_each_set_bit(i, dev->bits##bit, type##_CNT) {	\
 			active = test_bit(i, dev->bits);		\
 			if (!active && !on)				\
 				continue;				\
@@ -2165,35 +2136,42 @@ static void input_dev_toggle(struct input_dev *dev, bool activate)
  */
 void input_reset_device(struct input_dev *dev)
 {
+	unsigned long flags;
+
 	mutex_lock(&dev->mutex);
+	spin_lock_irqsave(&dev->event_lock, flags);
 
-	if (dev->users) {
+	/*
+	 * Keys that have been pressed at suspend time are unlikely
+	 * to be still pressed when we resume.
+	 */
+	if (!test_bit(INPUT_PROP_NO_DUMMY_RELEASE, dev->propbit)) {
 		input_dev_toggle(dev, true);
-
-		/*
-		 * Keys that have been pressed at suspend time are unlikely
-		 * to be still pressed when we resume.
-		 */
-/*		spin_lock_irq(&dev->event_lock);
 		input_dev_release_keys(dev);
-		spin_unlock_irq(&dev->event_lock);*/
 	}
 
+	spin_unlock_irqrestore(&dev->event_lock, flags);
 	mutex_unlock(&dev->mutex);
 }
 EXPORT_SYMBOL(input_reset_device);
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int input_dev_suspend(struct device *dev)
 {
 	struct input_dev *input_dev = to_input_dev(dev);
 
-	mutex_lock(&input_dev->mutex);
+	spin_lock_irq(&input_dev->event_lock);
 
-	if (input_dev->users)
-		input_dev_toggle(input_dev, false);
+	/*
+	 * Keys that are pressed now are unlikely to be
+	 * still pressed when we resume.
+	 */
+	input_dev_release_keys(input_dev);
 
-	mutex_unlock(&input_dev->mutex);
+	/* Turn off LEDs and sounds, if any are active. */
+	input_dev_toggle(input_dev, false);
+
+	spin_unlock_irq(&input_dev->event_lock);
 
 	return 0;
 }
@@ -2202,7 +2180,43 @@ static int input_dev_resume(struct device *dev)
 {
 	struct input_dev *input_dev = to_input_dev(dev);
 
-	input_reset_device(input_dev);
+	spin_lock_irq(&input_dev->event_lock);
+
+	/* Restore state of LEDs and sounds, if any were active. */
+	input_dev_toggle(input_dev, true);
+
+	spin_unlock_irq(&input_dev->event_lock);
+
+	return 0;
+}
+
+static int input_dev_freeze(struct device *dev)
+{
+	struct input_dev *input_dev = to_input_dev(dev);
+
+	spin_lock_irq(&input_dev->event_lock);
+
+	/*
+	 * Keys that are pressed now are unlikely to be
+	 * still pressed when we resume.
+	 */
+	input_dev_release_keys(input_dev);
+
+	spin_unlock_irq(&input_dev->event_lock);
+
+	return 0;
+}
+
+static int input_dev_poweroff(struct device *dev)
+{
+	struct input_dev *input_dev = to_input_dev(dev);
+
+	spin_lock_irq(&input_dev->event_lock);
+
+	/* Turn off LEDs and sounds, if any are active. */
+	input_dev_toggle(input_dev, false);
+
+	spin_unlock_irq(&input_dev->event_lock);
 
 	return 0;
 }
@@ -2210,7 +2224,8 @@ static int input_dev_resume(struct device *dev)
 static const struct dev_pm_ops input_dev_pm_ops = {
 	.suspend	= input_dev_suspend,
 	.resume		= input_dev_resume,
-	.poweroff	= input_dev_suspend,
+	.freeze		= input_dev_freeze,
+	.poweroff	= input_dev_poweroff,
 	.restore	= input_dev_resume,
 };
 #endif /* CONFIG_PM */
@@ -2219,7 +2234,7 @@ static struct device_type input_dev_type = {
 	.groups		= input_dev_attr_groups,
 	.release	= input_dev_release,
 	.uevent		= input_dev_uevent,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.pm		= &input_dev_pm_ops,
 #endif
 };
@@ -2445,18 +2460,12 @@ static unsigned int input_estimate_events_per_packet(struct input_dev *dev)
 
 	events = mt_slots + 1; /* count SYN_MT_REPORT and SYN_REPORT */
 
-	for (i = 0; i < ABS_CNT; i++) {
-		if (test_bit(i, dev->absbit)) {
-			if (input_is_mt_axis(i))
-				events += mt_slots;
-			else
-				events++;
-		}
-	}
+	if (test_bit(EV_ABS, dev->evbit))
+		for_each_set_bit(i, dev->absbit, ABS_CNT)
+			events += input_is_mt_axis(i) ? mt_slots : 1;
 
-	for (i = 0; i < REL_CNT; i++)
-		if (test_bit(i, dev->relbit))
-			events++;
+	if (test_bit(EV_REL, dev->evbit))
+		events += bitmap_weight(dev->relbit, REL_CNT);
 
 	/* Make room for KEY and MSC events */
 	events += 7;

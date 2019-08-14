@@ -29,7 +29,7 @@
 #include <linux/workqueue.h>
 
 #define UEVENT_HELPER_PATH_LEN		256
-#define UEVENT_NUM_ENVP			32	/* number of env pointers */
+#define UEVENT_NUM_ENVP			64	/* number of env pointers */
 #define UEVENT_BUFFER_SIZE		2048	/* buffer for the variables */
 
 #ifdef CONFIG_UEVENT_HELPER
@@ -57,8 +57,6 @@ enum kobject_action {
 	KOBJ_MOVE,
 	KOBJ_ONLINE,
 	KOBJ_OFFLINE,
-	KOBJ_POLICY_INIT,
-	KOBJ_POLICY_EXIT,
 	KOBJ_MAX
 };
 

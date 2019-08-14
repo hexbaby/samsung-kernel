@@ -34,15 +34,15 @@ static const u8 clr_crc_cmd[] = {0x5A, 0x0F};
 
 
 
-static int dbmd4_i2c_boot(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw)
+static int dbmd4_i2c_boot(const struct firmware *fw, struct dbmdx_private *p,
+		    const void *checksum, size_t chksum_len, int load_fw)
 {
 	int retry = RETRY_COUNT;
 	int ret = 0;
 	ssize_t send_bytes;
 	struct dbmdx_i2c_private *i2c_p =
 				(struct dbmdx_i2c_private *)p->chip->pdata;
+	u8 rx_checksum[6];
 
 	dev_dbg(i2c_p->dev, "%s\n", __func__);
 
@@ -89,8 +89,8 @@ static int dbmd4_i2c_boot(const void *fw_data, size_t fw_size,
 		msleep(DBMDX_MSLEEP_I2C_D4_AFTER_SBL);
 
 		/* send firmware */
-		send_bytes = write_i2c_data(p, fw_data, fw_size - 4);
-		if (send_bytes != fw_size - 4) {
+		send_bytes = write_i2c_data(p, fw->data, fw->size - 4);
+		if (send_bytes != fw->size - 4) {
 			dev_err(p->dev,
 				"%s: -----------> load firmware error\n",
 				__func__);
@@ -101,10 +101,26 @@ static int dbmd4_i2c_boot(const void *fw_data, size_t fw_size,
 
 		/* verify checksum */
 		if (checksum) {
-			ret = i2c_verify_boot_checksum(p, checksum, chksum_len);
+			ret = send_i2c_cmd_boot(i2c_p, DBMDX_READ_CHECKSUM);
 			if (ret < 0) {
 				dev_err(i2c_p->dev,
-					"%s: could not verify checksum\n",
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = i2c_master_recv(i2c_p->client, rx_checksum, 6);
+			if (ret < 0) {
+				dev_err(i2c_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(p, checksum, &rx_checksum[2],
+						 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
 					__func__);
 				continue;
 			}
@@ -122,7 +138,7 @@ static int dbmd4_i2c_boot(const void *fw_data, size_t fw_size,
 	}
 
 	/* send boot command */
-	ret = send_i2c_cmd_boot(p, DBMDX_FIRMWARE_BOOT);
+	ret = send_i2c_cmd_boot(i2c_p, DBMDX_FIRMWARE_BOOT);
 	if (ret < 0) {
 		dev_err(p->dev, "%s: booting the firmware failed\n", __func__);
 		return -1;
@@ -134,70 +150,6 @@ static int dbmd4_i2c_boot(const void *fw_data, size_t fw_size,
 
 	return 0;
 }
-
-#ifdef CONFIG_PM_SLEEP
-static int dbmdx_i2c_suspend(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	i2c_interface_suspend(i2c_p);
-
-	return 0;
-}
-
-static int dbmdx_i2c_resume(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-	i2c_interface_resume(i2c_p);
-
-	return 0;
-}
-#endif /* CONFIG_PM_SLEEP */
-
-#ifdef CONFIG_PM_RUNTIME
-static int dbmdx_i2c_runtime_suspend(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	i2c_interface_suspend(i2c_p);
-
-	return 0;
-}
-
-static int dbmdx_i2c_runtime_resume(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-	i2c_interface_resume(i2c_p);
-
-	return 0;
-}
-
-#endif /* CONFIG_PM_RUNTIME */
-
-static const struct dev_pm_ops dbmdx_i2c_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(dbmdx_i2c_suspend, dbmdx_i2c_resume)
-	SET_RUNTIME_PM_OPS(dbmdx_i2c_runtime_suspend,
-			   dbmdx_i2c_runtime_resume, NULL)
-};
-
-
 
 static int dbmd4_i2c_probe(struct i2c_client *client,
 		const struct i2c_device_id *id)
@@ -221,44 +173,41 @@ static int dbmd4_i2c_probe(struct i2c_client *client,
 }
 
 
-static const struct of_device_id dbmd_4_6_i2c_of_match[] = {
+static const struct of_device_id dbmd4_i2c_of_match[] = {
 	{ .compatible = "dspg,dbmd4-i2c", },
-	{ .compatible = "dspg,dbmd6-i2c", },
 	{},
 };
-MODULE_DEVICE_TABLE(of, dbmd_4_6_i2c_of_match);
+MODULE_DEVICE_TABLE(of, dbmd4_i2c_of_match);
 
-static const struct i2c_device_id dbmd_4_6_i2c_id[] = {
+static const struct i2c_device_id dbmd4_i2c_id[] = {
 	{ "dbmdx-i2c", 0 },
 	{ "dbmd4-i2c", 0 },
-	{ "dbmd6-i2c", 0 },
 	{ }
 };
-MODULE_DEVICE_TABLE(i2c, dbmd_4_6_i2c_id);
+MODULE_DEVICE_TABLE(i2c, dbmd4_i2c_id);
 
-static struct i2c_driver dbmd_4_6_i2c_driver = {
+static struct i2c_driver dbmd4_i2c_driver = {
 	.driver = {
-		.name = "dbmd_4_6-i2c",
+		.name = "dbmd4-i2c",
 		.owner = THIS_MODULE,
-		.of_match_table = dbmd_4_6_i2c_of_match,
-		.pm = &dbmdx_i2c_pm,
+		.of_match_table = dbmd4_i2c_of_match,
 	},
 	.probe =    dbmd4_i2c_probe,
 	.remove =   i2c_common_remove,
-	.id_table = dbmd_4_6_i2c_id,
+	.id_table = dbmd4_i2c_id,
 };
 
-static int __init dbmd_4_6_modinit(void)
+static int __init dbmd4_modinit(void)
 {
-	return i2c_add_driver(&dbmd_4_6_i2c_driver);
+	return i2c_add_driver(&dbmd4_i2c_driver);
 }
-module_init(dbmd_4_6_modinit);
+module_init(dbmd4_modinit);
 
-static void __exit dbmd_4_6_exit(void)
+static void __exit dbmd4_exit(void)
 {
-	i2c_del_driver(&dbmd_4_6_i2c_driver);
+	i2c_del_driver(&dbmd4_i2c_driver);
 }
-module_exit(dbmd_4_6_exit);
+module_exit(dbmd4_exit);
 
-MODULE_DESCRIPTION("DSPG DBMD4/DBMD6 I2C interface driver");
+MODULE_DESCRIPTION("DSPG DBMD4 I2C interface driver");
 MODULE_LICENSE("GPL");

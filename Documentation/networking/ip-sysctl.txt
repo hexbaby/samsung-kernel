@@ -746,6 +746,11 @@ ip_local_reserved_ports - list of comma separated ranges
 
 	Default: Empty
 
+reserved_port_bind - BOOLEAN
+	If set, allows explicit bind requests to applications requesting
+	any port within the range of ip_local_reserved_ports.
+	Default: 1
+
 ip_nonlocal_bind - BOOLEAN
 	If set, allows processes to bind() to non-local IP addresses,
 	which can be quite useful - but may break some applications.
@@ -1275,22 +1280,12 @@ accept_ra_pinfo - BOOLEAN
 
 	Functional default: enabled if accept_ra is enabled.
 			    disabled if accept_ra is disabled.
-				
-
-accept_ra_rt_info_min_plen - INTEGER
-	Minimum prefix length of Route Information in RA.
-
-	Route Information w/ prefix smaller than this variable shall
-	be ignored.
-
-	Functional default: 0 if accept_ra_rtr_pref is enabled.
-			    -1 if accept_ra_rtr_pref is disabled.
 
 accept_ra_rt_info_max_plen - INTEGER
 	Maximum prefix length of Route Information in RA.
 
-	Route Information w/ prefix larger than this variable shall
-	be ignored.
+	Route Information w/ prefix larger than or equal to this
+	variable shall be ignored.
 
 	Functional default: 0 if accept_ra_rtr_pref is enabled.
 			    -1 if accept_ra_rtr_pref is disabled.
@@ -1300,6 +1295,11 @@ accept_ra_rtr_pref - BOOLEAN
 
 	Functional default: enabled if accept_ra is enabled.
 			    disabled if accept_ra is disabled.
+
+accept_ra_prefix_route - BOOLEAN
+	Set the prefix route for the autoconfigured interface address
+
+	Functional default: enabled
 
 accept_redirects - BOOLEAN
 	Accept Redirects.

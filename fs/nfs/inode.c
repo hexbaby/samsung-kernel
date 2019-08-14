@@ -78,8 +78,8 @@ nfs_fattr_to_ino_t(struct nfs_fattr *fattr)
 int nfs_wait_bit_killable(struct wait_bit_key *key, int mode)
 {
 	freezable_schedule_unsafe();
-	if (signal_pending_state(mode, current))
-		return -ERESTARTSYS;
+	if (signal_pending_state(mode, current))  
+		return -ERESTARTSYS;  
 	return 0;
 }
 EXPORT_SYMBOL_GPL(nfs_wait_bit_killable);
@@ -1177,9 +1177,9 @@ static int nfs_check_inode_attributes(struct inode *inode, struct nfs_fattr *fat
 		return 0;
 	/* Has the inode gone and changed behind our back? */
 	if ((fattr->valid & NFS_ATTR_FATTR_FILEID) && nfsi->fileid != fattr->fileid)
-		return -ESTALE;
+		return -EIO;
 	if ((fattr->valid & NFS_ATTR_FATTR_TYPE) && (inode->i_mode & S_IFMT) != (fattr->mode & S_IFMT))
-		return -ESTALE;
+		return -EIO;
 
 	if ((fattr->valid & NFS_ATTR_FATTR_CHANGE) != 0 &&
 			inode->i_version != fattr->change_attr)

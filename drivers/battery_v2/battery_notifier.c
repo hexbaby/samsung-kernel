@@ -2,6 +2,7 @@
 
 #include <linux/notifier.h>
 #include <linux/battery/battery_notifier.h>
+#include <linux/sec_class.h>
 #include <linux/sec_sysfs.h>
 
 #define DEBUG
@@ -181,10 +182,10 @@ int battery_notifier_init(void)
 
 	pr_info("%s\n", __func__);
 
-	charger_device = sec_device_create(NULL, "charger_notifier");
-	pdic_device = sec_device_create(NULL, "pdic_notifier");
+	charger_device = device_create(sec_class, NULL, 0, NULL, "charger_notifier");
+	pdic_device = device_create(sec_class, NULL, 0, NULL, "pdic_notifier");
 	if (IS_ERR(charger_device)) {
-		pr_err("%s Failed to create device(charger_notifier)!\n", __func__);
+		pr_err("%s Failed to create device(charer_notifier)!\n", __func__);
 		ret = -ENODEV;
 		goto out;
 	}

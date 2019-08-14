@@ -353,10 +353,6 @@ static int ddebug_parse_query(char *words[], int nwords,
 				if (parse_lineno(last, &query->last_lineno) < 0)
 					return -EINVAL;
 
-				/* special case for last lineno not specified */
-				if (query->last_lineno == 0)
-					query->last_lineno = UINT_MAX;
-
 				if (query->last_lineno < query->first_lineno) {
 					pr_err("last-line:%d < 1st-line:%d\n",
 						query->last_lineno,
@@ -1031,9 +1027,13 @@ static int __init dynamic_debug_init(void)
 	 * slightly noisy if verbose, but harmless.
 	 */
 	cmdline = kstrdup(saved_command_line, GFP_KERNEL);
-	parse_args("dyndbg params", cmdline, NULL,
-		   0, 0, 0, &ddebug_dyndbg_boot_param_cb);
-	kfree(cmdline);
+	if (cmdline) {
+		parse_args("dyndbg params", cmdline, NULL,
+			   0, 0, 0, &ddebug_dyndbg_boot_param_cb);
+		kfree(cmdline);
+	} else
+		pr_err("Failed to parse boot args for dyndbg params\n");
+
 	return 0;
 
 out_err:

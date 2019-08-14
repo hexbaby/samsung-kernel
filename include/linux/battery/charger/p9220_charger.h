@@ -245,20 +245,20 @@
 #define P9220_FW_RESULT_FAIL				0
 
 enum {
-	P9220_EVENT_IRQ = 0,
-	P9220_IRQS_NR,
+    P9220_EVENT_IRQ = 0,
+    P9220_IRQS_NR,
 };
 
 enum {
-	P9220_PAD_MODE_NONE = 0,
-	P9220_PAD_MODE_WPC,
-	P9220_PAD_MODE_WPC_AFC,
+    P9220_PAD_MODE_NONE = 0,
+    P9220_PAD_MODE_WPC,
+    P9220_PAD_MODE_WPC_AFC,
 	P9220_PAD_MODE_WPC_PACK,
 	P9220_PAD_MODE_WPC_PACK_TA,
 	P9220_PAD_MODE_WPC_STAND,
 	P9220_PAD_MODE_WPC_STAND_HV,
-	P9220_PAD_MODE_PMA,
-	P9220_PAD_MODE_TX,
+    P9220_PAD_MODE_PMA,
+    P9220_PAD_MODE_TX,
 };
 
 /* PAD Vout */
@@ -275,14 +275,14 @@ enum {
 
 /* vout settings */
 enum {
-	P9220_VOUT_0V = 0,
-	P9220_VOUT_5V,
-	P9220_VOUT_6V,
-	P9220_VOUT_9V,
-	P9220_VOUT_CC_CV,
-	P9220_VOUT_CV_CALL,
-	P9220_VOUT_CC_CALL,
-	P9220_VOUT_9V_STEP,
+    P9220_VOUT_0V = 0,
+    P9220_VOUT_5V,
+    P9220_VOUT_6V,
+    P9220_VOUT_9V,
+    P9220_VOUT_CC_CV,
+    P9220_VOUT_CV_CALL,
+    P9220_VOUT_CC_CALL,
+    P9220_VOUT_9V_STEP,
 };
 
 enum {
@@ -482,6 +482,10 @@ struct p9220_charger_data {
 	struct delayed_work	wpc_opfq_work;
 	struct delayed_work	wpc_isr_work;
 	struct delayed_work	wpc_tx_id_work;
+	
+	struct pinctrl *i2c_pinctrl;
+	struct pinctrl_state *i2c_gpio_state_active;
+	struct pinctrl_state *i2c_gpio_state_suspend;
 
 	u16 addr;
 	int size;

@@ -2,6 +2,7 @@
  * leds-S2MPB02.h - Flash-led driver for Samsung S2MPB02
  *
  * Copyright (C) 2014 Samsung Electronics
+ * XXX <xxx@samsung.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -13,14 +14,18 @@
 #ifndef __LEDS_S2MPB02_H__
 #define __LEDS_S2MPB02_H__
 
+#define S2MPB02_FLED_CHANNEL_1  /* GPIOs connected to FLASH_EN1, TORCH_EN1 */
+//#define S2MPB02_FLED_CHANNEL_2   /* GPIOs connected to FLASH_EN2, TORCH_EN2 */
+
+
 #define S2MPB02_FLASH_TORCH_CURRENT_MAX 0xF
 #define S2MPB02_TIMEOUT_MAX 0xF
 
 /* S2MPB02_LV_SEL_VOUT */
 #define S2MPB02_LV_SEL_VOUT_MASK 0x07
-#define S2MPB02_LV_SEL_VOLT(voltage)	\
-		((voltage) <= 2700 ? 0x00 : \
-		((voltage) <= 3400 ? ((voltage) - 2900) / 100 : 0x07))
+#define S2MPB02_LV_SEL_VOLT(mV)	\
+		((mV) <= 2900 ? 0x00 : \
+		((mV) <= 3600 ? ((mV) - 2900) / 100 : 0x07))
 
 #define S2MPB02_FLASH_MASK 0xF0
 #define S2MPB02_TORCH_MASK 0x0F
@@ -33,37 +38,16 @@
 #define S2MPB02_FLED_TORCH_MODE 1
 #define S2MPB02_FLED_MODE_SHIFT 6
 
-#define S2MPB02_FLED_FLASH_TORCH_OFF 0x00
-#define S2MPB02_FLED_FLASH_ON 0x80
-#define S2MPB02_FLED_TORCH_ON 0xC0
-#define S2MPB02_FLED2_TORCH_ON 0xF0
 #define S2MPB02_FLED_ENABLE_MODE_MASK 0xC0
-#define S2MPB02_FLED2_ENABLE_MODE_MASK 0xFF
-
-#define S2MPB02_FLED_CTRL1_LV_EN_MASK 0x08
-#define S2MPB02_FLED_CTRL1_LV_ENABLE 1
-#define S2MPB02_FLED_CTRL1_LV_DISABLE 0
-
-#ifdef CONFIG_LEDS_IRIS_IRLED_CERTIFICATE_SUPPORT
-#define S2MPB02_FLED_CTRL2_TORCH_ON 0xF0
-#define S2MPB02_FLED_CTRL2_FLASH_ON 0x38
-#define S2MPB02_FLED_CTRL2_TORCH_MASK 0xFB
-
-#define S2MPB02_FLED_CUR2_TORCH_CUR2_MASK 0x0F
-
-#define S2MPB02_FLED_TIME2_IRMAX_TIMER_DISABLE 0x00
-#define S2MPB02_FLED_TIME2_IRMAX_TIMER_EN_MASK 0x01
-#endif
-
 #define S2MPB02_FLED2_MAX_TIME_MASK 0x1F
 #define S2MPB02_FLED2_MAX_TIME_CLEAR_MASK 0x04
 #define S2MPB02_FLED2_MAX_TIME_EN_MASK 0x01
 #define S2MPB02_FLED2_IRON2_MASK 0xC0
 
+
 enum s2mpb02_led_id {
 	S2MPB02_FLASH_LED_1,
 	S2MPB02_TORCH_LED_1,
-	S2MPB02_TORCH_LED_2,
 	S2MPB02_LED_MAX,
 };
 
@@ -151,10 +135,7 @@ struct s2mpb02_led {
 	int id;
 	int brightness;
 	int timeout;
-	int irda_off;
-	bool use_torch_current_value;
-	int torch_current_value;
-	int factory_torch_current_value;
+	const char *default_trigger; /* Trigger to use */
 };
 
 struct s2mpb02_led_platform_data {
@@ -162,11 +143,13 @@ struct s2mpb02_led_platform_data {
 	struct s2mpb02_led leds[S2MPB02_LED_MAX];
 };
 
-#ifdef CONFIG_LEDS_IRIS_IRLED_SUPPORT
-extern int s2mpb02_ir_led_current(uint32_t current_value);
-extern int s2mpb02_ir_led_pulse_width(uint32_t width);
-extern int s2mpb02_ir_led_pulse_delay(uint32_t delay);
-extern int s2mpb02_ir_led_max_time(uint32_t max_time);
+extern int s2mpb02_led_en(int mode, int onoff);
+#if defined(CONFIG_SAMSUNG_SECURE_CAMERA)
+extern int s2mpb02_ir_led_init(void);
+extern int s2mpb02_ir_led_current(int32_t current_value);
+extern int s2mpb02_ir_led_pulse_width(int32_t width);
+extern int s2mpb02_ir_led_pulse_delay(int32_t delay);
+extern int s2mpb02_ir_led_max_time(int32_t max_time);
 #endif
 
 #endif

@@ -29,6 +29,11 @@ extern int attach_ps_cable(muic_data_t *pmuic,
 extern int attach_mmdock(muic_data_t *pmuic,
 			muic_attached_dev_t new_dev, u8 vbvolt);
 extern int detach_mmdock(muic_data_t *pmuic);
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+extern int attach_earjack(muic_data_t *pmuic,
+			muic_attached_dev_t new_dev);
+extern int detach_earjack(muic_data_t *pmuic);
+#endif
 extern int attach_gamepad(muic_data_t *pmuic,
 			muic_attached_dev_t new_dev);
 extern int detach_gamepad(muic_data_t *pmuic);
@@ -59,4 +64,7 @@ extern int enable_chgdet(muic_data_t *pmuic, int enable);
 extern int run_chgdet(muic_data_t *pmuic, bool started);
 extern int attach_HMT(muic_data_t *, muic_attached_dev_t);
 extern int detach_HMT(muic_data_t *pmuic);
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
+extern void muic_switch_enable(muic_data_t *pmuic, int enable);
+#endif
 #endif

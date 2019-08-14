@@ -350,7 +350,7 @@ config USB_NET_NET1080
 	  optionally with LEDs that indicate traffic
 
 config USB_NET_PLUSB
-	tristate "Prolific PL-2301/2302/25A1/27A1 based cables"
+	tristate "Prolific PL-2301/2302/25A1 based cables"
 	# if the handshake/init/reset problems, from original 'plusb',
 	# are ever resolved ... then remove "experimental"
 	depends on USB_USBNET
@@ -572,4 +572,12 @@ config USB_VL600
 
 	  http://ubuntuforums.org/showpost.php?p=10589647&postcount=17
 
+config USBNET_IPA_BRIDGE
+	tristate "USB to IPA bridge"
+	depends on USB_USBNET && IPA
+	help
+	  Select this if you want to enable USB to IPA bridge.
+	  This will pass IP traffic directly to IPA and bypass the network stack.
+
 endif # USB_NET_DRIVERS
+

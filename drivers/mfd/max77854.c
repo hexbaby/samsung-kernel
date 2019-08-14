@@ -39,16 +39,13 @@
 #if defined (CONFIG_OF)
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
+#include <linux/pinctrl/consumer.h>
 #endif /* CONFIG_OF */
 
 #define I2C_ADDR_PMIC	(0x92 >> 1)	/* Top sys, Haptic */
 #define I2C_ADDR_MUIC	(0x4A >> 1)
 #define I2C_ADDR_CHG    (0xD2 >> 1)
 #define I2C_ADDR_FG     (0x6C >> 1)
-#if defined(CONFIG_MAX77854_FG_SENSING_WA)
-#define I2C_ADDR_GTST	(0x4C >> 1)	/* Global test to enable writing to trim register */
-#define I2C_ADDR_OTP	(0xE4 >> 1)	/* Charger OTP Register */
-#endif
 
 static struct mfd_cell max77854_devs[] = {
 #if defined(CONFIG_MUIC_UNIVERSAL)
@@ -200,11 +197,68 @@ static int of_max77854_dt(struct device *dev, struct max77854_platform_data *pda
 	pdata->wakeup = of_property_read_bool(np_max77854, "max77854,wakeup");
 
 	pr_info("%s: irq-gpio: %u \n", __func__, pdata->irq_gpio);
+	
+	return 0;
+}
+
+static int max77854_pinctrl_select(struct max77854_dev *max77854, bool on) {
+	struct pinctrl_state *pins_i2c_state;
+	int ret;
+
+	pins_i2c_state = on ? max77854->i2c_gpio_state_active
+			    : max77854->i2c_gpio_state_suspend;
+
+	if (!IS_ERR_OR_NULL(pins_i2c_state)) {
+		ret = pinctrl_select_state(max77854->i2c_pinctrl, pins_i2c_state);
+		if(ret) {
+			dev_err(max77854->dev, "%s: Failed to set max77854 i2c pin state.\n", __func__);
+			return ret;
+		}
+	}
 
 	return 0;
 }
+
+static int max77854_i2c_pinctrl_init(struct max77854_dev *max77854) {
+	int ret = 0;
+	struct pinctrl *i2c_pinctrl;
+
+	max77854->i2c_pinctrl = devm_pinctrl_get(&max77854->i2c->dev);
+	if (IS_ERR_OR_NULL(max77854->i2c_pinctrl)) {
+		dev_err(max77854->dev, "%s: Failed to alloc mem for max77854 i2c pinctrl.\n", __func__);
+		ret = PTR_ERR(max77854->i2c_pinctrl);
+		return -ENOMEM;
+	}
+	
+	i2c_pinctrl = max77854->i2c_pinctrl;
+	
+	max77854->i2c_gpio_state_active = pinctrl_lookup_state(i2c_pinctrl, "max77854_active");
+	if (IS_ERR_OR_NULL(max77854->i2c_gpio_state_active)) {
+		dev_err(max77854->dev, "%s: Failed to set active state for max77854 i2c\n", __func__);
+		ret = PTR_ERR(max77854->i2c_gpio_state_active);
+		goto err_i2c_active_state;
+	}
+
+	max77854->i2c_gpio_state_suspend = pinctrl_lookup_state(i2c_pinctrl, "max77854_suspend");
+	if (IS_ERR_OR_NULL(max77854->i2c_gpio_state_suspend)) {
+		dev_err(max77854->dev, "%s: Failed to set suspend state for max77854 i2c\n", __func__);
+		ret = PTR_ERR(max77854->i2c_gpio_state_suspend);
+		goto err_i2c_suspend_state;
+	}
+
+#if defined(CONFIG_OF)
+	max77854_pinctrl_select(max77854, true);
+#endif
+	return ret;
+
+err_i2c_suspend_state:
+	max77854->i2c_gpio_state_suspend = 0;
+err_i2c_active_state:
+	max77854->i2c_gpio_state_active = 0;
+	return ret;
+}
 #else
-static int of_max77834_dt(struct device *dev, struct max77834_platform_data *pdata)
+static int of_max77854_dt(struct device *dev, struct max77854_platform_data *pdata)
 {
 	return 0;
 }
@@ -285,6 +339,20 @@ static int max77854_i2c_probe(struct i2c_client *i2c,
 				max77854->pmic_rev, max77854->pmic_ver);
 	}
 
+#if defined(CONFIG_OF)
+	/* Initialize pinctrl for i2c & irq */
+	ret = max77854_i2c_pinctrl_init(max77854);
+	if(ret) {
+		dev_err(max77854->dev,
+			"device not found on this channel (this is not an error)\n");
+		/* if pnictrl is not supported, -EINVAL is returned*/
+		if(ret == -EINVAL)
+			ret = 0;
+	} else {
+		pr_info("%s:%s max77854 pinctrl is succeed.\n",	MFD_DEV_NAME, __func__);
+	}
+#endif
+
 	/* No active discharge on safeout ldo 1,2 */
 	max77854_update_reg(i2c, MAX77854_PMIC_REG_SAFEOUT_CTRL, 0x00, 0x30);
 
@@ -296,14 +364,6 @@ static int max77854_i2c_probe(struct i2c_client *i2c,
 
 	max77854->fuelgauge = i2c_new_dummy(i2c->adapter, I2C_ADDR_FG);
 	i2c_set_clientdata(max77854->fuelgauge, max77854);
-
-#if defined(CONFIG_MAX77854_FG_SENSING_WA)
-	max77854->gtest = i2c_new_dummy(i2c->adapter, I2C_ADDR_GTST);
-	i2c_set_clientdata(max77854->gtest, max77854);
-
-	max77854->otp = i2c_new_dummy(i2c->adapter, I2C_ADDR_OTP);
-	i2c_set_clientdata(max77854->otp, max77854);
-#endif
 
 	ret = max77854_irq_init(max77854);
 

@@ -3,9 +3,7 @@
  *
  *  Driver for Richwave RTC6213N FM Tuner
  *
- *  Copyright (c) 2009 Tobias Lorenz <tobias.lorenz@gmx.net>
- *  Copyright (c) 2012 Hans de Goede <hdegoede@redhat.com>
- *  Copyright (c) 2013 Richwave Technology Co.Ltd
+ * Copyright (c) 2013 Richwave Technology Co.Ltd
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,8 +16,10 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
+
 
 /*
  * History:
@@ -75,8 +75,6 @@ wait_queue_head_t rtc6213n_wq;
 int rtc6213n_wq_flag = NO_WAIT;
 #ifdef New_VolumeControl
 unsigned short global_volume;
-static int g_previous_vol;
-static int g_current_vol;
 #endif
 /**************************************************************************
  * Generic Functions
@@ -90,17 +88,17 @@ static int rtc6213n_set_chan(struct rtc6213n_device *radio, unsigned short chan)
 	int retval;
 	unsigned long timeout;
 	bool timed_out = 0;
-	int i;
 	unsigned short current_chan =
 		radio->registers[CHANNEL] & CHANNEL_CSR0_CH;
 
-	dev_info(&radio->videodev->dev, "======== %s ========\n", __func__);
+
+	dev_info(&radio->videodev->dev, "======== rtc6213n_set_chan ========\n");
 	dev_info(&radio->videodev->dev, "RTC6213n tuning process is starting\n");
 	dev_info(&radio->videodev->dev, "CHAN=0x%4.4hx SKCFG1=0x%4.4hx STATUS=0x%4.4hx chan=0x%4.4hx\n",
 			radio->registers[CHANNEL], radio->registers[SEEKCFG1],
 			radio->registers[STATUS], chan);
 
-	/* start tuning */
+    /* start tuning */
 	radio->registers[CHANNEL] &= ~CHANNEL_CSR0_CH;
 	radio->registers[CHANNEL] |= CHANNEL_CSR0_TUNE | chan;
 	retval = rtc6213n_set_register(radio, CHANNEL);
@@ -114,7 +112,6 @@ static int rtc6213n_set_chan(struct rtc6213n_device *radio, unsigned short chan)
 		rtc6213n_wq_flag = TUNE_WAITING;
 		wait();
 		rtc6213n_wq_flag = NO_WAIT;
-
 	} else {
 		/* wait till tune operation has completed */
 		timeout = jiffies + msecs_to_jiffies(tune_timeout);
@@ -134,20 +131,11 @@ static int rtc6213n_set_chan(struct rtc6213n_device *radio, unsigned short chan)
 		(radio->registers[STATUS] & STATUS_SF) >> 13,
 		(radio->registers[RSSI] & RSSI_RSSI));
 
-	if ((radio->registers[STATUS] & STATUS_STD) == 0) {
+	if ((radio->registers[STATUS] & STATUS_STD) == 0)
 		dev_info(&radio->videodev->dev, "tune does not complete\n");
-		retval = rtc6213n_get_all_registers(radio);
-		for (i = 0; i < RADIO_REGISTER_NUM; i++)
-			dev_info(&radio->videodev->dev, "radio->registers[%d] 0x%4.4hx", i, radio->registers[i]);
-	}
-
-	if (timed_out) {
+	if (timed_out)
 		dev_info(&radio->videodev->dev, "tune timed out after %u ms\n",
 			tune_timeout);
-		retval = rtc6213n_get_all_registers(radio);
-		for (i = 0; i < RADIO_REGISTER_NUM; i++)
-			dev_info(&radio->videodev->dev, "radio->registers[%d] 0x%4.4hx", i, radio->registers[i]);
-	}
 
 stop:
 	/* stop tuning */
@@ -161,13 +149,15 @@ stop:
 	}
 
 	retval = rtc6213n_get_register(radio, STATUS);
+	if (retval < 0)
+		goto done;
 
 done:
 	dev_info(&radio->videodev->dev, "rtc6213n_set_chans is done\n");
 	dev_info(&radio->videodev->dev, "CHANNEL=0x%4.4hx SEEKCFG1=0x%4.4hx STATUS=0x%4.4hx\n",
 		radio->registers[CHANNEL], radio->registers[SEEKCFG1],
 		radio->registers[STATUS]);
-	dev_info(&radio->videodev->dev, "========= %s End ==========\n", __func__);
+	dev_info(&radio->videodev->dev, "========= rtc6213n_set_chan End ==========\n");
 
 	return retval;
 }
@@ -216,7 +206,7 @@ stop:
 
 	chan = radio->registers[STATUS] & STATUS_READCH;
 
-	dev_info(&radio->videodev->dev, "%s is done\n", __func__);
+	dev_info(&radio->videodev->dev, "rtc6213n_get_freq is done\n");
 	dev_info(&radio->videodev->dev, "CHANNEL=0x%4.4hx SEEKCFG1=0x%4.4hx STATUS=0x%4.4hx\n",
 		radio->registers[CHANNEL], radio->registers[SEEKCFG1],
 		radio->registers[STATUS]);
@@ -224,8 +214,8 @@ stop:
 
 	/* Frequency (MHz) = Spacing (kHz) x Channel + Bottom of Band (MHz) */
 	*freq = chan * spacing + band_bottom;
-	dev_info(&radio->videodev->dev, "%s is done1 : band_bottom=%d, spacing=%d, chan=%d, freq=%d\n",
-		__func__, band_bottom, spacing, chan, *freq);
+	dev_info(&radio->videodev->dev, "rtc6213n_get_freq is done1 : band_bottom=%d, spacing=%d, chan=%d, freq=%d\n",
+		band_bottom, spacing, chan, *freq);
 
 	return retval;
 }
@@ -284,7 +274,6 @@ static int rtc6213n_set_seek(struct rtc6213n_device *radio,
 	int retval = 0;
 	unsigned long timeout;
 	bool timed_out = 0;
-	int i;
 	unsigned short seekcfg1_val = radio->registers[SEEKCFG1];
 
 	dev_info(&radio->videodev->dev, "========= rtc6213n_set_seek ==========\n");
@@ -320,18 +309,18 @@ static int rtc6213n_set_seek(struct rtc6213n_device *radio,
 
 	/* currently I2C driver only uses interrupt way to seek */
 	if (radio->stci_enabled) {
-		rtc6213n_wq_flag = SEEK_WAITING;
-		wait();
-		if (rtc6213n_wq_flag == SEEK_CANCEL) {
-			dev_info(&radio->videodev->dev, "rtc6213n_set_seek : SEEK_CANCEL %d\n",
-				rtc6213n_wq_flag);
-			radio->registers[SEEKCFG1] &= ~SEEKCFG1_CSR0_SEEK;
-			retval = rtc6213n_set_register(radio, SEEKCFG1);
-			if (retval < 0)
-				radio->registers[SEEKCFG1] = seekcfg1_val;
-		}
+	rtc6213n_wq_flag = SEEK_WAITING;
+	wait();
+	if (rtc6213n_wq_flag == SEEK_CANCEL) {
+		dev_info(&radio->videodev->dev, "rtc6213n_set_seek : SEEK_CANCEL %d\n",
+			rtc6213n_wq_flag);
+		radio->registers[SEEKCFG1] &= ~SEEKCFG1_CSR0_SEEK;
+		retval = rtc6213n_set_register(radio, SEEKCFG1);
+		if (retval < 0)
+			radio->registers[SEEKCFG1] = seekcfg1_val;
+	}
 
-		rtc6213n_wq_flag = NO_WAIT;
+	rtc6213n_wq_flag = NO_WAIT;
 	} else	{
 		/* wait till seek operation has completed */
 		timeout = jiffies + msecs_to_jiffies(seek_timeout);
@@ -351,20 +340,12 @@ static int rtc6213n_set_seek(struct rtc6213n_device *radio,
 		(radio->registers[STATUS] & STATUS_SF) >> 13,
 		(radio->registers[RSSI] & RSSI_RSSI));
 
-	if ((radio->registers[STATUS] & STATUS_STD) == 0) {
+	if ((radio->registers[STATUS] & STATUS_STD) == 0)
 		dev_info(&radio->videodev->dev, "seek does not complete\n");
-		retval = rtc6213n_get_all_registers(radio);
-		for (i = 0; i < RADIO_REGISTER_NUM; i++)
-			dev_info(&radio->videodev->dev, "radio->registers[%d] 0x%4.4hx", i, radio->registers[i]);
-	}
 
-	if (timed_out) {
+	if (timed_out)
 		dev_info(&radio->videodev->dev, "seek timed out after %u ms\n",
 			seek_timeout);
-		retval = rtc6213n_get_all_registers(radio);
-		for (i = 0; i < RADIO_REGISTER_NUM; i++)
-			dev_info(&radio->videodev->dev, "radio->registers[%d] 0x%4.4hx", i, radio->registers[i]);
-	}
 
 stop:
 	/* stop seeking : clear STD*/
@@ -420,12 +401,11 @@ int rtc6213n_start(struct rtc6213n_device *radio)
 		0xC018, 0x7F80, 0x3C08, 0xB6CF, 0x8100, 0x0000, 0x0140,
 		0x4700, 0x0000};
     /* Modified Register */
-	/* u16 swbk5[] = {
-	 *	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7000, 0x6000,
-	 *	0x3590, 0x6311, 0x3008, 0x0019, 0x0D79, 0x7D2F, 0x8000,
-	 *	0x02A1, 0x771F, 0x3241, 0x2635, 0x2516, 0x3614, 0x0000,
-	 *	0x0000, 0x0000};
-	 */
+	/*u16 swbk5[] = {
+		0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7000, 0x6000,
+		0x3590, 0x6311, 0x3008, 0x0019, 0x0D79, 0x7D2F, 0x8000,
+		0x02A1, 0x771F, 0x3241, 0x2635, 0x2516, 0x3614, 0x0000,
+		0x0000, 0x0000};*/
 	u16 swbk5[] = {
 		0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7000, 0x6000,
 		0x3590, 0x6311, 0x3008, 0x0019, 0x0D79, 0x7D2F, 0x8000,
@@ -458,24 +438,14 @@ int rtc6213n_start(struct rtc6213n_device *radio)
 	if (retval < 0)	{
 		dev_info(&radio->videodev->dev, "RTC6213n_start1 : retval = %d\n",
 		retval);
-		/* goto done;*/
 	}
 	msleep(30);
 
 	/* Don't read all between writing 0x16AA and 0x96AA */
-	i2c_error = 0;
 	radio->registers[DEVICEID] = 0x96AA;
 	retval = rtc6213n_set_register(radio, DEVICEID);
-	/* recheck TH : 10 */
-	while ((retval < 0) && (i2c_error < 10)) {
-		retval = rtc6213n_set_register(radio, DEVICEID);
-		i2c_error++;
-	}
-
-	if (retval < 0) {
-		dev_info(&radio->videodev->dev, "RTC6213n_start2 : retval = %d\n",
-		retval);
-	}
+	if (retval < 0)
+		goto done;
 	msleep(30);
 
 	/* get device and chip versions */
@@ -769,8 +739,7 @@ static int rtc6213n_vidioc_g_ctrl(struct file *file, void *priv,
 		break;
 	case V4L2_CID_PRIVATE_CSR0_OFSTH:
 		rtc6213n_get_all_registers(radio);
-		ctrl->value = ((radio->registers[SEEKCFG2] &
-			SEEKCFG2_CSR0_OFSTH) >> 8);
+		ctrl->value = ((radio->registers[SEEKCFG2] & SEEKCFG2_CSR0_OFSTH) >> 8);
 		dev_info(&radio->videodev->dev, "Get V4L2_CONTROL V4L2_CID_PRIVATE_CSR0_OFSTH : SEEKCFG2=0x%4.4hx\n",
 			radio->registers[SEEKCFG2]);
 		break;
@@ -795,148 +764,6 @@ done:
 	return retval;
 }
 
-int rtc6213n_set_vol(struct rtc6213n_device *radio, int db)
-{
-	int i;
-	int retval = -EINVAL;
-	u16 swbk7[] = {
-		0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7000, 0xE000,
-		0x11A2, 0x0F92, 0x0000, 0x0000, 0x0000, 0x0000, 0x801D,
-		0x0000, 0x0000, 0x0072, 0x00FF, 0x001F, 0x03FF, 0x16D1,
-		0x13B7, 0x0000};
-
-	/*	First read all from bank0 */
-	if (rtc6213n_get_all_registers(radio) < 0) {
-		retval = -EIO;
-		goto done;
-	}
-
-	radio->registers[POWERCFG] = (db < -24) ?
-		((db == -26) || (db == -28) ?
-			(radio->registers[POWERCFG] & 0xFFF7) :
-			(radio->registers[POWERCFG] | 0x0008)) :
-		(radio->registers[POWERCFG] & 0xFFF7);
-	if ((db == -25) || (db == -27) || (db == -29))
-		retval = rtc6213n_set_register(radio, POWERCFG);
-
-	/* clear bits[15:14] of bank7/addr0x6 */
-	swbk7[20] &= 0x3FFF;
-
-	if ((db > -25) && (db < -2))
-		swbk7[20] |= ((db + 24) % 2) ? 0x4000 : 0x0000;
-
-	/* Copy the values of bank0/addr0x2 - bank0/addr0x6 to bank7 array */
-	for (i = 0; i < 6; i++)
-		swbk7[i] = radio->registers[i+2];
-
-	radio->registers[MPXCFG] &= 0xFFF0;
-	switch (db) {
-	case 0:
-		radio->registers[MPXCFG] |= 0xF; break;
-	case -1:
-	case -2:
-		radio->registers[MPXCFG] |= 0xE; break;
-	case -3:
-		radio->registers[MPXCFG] |= 0xC; break;
-	case -4:
-		radio->registers[MPXCFG] |= 0xD; break;
-	case -5:
-		radio->registers[MPXCFG] |= 0xB; break;
-	case -6:
-		radio->registers[MPXCFG] |= 0xC; break;
-	case -7:
-		radio->registers[MPXCFG] |= 0xA; break;
-	case -8:
-		radio->registers[MPXCFG] |= 0xB; break;
-	case -9:
-		radio->registers[MPXCFG] |= 0x9; break;
-	case -10:
-		radio->registers[MPXCFG] |= 0xA; break;
-	case -11:
-		radio->registers[MPXCFG] |= 0x8; break;
-	case -12:
-		radio->registers[MPXCFG] |= 0x9; break;
-	case -13:
-		radio->registers[MPXCFG] |= 0x7; break;
-	case -14:
-		radio->registers[MPXCFG] |= 0x8; break;
-	case -15:
-		radio->registers[MPXCFG] |= 0x6; break;
-	case -16:
-		radio->registers[MPXCFG] |= 0x7; break;
-	case -17:
-		radio->registers[MPXCFG] |= 0x5; break;
-	case -18:
-		radio->registers[MPXCFG] |= 0x6; break;
-	case -19:
-		radio->registers[MPXCFG] |= 0x4; break;
-	case -20:
-		radio->registers[MPXCFG] |= 0x5; break;
-	case -21:
-		radio->registers[MPXCFG] |= 0x3; break;
-	case -22:
-		radio->registers[MPXCFG] |= 0x4; break;
-	case -23:
-		radio->registers[MPXCFG] |= 0x2; break;
-	case -24:
-		radio->registers[MPXCFG] |= 0x3; break;
-	case -25:
-		radio->registers[MPXCFG] |= 0xA; break;
-	case -26:
-		radio->registers[MPXCFG] |= 0x2; break;
-	case -27:
-		radio->registers[MPXCFG] |= 0x9; break;
-	case -28:
-		radio->registers[MPXCFG] |= 0x1; break;
-	case -29:
-		radio->registers[MPXCFG] |= 0x8; break;
-	case -30:
-	case -31:
-		radio->registers[MPXCFG] |= 0x7; break;
-	case -32:
-	case -33:
-		radio->registers[MPXCFG] |= 0x6; break;
-	case -34:
-	case -35:
-		radio->registers[MPXCFG] |= 0x5; break;
-	case -36:
-	case -37:
-		radio->registers[MPXCFG] |= 0x4; break;
-	case -38:
-	case -39:
-		radio->registers[MPXCFG] |= 0x3; break;
-	case -40:
-	case -41:
-		radio->registers[MPXCFG] |= 0x2; break;
-	case -42:
-	case -43:
-		radio->registers[MPXCFG] |= 0x1; break;
-	case -44:
-		radio->registers[MPXCFG] |= 0x0; break;
-	/* Wrong db, set to level 7 */
-	default:
-		radio->registers[MPXCFG] |= 0x0; break;
-	}
-
-	g_current_vol = (int)(radio->registers[MPXCFG] & 0x000F);
-	if ((g_current_vol - g_previous_vol) > 2)
-		retval = rtc6213n_set_serial_registers(radio, swbk7, 23);
-
-	g_previous_vol = g_current_vol;
-
-	dev_info(&radio->videodev->dev,
-		"set db=%d reg0_2=0x%4.4hx reg0_6=0x%4.4hx reg7_6=0x%4.4hx\n",
-		db, radio->registers[MPXCFG],
-		radio->registers[POWERCFG], swbk7[20]);
-
-	swbk7[0] = radio->registers[MPXCFG];
-
-	/* Write values of swbk7 array to rtc6213n */
-	retval = rtc6213n_set_serial_registers(radio, swbk7, 23);
-
-done:
-	return retval;
-}
 
 /*
  * rtc6213n_vidioc_s_ctrl - set the value of a control
@@ -947,38 +774,35 @@ static int rtc6213n_vidioc_s_ctrl(struct file *file, void *priv,
 	struct rtc6213n_device *radio = video_drvdata(file);
 	int retval = 0;
 
-	mutex_lock(&radio->lock);
+	/* mutex_lock(&radio->lock); */
 
 	/* safety checks */
 	retval = rtc6213n_disconnect_check(radio);
 	if (retval)
 		goto done;
 
-	dev_info(&radio->videodev->dev, "========= Set V4L2_CONTROL [0x%x]==========\n", ctrl->id);
+	dev_info(&radio->videodev->dev, "========= Get V4L2_CONTROL ==========\n");
 
 	switch (ctrl->id) {
 	case V4L2_CID_AUDIO_VOLUME:
 		dev_info(&radio->videodev->dev, "V4L2_CID_AUDIO_VOLUME : MPXCFG=0x%4.4hx POWERCFG=0x%4.4hx\n",
 			radio->registers[MPXCFG], radio->registers[POWERCFG]);
 	#ifdef New_VolumeControl
-		/* Volume Setting No1 - 20160714 */
 		global_volume = ctrl->value;
-		if (radio->vol_db)
-			retval = rtc6213n_set_vol(radio, radio->rx_vol[ctrl->value]);
-		else {
-			radio->registers[POWERCFG] = (ctrl->value < 9) ? (radio->registers[POWERCFG] | 0x0008) :
-				(radio->registers[POWERCFG] & 0xFFF7);
-			if (ctrl->value == 8)
-				retval = rtc6213n_set_register(radio, POWERCFG);
 
-			radio->registers[MPXCFG] &= ~MPXCFG_CSR0_VOLUME;
-			radio->registers[MPXCFG] |=
-				(ctrl->value < 9) ? ((ctrl->value == 0) ? 0 : (2*ctrl->value - 1)) : ctrl->value;
-
-			dev_info(&radio->videodev->dev, "V4L2_CID_AUDIO_VOLUME No1: MPXCFG=0x%4.4hx POWERCFG=0x%4.4hx\n",
-				radio->registers[MPXCFG], radio->registers[POWERCFG]);
+		radio->registers[POWERCFG] = (ctrl->value < 9) ? (radio->registers[POWERCFG] | 0x0008) : 
+			(radio->registers[POWERCFG] & 0xFFF7);
+		if(ctrl->value == 8)
 			retval = rtc6213n_set_register(radio, POWERCFG);
-		}
+
+		radio->registers[MPXCFG] &= ~MPXCFG_CSR0_VOLUME;
+		radio->registers[MPXCFG] |=
+			(ctrl->value < 9) ? ((ctrl->value == 0) ? 0 : (2*ctrl->value -1)) : ctrl->value;
+
+		dev_info(&radio->videodev->dev, "V4L2_CID_AUDIO_VOLUME : MPXCFG=0x%4.4hx POWERCFG=0x%4.4hx\n",
+			radio->registers[MPXCFG], radio->registers[POWERCFG]);
+		retval = rtc6213n_set_register(radio, POWERCFG);
+			
 	#else
 		radio->registers[MPXCFG] &= ~MPXCFG_CSR0_VOLUME;
 		radio->registers[MPXCFG] |=
@@ -1009,7 +833,7 @@ static int rtc6213n_vidioc_s_ctrl(struct file *file, void *priv,
 		if (ctrl->value == 1)
 			radio->registers[MPXCFG] |= MPXCFG_CSR0_DEEM;
 		else
-			radio->registers[MPXCFG] &= ~MPXCFG_CSR0_DEEM;
+		radio->registers[MPXCFG] &= ~MPXCFG_CSR0_DEEM;
 		retval = rtc6213n_set_register(radio, MPXCFG);
 		break;
 	case V4L2_CID_PRIVATE_CSR0_BAND:
@@ -1045,10 +869,11 @@ static int rtc6213n_vidioc_s_ctrl(struct file *file, void *priv,
 		if (rtc6213n_wq_flag == SEEK_WAITING) {
 			rtc6213n_wq_flag = SEEK_CANCEL;
 			wake_up_interruptible(&rtc6213n_wq);
-			dev_info(&radio->videodev->dev, "V4L2_CID_PRIVATE_SEEK_CANCEL : sent SEEK_CANCEL signal\n");
+			dev_info(&radio->videodev->dev, "V4L2_CID_PRIVATE_SEEK_CANCEL : sent SEEK_CANCEL signal");
 		}
 		dev_info(&radio->videodev->dev, "V4L2_CID_PRIVATE_SEEK_CANCEL : MPXCFG=0x%4.4hx SEEKCFG1=0x%4.4hx\n",
 			radio->registers[MPXCFG], radio->registers[SEEKCFG1]);
+
 		break;
 	case V4L2_CID_PRIVATE_CSR0_SEEKRSSITH:
 		dev_info(&radio->videodev->dev, "V4L2_CID_PRIVATE_CSR0_SEEKRSSITH : MPXCFG=0x%4.4hx SEEKCFG1=0x%4.4hx\n",
@@ -1080,17 +905,15 @@ static int rtc6213n_vidioc_s_ctrl(struct file *file, void *priv,
 		retval = rtc6213n_set_register(radio, SEEKCFG2);
 		break;
 	default:
-		retval = -EINVAL;
-		break;
+	retval = -EINVAL;
 	}
 
 done:
 	if (retval < 0)
 		dev_warn(&radio->videodev->dev,
 		"set control failed with %d\n", retval);
-	dev_info(&radio->videodev->dev, "========= Set V4L2_CONTROL End [0x%x] =====\n", ctrl->id);
-
-	mutex_unlock(&radio->lock);
+	dev_info(&radio->videodev->dev, "========= Set V4L2_CONTROL End ==========\n\n");
+	/* mutex_unlock(&radio->lock); */
 	return retval;
 }
 
@@ -1109,6 +932,7 @@ static int rtc6213n_vidioc_g_audio(struct file *file, void *priv,
 
 	return 0;
 }
+
 
 /*
  * rtc6213n_vidioc_g_tuner - get tuner attributes
@@ -1170,9 +994,8 @@ static int rtc6213n_vidioc_g_tuner(struct file *file, void *priv,
 	else
 		tuner->rxsubchans = V4L2_TUNER_SUB_MONO | V4L2_TUNER_SUB_STEREO;
 	/* If there is a reliable method of detecting an RDS channel,
-	 *  then this code should check for that before setting this
-	 *  RDS subchannel.
-	 */
+	   then this code should check for that before setting this
+	   RDS subchannel. */
 	tuner->rxsubchans |= V4L2_TUNER_SUB_RDS;
 
 	/* mono/stereo selector */
@@ -1327,6 +1150,10 @@ static int rtc6213n_vidioc_s_frequency(struct file *file, void *priv,
 		goto done;
 	}
 
+	if (retval < 0)
+		dev_warn(&radio->videodev->dev, "Disable RDS failed with %d\n",
+			retval);
+
 	dev_warn(&radio->videodev->dev, "rtc6213n_vidioc_s_frequency freq = %d\n",
 		freq->frequency);
 	retval = rtc6213n_set_freq(radio, freq->frequency);
@@ -1335,6 +1162,10 @@ done:
 	if (retval < 0)
 		dev_warn(&radio->videodev->dev,
 			"set frequency failed with %d\n", retval);
+
+	if (retval < 0)
+		dev_warn(&radio->videodev->dev, "Enable RDS failed with %d\n",
+			retval);
 
 	mutex_unlock(&radio->lock);
 	return retval;
@@ -1355,7 +1186,7 @@ static int rtc6213n_vidioc_s_hw_freq_seek(struct file *file, void *priv,
 		radio->registers[MPXCFG], radio->registers[CHANNEL],
 		radio->registers[SEEKCFG1]);
 
-	/* safety checks */
+    /* safety checks */
 	retval = rtc6213n_disconnect_check(radio);
 	if (retval)
 		goto done;

@@ -1,7 +1,6 @@
 #include <linux/device.h>
 
 #include <linux/notifier.h>
-#include <linux/sec_sysfs.h>
 #include <linux/vbus_notifier.h>
 
 #define SET_VBUS_NOTIFIER_BLOCK(nb, fn, dev) do {	\

@@ -27,7 +27,7 @@
 #include <linux/gpio.h>
 #include <linux/mfd/max77833.h>
 #include <linux/mfd/max77833-private.h>
-
+//#include <plat/gpio-cfg.h>
 
 static const u8 max77833_mask_reg[] = {
 	/* TODO: Need to check other INTMASK */
@@ -63,6 +63,7 @@ struct max77833_irq_data {
 
 #define DECLARE_IRQ(idx, _group, _mask)		\
 	[(idx)] = { .group = (_group), .mask = (_mask) }
+
 static const struct max77833_irq_data max77833_irqs[] = {
 	DECLARE_IRQ(MAX77833_SYSTEM_IRQ_T100C_INT,	TOP_INT, 1 << 0),
 	DECLARE_IRQ(MAX77833_SYSTEM_IRQ_T120C_INT,	TOP_INT, 1 << 1),
@@ -176,9 +177,6 @@ static irqreturn_t max77833_irq_thread(int irq, void *data)
 	u8 irq_src;
 	int i, ret;
 
-	pr_info("%s: irq gpio pre-state(0x%02x)\n", __func__,
-				gpio_get_value(max77833->irq_gpio));
-
 	ret = max77833_read_reg(max77833->i2c,
 					MAX77833_PMIC_REG_INTSRC, &irq_src);
 	if (ret) {
@@ -187,14 +185,10 @@ static irqreturn_t max77833_irq_thread(int irq, void *data)
 		return IRQ_NONE;
 	}
 
-	pr_info("%s: interrupt source(0x%02x)\n", __func__, irq_src);
-
 	if (irq_src & MAX77833_IRQSRC_CHG) {
 		/* CHG_INT */
 		ret = max77833_read_reg(max77833->i2c, MAX77833_CHG_REG_INT,
 					&irq_reg[CHG_INT]);
-		pr_info("%s: charger interrupt(0x%02x)\n",
-				__func__, irq_reg[CHG_INT]);
 		/* mask chgin to prevent chgin infinite interrupt
 		 * chgin is unmasked chgin isr
 		 */
@@ -223,7 +217,6 @@ static irqreturn_t max77833_irq_thread(int irq, void *data)
 		/* TOP_INT */
 		ret = max77833_read_reg(max77833->i2c, MAX77833_PMIC_REG_SYSTEM_INT,
 				&irq_reg[TOP_INT]);
-		pr_info("%s: topsys interrupt(0x%02x)\n", __func__, irq_reg[TOP_INT]);
 	}
 
 	if (irq_src & MAX77833_IRQSRC_MUIC) {
@@ -248,14 +241,9 @@ static irqreturn_t max77833_irq_thread(int irq, void *data)
 		for (i = MUIC_INT1; i <= MUIC_MAX_INT; i++)
 			irq_reg[i] |= tmp_irq_reg[i];
 
-		pr_info("%s: muic interrupt(0x%02x, 0x%02x, 0x%02x)\n", __func__,
-			irq_reg[MUIC_INT1], irq_reg[MUIC_INT2], irq_reg[MUIC_INT3]);
-
 		/* for debug */
 		if ((irq_reg[MUIC_INT1] == 0) && (irq_reg[MUIC_INT2] == 0)
 				&& (irq_reg[MUIC_INT3] == 0)) {
-			pr_info("%s: irq gpio post-state(0x%02x)\n", __func__,
-				gpio_get_value(max77833->irq_gpio));
 			if (check_num >= 15) {
 				max77833_muic_read_register(max77833->muic);
 				panic("max77833 muic interrupt gpio Err!\n");

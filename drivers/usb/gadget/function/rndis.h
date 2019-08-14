@@ -16,6 +16,7 @@
 #define _LINUX_RNDIS_H
 
 #include <linux/rndis.h>
+#include "u_ether.h"
 #include "ndis.h"
 
 #define RNDIS_MAXIMUM_FRAME_SIZE	1518
@@ -189,28 +190,34 @@ typedef struct rndis_params
 	struct net_device	*dev;
 
 	u32			vendorID;
-#ifdef CONFIG_USB_RNDIS_MULTIPACKET
 	u8			max_pkt_per_xfer;
 	u8			pkt_alignment_factor;
-#endif
 	const char		*vendorDescr;
 	void			(*resp_avail)(void *v);
+	void			(*flow_ctrl_enable)(bool enable);
+
 	void			*v;
 	struct list_head	resp_queue;
+	spinlock_t		lock;
+	u32			host_rndis_major_ver;
+	u32			host_rndis_minor_ver;
+	u32			ul_max_xfer_size;
+	u32			dl_max_xfer_size;
 } rndis_params;
 
 /* RNDIS Message parser and other useless functions */
 int  rndis_msg_parser (u8 configNr, u8 *buf);
-int  rndis_register(void (*resp_avail)(void *v), void *v);
+int  rndis_register(void (*resp_avail)(void *v), void *v,
+	void (*flow_ctrl_enable)(bool enable));
 void rndis_deregister (int configNr);
 int  rndis_set_param_dev (u8 configNr, struct net_device *dev,
 			 u16 *cdc_filter);
 int  rndis_set_param_vendor (u8 configNr, u32 vendorID,
 			    const char *vendorDescr);
 int  rndis_set_param_medium (u8 configNr, u32 medium, u32 speed);
-#ifdef CONFIG_USB_RNDIS_MULTIPACKET
 void rndis_set_max_pkt_xfer(u8 configNr, u8 max_pkt_per_xfer);
-#endif
+u32  rndis_get_ul_max_xfer_size(u8 configNr);
+u32  rndis_get_dl_max_xfer_size(u8 configNr);
 void rndis_add_hdr (struct sk_buff *skb);
 int rndis_rm_hdr(struct gether *port, struct sk_buff *skb,
 			struct sk_buff_head *list);
@@ -222,8 +229,6 @@ int  rndis_signal_connect (int configNr);
 int  rndis_signal_disconnect (int configNr);
 int  rndis_state (int configNr);
 extern void rndis_set_host_mac (int configNr, const u8 *addr);
-
-int rndis_init(void);
-void rndis_exit (void);
+void rndis_flow_control(u8 confignr, bool enable_flow_control);
 
 #endif  /* _LINUX_RNDIS_H */

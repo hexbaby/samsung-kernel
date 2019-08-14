@@ -21,6 +21,7 @@
 const char *usb_otg_state_string(enum usb_otg_state state)
 {
 	static const char *const names[] = {
+		[OTG_STATE_UNDEFINED] = "undefined",
 		[OTG_STATE_A_IDLE] = "a_idle",
 		[OTG_STATE_A_WAIT_VRISE] = "a_wait_vrise",
 		[OTG_STATE_A_WAIT_BCON] = "a_wait_bcon",
@@ -32,8 +33,10 @@ const char *usb_otg_state_string(enum usb_otg_state state)
 		[OTG_STATE_B_IDLE] = "b_idle",
 		[OTG_STATE_B_SRP_INIT] = "b_srp_init",
 		[OTG_STATE_B_PERIPHERAL] = "b_peripheral",
+		[OTG_STATE_B_CHARGER] = "b_charger",
 		[OTG_STATE_B_WAIT_ACON] = "b_wait_acon",
 		[OTG_STATE_B_HOST] = "b_host",
+		[OTG_STATE_B_SUSPEND] = "b_suspend",
 	};
 
 	if (state < 0 || state >= ARRAY_SIZE(names))
@@ -88,26 +91,6 @@ static const char *const usb_dr_modes[] = {
 	[USB_DR_MODE_PERIPHERAL]	= "peripheral",
 	[USB_DR_MODE_OTG]		= "otg",
 };
-
-/**
- * of_usb_get_suspend_clk_freq - Get suspend clock frequency
- *
- * USB3 core needs 16KHz clock for a small part that operates
- * when the SS PHY is in its lowest power (P3) state.
- * USB3 core receives suspend clock and divides it to make 16KHz clock.
- */
-unsigned int of_usb_get_suspend_clk_freq(struct device_node *np)
-{
-	unsigned int freq;
-	int err;
-
-	err = of_property_read_u32(np, "suspend_clk_freq", &freq);
-	if (err < 0)
-		return 0;
-
-	return freq;
-}
-EXPORT_SYMBOL_GPL(of_usb_get_suspend_clk_freq);
 
 /**
  * of_usb_get_dr_mode - Get dual role mode for given device_node

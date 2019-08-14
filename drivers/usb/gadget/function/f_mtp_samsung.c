@@ -51,8 +51,9 @@
 #include <linux/usb/f_accessory.h>
 #include <asm-generic/siginfo.h>
 #include <linux/kernel.h>
-#include "f_mtp.h"
+#include "f_mtp_samsung.h"
 #include "gadget_chips.h"
+#include <linux/file.h>
 
 /*-------------------------------------------------------------------------*/
 /*Only for Debug*/
@@ -96,14 +97,12 @@
 #define MTPG_INTR_BUFFER_SIZE	28
 
 /* number of rx and tx requests to allocate */
-#define MTPG_RX_REQ_MAX				8
+#define MTPG_RX_REQ_MAX			8
 #define MTPG_MTPG_TX_REQ_MAX		8
 #define MTPG_INTR_REQ_MAX	5
 
 /* ID for Microsoft MTP OS String */
 #define MTPG_OS_STRING_ID   0xEE
-
-#define INTR_BUFFER_SIZE           28
 
 #define DRIVER_NAME		 "usb_mtp_gadget"
 
@@ -327,7 +326,6 @@ static struct usb_descriptor_header *hs_mtpg_desc[] = {
 	NULL
 };
 
-
 static struct usb_descriptor_header *ss_ptpg_descs[] = {
 	(struct usb_descriptor_header *) &ptp_interface_desc,
 	(struct usb_descriptor_header *) &mtpg_superspeed_in_desc,
@@ -339,7 +337,6 @@ static struct usb_descriptor_header *ss_ptpg_descs[] = {
 	(struct usb_descriptor_header *) &mtp_avd_descriptor,
 	NULL,
 };
-
 
 static struct usb_descriptor_header *fs_ptp_descs[] = {
 	(struct usb_descriptor_header *) &ptp_interface_desc,
@@ -433,6 +430,7 @@ struct {
 	},
 };
 
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 /* Function  : Change config for multi configuration
  * Parameter : int conf_num (config number)
  *             0 - use mtp only without Samsung USB Driver
@@ -466,6 +464,7 @@ static int mtp_set_config_desc(int conf_num)
 	}
 	return 1;
 }
+#endif
 
 /* -------------------------------------------------------------------------
  *	Main Functionalities Start!
@@ -828,12 +827,7 @@ static ssize_t mtpg_write(struct file *fp, const char __user *buf,
 					 __func__, __LINE__, r);
 	return r;
 }
-/*
-static void interrupt_complete(struct usb_ep *ep, struct usb_request *req)
-{
-	printk(KERN_DEBUG "Finished Writing Interrupt Data\n");
-}
-*/
+
 static ssize_t interrupt_write(struct file *fd,
 			struct mtp_event *event, size_t count)
 {
@@ -875,6 +869,7 @@ static ssize_t interrupt_write(struct file *fd,
 						__func__, __LINE__, ret);
 	return ret;
 }
+
 static void mtp_complete_ep0_transection(struct usb_ep *ep, struct usb_request *req)
 {
 	if (req->status || req->actual != req->length) {
@@ -886,7 +881,6 @@ static void read_send_work(struct work_struct *work)
 {
 	struct mtpg_dev	*dev = container_of(work, struct mtpg_dev,
 							read_send_work);
-	//struct usb_composite_dev *cdev = dev->cdev;
 	struct usb_request *req = 0;
 	struct usb_container_header *hdr;
 	struct file *file;
@@ -1026,7 +1020,7 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 			usb_gadget_disconnect(cdev->gadget);
 			printk(KERN_DEBUG "[%s:%d] B4 disconectng gadget\n",
 							__func__, __LINE__);
-			msleep(400);
+			msleep(20);
 			usb_gadget_connect(cdev->gadget);
 			printk(KERN_DEBUG "[%s:%d] after usb_gadget_connect\n",
 							__func__, __LINE__);
@@ -1157,7 +1151,10 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 		max_pkt = dev->bulk_in->maxpacket;
 		printk(KERN_DEBUG "[%s] line = %d max_pkt = [%d]\n",
 						 __func__, __LINE__, max_pkt);
-		status = max_pkt;
+		if (max_pkt == 64)
+			status = 64;
+		else
+			status = 512;
 		break;
 	case SEND_FILE_WITH_HEADER:
 	{
@@ -1248,7 +1245,9 @@ static struct miscdevice mtpg_device = {
 	.fops = &mtpg_fops,
 };
 
-struct usb_request *mtp_alloc_ep_req(struct usb_ep *ep,
+// Due to the duplicated definition in u_f.c, we will remove it.
+#if 0
+struct usb_request *alloc_ep_req(struct usb_ep *ep,
 			unsigned len, gfp_t kmalloc_flags)
 {
 	struct usb_request	*req;
@@ -1265,6 +1264,7 @@ struct usb_request *mtp_alloc_ep_req(struct usb_ep *ep,
 	}
 	return req;
 }
+#endif
 
 static void mtpg_request_free(struct usb_request *req, struct usb_ep *ep)
 {
@@ -1502,9 +1502,6 @@ static int mtpg_function_set_alt(struct usb_function *f,
 	}
 	dev->int_in->driver_data = dev;
 
-	if (dev->bulk_in->driver_data)
-		usb_ep_disable(dev->bulk_in);
-
 	ret = config_ep_by_speed(cdev->gadget, f, dev->bulk_in);
 	if (ret) {
 		dev->bulk_in->desc = NULL;
@@ -1519,9 +1516,6 @@ static int mtpg_function_set_alt(struct usb_function *f,
 		return ret;
 	}
 	dev->bulk_in->driver_data = dev;
-
-	if (dev->bulk_out->driver_data)
-		usb_ep_disable(dev->bulk_out);
 
 	ret = config_ep_by_speed(cdev->gadget, f, dev->bulk_out);
 	if (ret) {

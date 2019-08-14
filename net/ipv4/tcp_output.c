@@ -58,8 +58,8 @@ int sysctl_tcp_retrans_collapse __read_mostly = 1;
  */
 int sysctl_tcp_workaround_signed_windows __read_mostly = 0;
 
-/* Default TSQ limit of two TSO segments */
-//int sysctl_tcp_limit_output_bytes __read_mostly = 131072;     // default 128KB
+/* Default TSQ limit of four TSO segments */
+//int sysctl_tcp_limit_output_bytes __read_mostly = 262144;     //default 256KB
 int sysctl_tcp_limit_output_bytes __read_mostly = 4194304;     // 4MB, For_WiFi_Throughput_enhancement
 
 /* This limits the percentage of the congestion window which we
@@ -320,7 +320,6 @@ u16 tcp_select_window(struct sock *sk)
 				      LINUX_MIB_TCPWANTZEROWINDOWADV);
 		new_win = ALIGN(cur_win, 1 << tp->rx_opt.rcv_wscale);
 	}
-
 	tp->rcv_wnd = new_win;
 	tp->rcv_wup = tp->rcv_nxt;
 
@@ -1358,7 +1357,7 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 #ifndef CONFIG_MPTCP
 static 
 #endif
-int __pskb_trim_head(struct sk_buff *skb, int len)
+void __pskb_trim_head(struct sk_buff *skb, int len)
 {
 	struct skb_shared_info *shinfo;
 	int i, k, eat;
@@ -1368,7 +1367,7 @@ int __pskb_trim_head(struct sk_buff *skb, int len)
 		__skb_pull(skb, eat);
 		len -= eat;
 		if (!len)
-			return 0;
+			return;
 	}
 	eat = len;
 	k = 0;
@@ -1394,13 +1393,11 @@ int __pskb_trim_head(struct sk_buff *skb, int len)
 	skb_reset_tail_pointer(skb);
 	skb->data_len -= len;
 	skb->len = skb->data_len;
-	return len;
 }
 
 /* Remove acked data from a packet in the transmit queue. */
 int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 {
-	u32 delta_truesize;
 #ifdef CONFIG_MPTCP
 	if (mptcp(tcp_sk(sk)) && !is_meta_sk(sk) && mptcp_is_data_seq(skb))
 		return mptcp_trim_head(sk, skb, len);
@@ -1409,17 +1406,15 @@ int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 	if (skb_unclone(skb, GFP_ATOMIC))
 		return -ENOMEM;
 
-	delta_truesize = __pskb_trim_head(skb, len);
+	__pskb_trim_head(skb, len);
 
 	TCP_SKB_CB(skb)->seq += len;
 	skb->ip_summed = CHECKSUM_PARTIAL;
 
-	if (delta_truesize) {
-		skb->truesize	   -= delta_truesize;
-		sk->sk_wmem_queued -= delta_truesize;
-		sk_mem_uncharge(sk, delta_truesize);
-		sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
-	}
+	skb->truesize	     -= len;
+	sk->sk_wmem_queued   -= len;
+	sk_mem_uncharge(sk, len);
+	sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
 
 	/* Any change of skb->len requires recalculation of tso factor. */
 	if (tcp_skb_pcount(skb) > 1)
@@ -2065,19 +2060,16 @@ static int tcp_mtu_probe(struct sock *sk)
 	nskb->ip_summed = skb->ip_summed;
 
 	tcp_insert_write_queue_before(nskb, skb, sk);
-	tcp_highest_sack_replace(sk, skb, nskb);
 
 	len = 0;
 	tcp_for_write_queue_from_safe(skb, next, sk) {
 		copy = min_t(int, skb->len, probe_size - len);
-		if (nskb->ip_summed) {
+		if (nskb->ip_summed)
 			skb_copy_bits(skb, 0, skb_put(nskb, copy), copy);
-		} else {
-			__wsum csum = skb_copy_and_csum_bits(skb, 0,
-							     skb_put(nskb, copy),
-							     copy, 0);
-			nskb->csum = csum_block_add(nskb->csum, csum, len);
-		}
+		else
+			nskb->csum = skb_copy_and_csum_bits(skb, 0,
+							    skb_put(nskb, copy),
+							    copy, nskb->csum);
 
 		if (skb->len <= copy) {
 			/* We've eaten all the data from this skb.
@@ -2524,11 +2516,9 @@ u32 __tcp_select_window(struct sock *sk)
 	int full_space = min_t(int, tp->window_clamp, allowed_space);
 	int window;
 
-	if (unlikely(mss > full_space)) {
+	if (mss > full_space)
 		mss = full_space;
-		if (mss <= 0)
-			return 0;
-	}
+
 	if (free_space < (full_space >> 1)) {
 		icsk->icsk_ack.quick = 0;
 
@@ -2600,7 +2590,7 @@ static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 
 	BUG_ON(tcp_skb_pcount(skb) != 1 || tcp_skb_pcount(next_skb) != 1);
 
-	tcp_highest_sack_replace(sk, next_skb, skb);
+	tcp_highest_sack_combine(sk, next_skb, skb);
 
 	tcp_unlink_write_queue(next_skb, sk);
 
@@ -2720,8 +2710,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	 * copying overhead: fragmentation, tunneling, mangling etc.
 	 */
 	if (atomic_read(&sk->sk_wmem_alloc) >
-	    min_t(u32, sk->sk_wmem_queued + (sk->sk_wmem_queued >> 2),
-		  sk->sk_sndbuf))
+	    min(sk->sk_wmem_queued + (sk->sk_wmem_queued >> 2), sk->sk_sndbuf))
 		return -EAGAIN;
 
 	if (skb_still_in_host_queue(sk, skb))
@@ -2774,10 +2763,8 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	 */
 	if (unlikely((NET_IP_ALIGN && ((unsigned long)skb->data & 3)) ||
 		     skb_headroom(skb) >= 0xFFFF)) {
-		struct sk_buff *nskb;
-
-		skb_mstamp_get(&skb->skb_mstamp);
-		nskb = __pskb_copy(skb, MAX_TCP_HEADER, GFP_ATOMIC);
+		struct sk_buff *nskb = __pskb_copy(skb, MAX_TCP_HEADER,
+						   GFP_ATOMIC);
 		err = nskb ? tcp_transmit_skb(sk, nskb, 0, GFP_ATOMIC) :
 			     -ENOBUFS;
 	} else {
@@ -3142,8 +3129,13 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 	tcp_ecn_make_synack(req, th, sk);
 	th->source = htons(ireq->ir_num);
 	th->dest = ireq->ir_rmt_port;
-	skb->ip_summed = CHECKSUM_PARTIAL;
-	th->seq = htonl(tcp_rsk(req)->snt_isn);
+	/* Setting of flags are superfluous here for callers (and ECE is
+	 * not even correctly set)
+	 */
+	tcp_init_nondata_skb(skb, tcp_rsk(req)->snt_isn,
+			     TCPHDR_SYN | TCPHDR_ACK);
+
+	th->seq = htonl(TCP_SKB_CB(skb)->seq);
 	/* XXX data is queued and acked as is. No buffer/window check */
 	th->ack_seq = htonl(tcp_rsk(req)->rcv_nxt);
 
@@ -3392,9 +3384,6 @@ int tcp_connect(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *buff;
 	int err;
-
-	if (inet_csk(sk)->icsk_af_ops->rebuild_header(sk))
-		return -EHOSTUNREACH; /* Routing failure or similar. */
 
 	tcp_connect_init(sk);
 

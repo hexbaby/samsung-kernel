@@ -28,6 +28,8 @@
 
 #include "fault.h"
 
+#include <trace/events/exception.h>
+
 #ifdef CONFIG_MMU
 
 #ifdef CONFIG_KPROBES
@@ -163,6 +165,8 @@ __do_user_fault(struct task_struct *tsk, unsigned long addr,
 		struct pt_regs *regs)
 {
 	struct siginfo si;
+
+	trace_user_fault(tsk, addr, fsr);
 
 #ifdef CONFIG_DEBUG_USER
 	if (((user_debug & UDBG_SEGV) && (sig == SIGSEGV)) ||
@@ -315,11 +319,8 @@ retry:
 	 * signal first. We do not need to release the mmap_sem because
 	 * it would already be released in __lock_page_or_retry in
 	 * mm/filemap.c. */
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
-		if (!user_mode(regs))
-			goto no_context;
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return 0;
-	}
 
 	/*
 	 * Major/minor page fault accounting is only done on the
@@ -554,6 +555,8 @@ do_DataAbort(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	if (!inf->fn(addr, fsr & ~FSR_LNX_PF, regs))
 		return;
 
+	trace_unhandled_abort(regs, addr, fsr);
+
 	printk(KERN_ALERT "Unhandled fault: %s (0x%03x) at 0x%08lx\n",
 		inf->name, fsr, addr);
 
@@ -585,6 +588,8 @@ do_PrefetchAbort(unsigned long addr, unsigned int ifsr, struct pt_regs *regs)
 
 	if (!inf->fn(addr, ifsr | FSR_LNX_PF, regs))
 		return;
+
+	trace_unhandled_abort(regs, addr, ifsr);
 
 	printk(KERN_ALERT "Unhandled prefetch abort: %s (0x%03x) at 0x%08lx\n",
 		inf->name, ifsr, addr);

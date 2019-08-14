@@ -31,6 +31,7 @@
 #include <linux/power_supply.h>
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <linux/wakelock.h>
 
 /* definitions */
 #define	SEC_SIZEOF_POWER_SUPPLY_TYPE	POWER_SUPPLY_TYPE_MAX
@@ -207,6 +208,7 @@ enum sec_battery_wc_heat_state {
 	SEC_BATTERY_WC_HEAT_NONE = 0, /* (9V, 1A), (9V, 600mA) */
 	SEC_BATTERY_WC_HEAT_HIGH, /* (5V, 400mA) */
 };
+
 struct sec_bat_adc_api {
 	bool (*init)(struct platform_device *);
 	bool (*exit)(void);
@@ -495,7 +497,7 @@ struct sec_charging_current {
 
 #if defined(CONFIG_BATTERY_AGE_FORECAST)
 struct sec_age_data {
-	int cycle;
+	unsigned int cycle;
 	unsigned int float_voltage;
 	unsigned int recharge_condition_vcell;
 	unsigned int full_condition_vcell;
@@ -505,11 +507,6 @@ struct sec_age_data {
 #define sec_age_data_t \
 	struct sec_age_data
 #endif
-
-typedef struct {
-	unsigned int cycle;
-	unsigned int asoc;
-} battery_health_condition;
 
 struct sec_battery_platform_data {
 	/* NO NEED TO BE CHANGED */
@@ -568,7 +565,7 @@ struct sec_battery_platform_data {
 	/* 1 : active high, 0 : active low */
 	int bat_polarity_ta_nconnected;
 	int bat_irq;
-	int bat_irq_gpio;
+	int bat_irq_gpio; /* BATT_INT(BAT_ID detecting) */
 	unsigned long bat_irq_attr;
 	int jig_irq;
 	unsigned long jig_irq_attr;
@@ -585,15 +582,12 @@ struct sec_battery_platform_data {
 	/* battery swelling */
 	int swelling_high_temp_block;
 	int swelling_high_temp_recov;
-	int swelling_low_temp_block_1st;
-	int swelling_low_temp_recov_1st;
-	int swelling_low_temp_block_2nd;
-	int swelling_low_temp_recov_2nd;
+	int swelling_low_temp_block;
+	int swelling_low_temp_recov;
 	unsigned int swelling_low_temp_current;
 	unsigned int swelling_low_temp_topoff;
 	unsigned int swelling_high_temp_current;
 	unsigned int swelling_high_temp_topoff;
-
 	unsigned int swelling_normal_float_voltage;
 	unsigned int swelling_drop_float_voltage;
 	unsigned int swelling_high_rechg_voltage;
@@ -753,9 +747,9 @@ struct sec_battery_platform_data {
 	unsigned long recharging_total_time;
 	/* reset charging for abnormal malfunction (0: not use) */
 	unsigned long charging_reset_time;
-	unsigned int expired_time;
-	unsigned int recharging_expired_time;
-	int standard_curr;
+	unsigned int hv_charging_total_time;
+	unsigned int normal_charging_total_time;
+	unsigned int usb_charging_total_time;
 
 	/* fuel gauge */
 	char *fuelgauge_name;
@@ -801,9 +795,6 @@ struct sec_battery_platform_data {
 	int age_data_length;
 	sec_age_data_t* age_data;
 #endif
-
-	battery_health_condition* health_condition;
-
 	unsigned int siop_event_check_type;
 	unsigned int siop_call_cc_current;
 	unsigned int siop_call_cv_current;
@@ -844,10 +835,28 @@ struct sec_charger_platform_data {
 	int chg_float_voltage;
 	int irq_gpio;
 	int chg_irq;
+	int wpc_det;
 	unsigned long chg_irq_attr;
 
 	/* otg_en setting */
 	int otg_en;
+
+	int siop_call_cc_current;
+	int siop_call_cv_current;
+
+	int wpc_charging_limit_current;
+	int sleep_mode_limit_current;
+
+	int siop_input_limit_current;
+	int siop_charging_limit_current;
+	int siop_hv_input_limit_current;
+	int siop_hv_charging_limit_current;
+	int siop_wireless_input_limit_current;
+	int siop_wireless_charging_limit_current;
+	int siop_hv_wireless_input_limit_current;
+	int siop_hv_wireless_charging_limit_current;
+
+	bool support_slow_charging;
 
 	/* OVP/UVLO check */
 	sec_battery_ovp_uvlo_t ovp_uvlo_check_type;
@@ -932,11 +941,6 @@ static inline struct power_supply *get_power_supply_by_name(char *name)
 		}	\
 	}	\
 }
-
-#define is_nocharge_type(cable_type) ( \
-	cable_type == POWER_SUPPLY_TYPE_BATTERY || \
-	cable_type == POWER_SUPPLY_TYPE_OTG || \
-	cable_type == POWER_SUPPLY_TYPE_POWER_SHARING)
 
 #ifndef CONFIG_OF
 #define adc_init(pdev, pdata, channel)	\

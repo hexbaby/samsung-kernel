@@ -683,6 +683,12 @@ struct Scsi_Host {
 	unsigned use_cmd_list:1;
 
 	/*
+	 * Set "DBD" field in mode_sense caching mode page in case it is
+	 * mandatory by LLD standard.
+	 */
+	unsigned set_dbd_for_caching:1;
+
+	/*
 	 * Optional work queue to be utilized by the transport
 	 */
 	char work_q_name[20];
@@ -720,7 +726,6 @@ struct Scsi_Host {
 	
 
 	enum scsi_host_state shost_state;
-	bool wlun_clr_uac;
 
 	/* ldm bits */
 	struct device		shost_gendev, shost_dev;
@@ -755,6 +760,7 @@ struct Scsi_Host {
 	unsigned int  by_usb;
 #endif
 	unsigned int  by_ufs;
+
 	/*
 	 * We should ensure that this is aligned, both for better performance
 	 * and also because some compilers (m68k) don't automatically force

@@ -34,24 +34,14 @@
 #define M2SH(m) ((m) & 0x0F ? ((m) & 0x03 ? ((m) & 0x01 ? 0 : 1) : ((m) & 0x04 ? 2 : 3)) : \
 		((m) & 0x30 ? ((m) & 0x10 ? 4 : 5) : ((m) & 0x40 ? 6 : 7)))
 
-#if defined(CONFIG_MOTOR_DRV_MAX77854)
-struct max77854_haptic_pdata {
-	u16 max_timeout;
-	u16 duty;
-	u16 period;
-	u16 reg2;
-	int gpio;
-	char *regulator_name;
-	unsigned int pwm_id;
-	unsigned int model;
+#if defined(CONFIG_SS_VIBRATOR)
 
-	/* for multi-frequency */
-	int multi_frequency;
-	int multi_freq_divider;
-	int freq_num;
-	u32 *multi_freq_duty;
-	u32 *multi_freq_period;
+struct max77854_haptic_platform_data
+{
+    int mode;
+    int divisor;    /* PWM Frequency Divisor. 32, 64, 128 or 256 */
 };
+
 #endif
 
 struct max77854_regulator_data {
@@ -69,8 +59,9 @@ struct max77854_platform_data {
 
 	int num_regulators;
 	struct max77854_regulator_data *regulators;
-#if defined(CONFIG_MOTOR_DRV_MAX77854)
-	struct max77854_haptic_pdata *haptic_data;
+#if defined(CONFIG_SS_VIBRATOR)
+	/* haptic motor data */
+	struct max77854_haptic_platform_data *haptic_data;
 #endif
 	struct mfd_cell *sub_devices;
 	int num_subdevs;
@@ -81,5 +72,6 @@ struct max77854
 	struct regmap *regmap;
 };
 
+extern struct max77854_haptic_platform_data max77854_haptic_pdata;
 #endif /* __MAX77854_H__ */
 

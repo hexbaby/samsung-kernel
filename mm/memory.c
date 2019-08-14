@@ -49,7 +49,6 @@
 #include <linux/rmap.h>
 #include <linux/export.h>
 #include <linux/delayacct.h>
-#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/writeback.h>
 #include <linux/memcontrol.h>
@@ -2421,16 +2420,6 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	entry = pte_to_swp_entry(orig_pte);
 	if (unlikely(non_swap_entry(entry))) {
 		if (is_migration_entry(entry)) {
-#ifdef CONFIG_DMA_CMA
-			/*
-			 * FIXME: mszyprow: cruel, brute-force method for
-			 * letting cma/migration to finish it's job without
-			 * stealing the lock migration_entry_wait() and creating
-			 * a live-lock on the faulted page
-			 * (page->_count == 2 migration failure issue)
-			 */
-			mdelay(10);
-#endif
 			migration_entry_wait(mm, pmd, address);
 		} else if (is_hwpoison_entry(entry)) {
 			ret = VM_FAULT_HWPOISON;
@@ -2547,7 +2536,8 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	}
 
 	swap_free(entry);
-	if (vm_swap_full() || (vma->vm_flags & VM_LOCKED) || PageMlocked(page))
+	if ((PageSwapCache(page) && vm_swap_full(page_swap_info(page))) ||
+		(vma->vm_flags & VM_LOCKED) || PageMlocked(page))
 		try_to_free_swap(page);
 	unlock_page(page);
 	if (page != swapcache) {
@@ -2605,7 +2595,7 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	pte_t entry;
 
 	pte_unmap(page_table);
-
+	
 	/* File mapping without ->vm_ops ? */
 	if (vma->vm_flags & VM_SHARED)
 		return VM_FAULT_SIGBUS;
@@ -3168,7 +3158,7 @@ out:
  * The mmap_sem may have been released depending on flags and our
  * return value.  See filemap_fault() and __lock_page_or_retry().
  */
-int handle_pte_fault(struct mm_struct *mm,
+static int handle_pte_fault(struct mm_struct *mm,
 		     struct vm_area_struct *vma, unsigned long address,
 		     pte_t *pte, pmd_t *pmd, unsigned int flags)
 {
@@ -3179,11 +3169,11 @@ int handle_pte_fault(struct mm_struct *mm,
 	if (!pte_present(entry)) {
 		if (pte_none(entry)) {
 			if (vma->vm_ops)
-				return do_linear_fault(mm, vma, address,
-						pte, pmd, flags, entry);
+				return do_linear_fault(mm, vma, address, pte, pmd,
+						flags, entry);
 
-			return do_anonymous_page(mm, vma, address,
-						 pte, pmd, flags);
+			return do_anonymous_page(mm, vma, address, pte, pmd,
+					flags);
 		}
 		if (pte_file(entry))
 			return do_nonlinear_fault(mm, vma, address,

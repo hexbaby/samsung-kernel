@@ -62,13 +62,12 @@ static enum power_supply_property sec_charger_props[] = {
 	POWER_SUPPLY_PROP_ENERGY_NOW,
 	POWER_SUPPLY_PROP_ENERGY_AVG,
 	POWER_SUPPLY_PROP_INPUT_VOLTAGE_REGULATION,
-	POWER_SUPPLY_PROP_SCOPE,
 };
 
 int p9220_otp_update = 0;
 u8 adc_cal = 0;
 
-extern unsigned int lpcharge;
+extern unsigned int poweroff_charging;
 int p9220_get_firmware_version(struct p9220_charger_data *charger, int firm_mode);
 static irqreturn_t p9220_wpc_det_irq_thread(int irq, void *irq_data);
 static irqreturn_t p9220_wpc_irq_thread(int irq, void *irq_data);
@@ -1454,9 +1453,6 @@ static int p9220_chg_get_property(struct power_supply *psy,
 		} else
 			val->intval = 0;
 		break;
-	case POWER_SUPPLY_PROP_SCOPE:
-		val->intval = p9220_get_adc(charger, val->intval);
-		break;
 	default:
 		return -EINVAL;
 	}
@@ -1473,7 +1469,6 @@ static int p9220_chg_set_property(struct power_supply *psy,
 	struct p9220_charger_data *charger =
 		container_of(psy, struct p9220_charger_data, psy_chg);
 	int vout, vrect, iout, i = 0;
-	/* int ret; */
 	union power_supply_propval value;
 
 	switch (psp) {
@@ -2021,6 +2016,7 @@ static int p9220_chg_parse_dt(struct device *dev,
 	int len,i;
 	const u32 *p;
 
+	np  = of_find_node_by_name(NULL, "battery");
 	if (!np) {
 		pr_err("%s np NULL\n", __func__);
 		return 1;
@@ -2125,7 +2121,7 @@ static int p9220_chg_parse_dt(struct device *dev,
 		ret = pdata->wpc_det = of_get_named_gpio_flags(np, "battery,wpc_det",
 				0, &irq_gpio_flags);
 		if (ret < 0) {
-			dev_err(dev, "%s : can't get wpc_det\r\n", __FUNCTION__);
+			pr_err("%s : can't get wpc_det\n", __func__);
 		} else {
 			pdata->irq_wpc_det = gpio_to_irq(pdata->wpc_det);
 			pr_info("%s wpc_det = 0x%x, irq_wpc_det = 0x%x \n",__func__, pdata->wpc_det, pdata->irq_wpc_det);
@@ -2134,7 +2130,7 @@ static int p9220_chg_parse_dt(struct device *dev,
 		ret = pdata->wpc_int = of_get_named_gpio_flags(np, "battery,wpc_int",
 				0, &irq_gpio_flags);
 		if (ret < 0) {
-			dev_err(dev, "%s : can't wpc_int\r\n", __FUNCTION__);
+			pr_err("%s : can't wpc_int\n", __func__);
 		} else {
 			pdata->irq_wpc_int = gpio_to_irq(pdata->wpc_int);
 			pr_info("%s wpc_int = 0x%x, irq_wpc_int = 0x%x \n",__func__, pdata->wpc_int, pdata->irq_wpc_int);
@@ -2243,6 +2239,61 @@ static const struct attribute_group p9220_attr_group = {
 	.attrs = p9220_attributes,
 };
 
+static int p9220_pinctrl_select(struct p9220_charger_data *charger, bool on) {
+	struct pinctrl_state *pins_i2c_state;
+
+	pins_i2c_state = on ? charger->i2c_gpio_state_active
+			    : charger->i2c_gpio_state_suspend;
+
+	if (!IS_ERR_OR_NULL(pins_i2c_state)) {
+		int ret =  pinctrl_select_state(charger->i2c_pinctrl, pins_i2c_state);
+		if (ret) {
+			dev_err(charger->dev, "%s: Failed to set p9220 i2c pin state.\n", __func__);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int p9220_i2c_pinctrl_init(struct p9220_charger_data *charger) {
+	int ret = 0;
+	struct pinctrl *i2c_pinctrl;
+
+	charger->i2c_pinctrl = devm_pinctrl_get(&charger->client->dev);
+	if (IS_ERR_OR_NULL(charger->i2c_pinctrl)) {
+		dev_err(charger->dev, "%s: Failed to alloc mem for p9220 i2c pinctrl.\n", __func__);
+		ret = PTR_ERR(charger->i2c_pinctrl);
+		return -ENOMEM;
+	}
+
+	i2c_pinctrl = charger->i2c_pinctrl;
+
+	charger->i2c_gpio_state_active = pinctrl_lookup_state(i2c_pinctrl, "p9220_active");
+	if (IS_ERR_OR_NULL(charger->i2c_gpio_state_active)) {
+		dev_err(charger->dev, "%s: Failed to set active state for p9220 i2c\n", __func__);
+		ret = PTR_ERR(charger->i2c_gpio_state_active);
+		goto err_i2c_active_state;
+	}
+
+	charger->i2c_gpio_state_suspend = pinctrl_lookup_state(i2c_pinctrl, "p9220_suspend");
+	if (IS_ERR_OR_NULL(charger->i2c_gpio_state_suspend)) {
+		dev_err(charger->dev, "%s: Failed to set suspend state for p9220 i2c\n", __func__);
+		ret = PTR_ERR(charger->i2c_gpio_state_suspend);
+		goto err_i2c_suspend_state;
+	}
+
+#if defined(CONFIG_OF)
+	p9220_pinctrl_select(charger, true);
+#endif
+	return ret;
+
+err_i2c_suspend_state:
+	charger->i2c_gpio_state_suspend = 0;
+err_i2c_active_state:
+	charger->i2c_gpio_state_active = 0;
+	return -1;
+}
 
 static int p9220_charger_probe(
 						struct i2c_client *client,
@@ -2293,6 +2344,8 @@ static int p9220_charger_probe(
     pr_info("%s: %s\n", __func__, charger->pdata->wireless_charger_name );
 
 	i2c_set_clientdata(client, charger);
+	if (p9220_i2c_pinctrl_init(charger) < 0)
+		dev_err(charger->dev, "i2c_pinctrl is failed\n");
 
 	charger->pdata->ic_on_mode = false;
 	charger->pdata->cable_type = P9220_PAD_MODE_NONE;
@@ -2314,6 +2367,10 @@ static int p9220_charger_probe(
 	charger->capacity = 101;
 
 	mutex_init(&charger->io_lock);
+
+	/* wpc_int direction set to input. use only QC AP models. */
+	if (charger->pdata->wpc_int)
+		gpio_direction_input(charger->pdata->wpc_int);
 
 	/* wpc_det */
 	if (charger->pdata->irq_wpc_det) {

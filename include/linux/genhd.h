@@ -142,8 +142,7 @@ struct hd_struct {
 #define GENHD_FL_BLOCK_EVENTS_ON_EXCL_WRITE	256
 #define GENHD_FL_NO_PART_SCAN			512
 #ifdef CONFIG_USB_STORAGE_DETECT
-#define GENHD_FL_MEDIA_PRESENT	1024
-#define GENHD_FL_IF_USB	2048
+#define GENHD_IF_USB	1
 #endif
 
 enum {
@@ -207,6 +206,10 @@ struct gendisk {
 	struct blk_integrity *integrity;
 #endif
 	int node_id;
+#ifdef CONFIG_USB_STORAGE_DETECT
+	int media_present;
+	int interfaces;
+#endif
 };
 
 static inline struct gendisk *part_to_disk(struct hd_struct *part)

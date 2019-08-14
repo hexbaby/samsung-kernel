@@ -96,11 +96,32 @@ struct vendor_ops {
 	int (*enable_accdet)(struct regmap_desc *, int);
 	int (*enable_chgdet)(struct regmap_desc *, int);
 	int (*run_chgdet)(struct regmap_desc *, bool);
-	int (*start_otg_test)(struct regmap_desc *, int);	
+	int (*start_otg_test)(struct regmap_desc *, int);
 	int (*attach_mmdock)(struct regmap_desc  *, int);
 	int (*detach_mmdock)(struct regmap_desc  *);
 	int (*get_vbus_value)(struct regmap_desc *, int);
+	int (*get_vbus_rawdata)(struct regmap_desc *);
+	bool (*get_dcdtmr_irq)(struct regmap_desc *);
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5703) || defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+	int (*rescan)(struct regmap_desc *, int);
+#endif
+#if defined(CONFIG_SEC_DEBUG)
+	int (*usb_to_ta)(struct regmap_desc *, int);
+#endif
 };
+
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+struct afc_ops {
+	int (*afc_init)(struct regmap_desc  *);
+	int (*afc_ta_attach)(struct regmap_desc  *);
+	int (*afc_ta_accept)(struct regmap_desc  *);
+	int (*afc_vbus_update)(struct regmap_desc  *);
+	int (*afc_multi_byte)(struct regmap_desc  *);
+	int (*afc_error)(struct regmap_desc  *);
+	int (*afc_ctrl_reg)(struct regmap_desc  *, int, bool);
+	int (*afc_init_check)(struct regmap_desc  *);
+};
+#endif
 
 struct regmap_desc {
 	const char *name;
@@ -109,6 +130,9 @@ struct regmap_desc {
 	int trace;
 	struct regmap_ops *regmapops;
 	struct vendor_ops *vendorops;
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+	struct afc_ops *afcops;
+#endif
 	muic_data_t *muic;
 };
 
@@ -120,5 +144,6 @@ extern int set_manual_sw(muic_data_t *pmuic, bool);
 extern int regmap_read_value(struct regmap_desc *pdesc, int);
 extern int regmap_read_raw_value(struct regmap_desc *pdesc, int);
 extern int regmap_write_value(struct regmap_desc *pdesc, int, int);
+extern int regmap_write_value_ex(struct regmap_desc *pdesc, int, int);
 extern void muic_register_regmap(struct regmap_desc **pdesc, void *);
 #endif

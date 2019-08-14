@@ -114,17 +114,15 @@ enum max77854_fuelgauge_reg {
 	FULLCAP_NOM_REG                              = 0x23,
 	FILTER_CFG_REG                               = 0x29,
 	MISCCFG_REG                                  = 0x2B,
-	COFFSET_REG                                  = 0x2F,
+	VEMPTY_REG                                   = 0x3A,
 	QRTABLE20_REG                                = 0x32,
 	FULLCAP_REP_REG								 = 0x35,
 	RCOMP_REG                                    = 0x38,
-	VEMPTY_REG				     = 0x3A,
 	FSTAT_REG                                    = 0x3D,
-	DISCHARGE_THRESHOLD_REG			     = 0x40,
+	DISCHARGE_THRESHOLD_REG                      = 0x40,
 	QRTABLE30_REG                                = 0x42,
 	DQACC_REG                                    = 0x45,
 	DPACC_REG                                    = 0x46,
-	QH_REG                                       = 0x4D,
 	CONFIG2_REG                                  = 0xBB,
 	OCV_REG                                      = 0xEE,
 	VFOCV_REG                                    = 0xFB,
@@ -165,13 +163,13 @@ enum max77854_muic_reg {
 
 /* Slave addr = 0x94: RGB LED */
 enum max77854_led_reg {
-	MAX77854_RGBLED_REG_LEDEN			= 0x30,
-	MAX77854_RGBLED_REG_LED0BRT			= 0x31,
-	MAX77854_RGBLED_REG_LED1BRT			= 0x32,
-	MAX77854_RGBLED_REG_LED2BRT			= 0x33,
-	MAX77854_RGBLED_REG_LED3BRT			= 0x34,
-	MAX77854_RGBLED_REG_LEDRMP			= 0x36,
-	MAX77854_RGBLED_REG_LEDBLNK			= 0x38,
+	MAX77854_LED_REG_LEDEN				= 0x30,
+	MAX77854_LED_REG_LED0BRT			= 0x31,
+	MAX77854_LED_REG_LED1BRT			= 0x32,
+	MAX77854_LED_REG_LED2BRT			= 0x33,
+	MAX77854_LED_REG_LED3BRT			= 0x34,
+	MAX77854_LED_REG_LEDRMP				= 0x36,
+	MAX77854_LED_REG_LEDBLNK			= 0x38,
 	MAX77854_LED_REG_END,
 };
 
@@ -239,10 +237,6 @@ struct max77854_dev {
 	struct i2c_client *charger; /* 0xD2; Charger */
 	struct i2c_client *fuelgauge; /* 0x6C; Fuelgauge */
 	struct i2c_client *muic; /* 0x4A; MUIC */
-#if defined(CONFIG_MAX77854_FG_SENSING_WA)
-	struct i2c_client *gtest;
-	struct i2c_client *otp;
-#endif
 	struct mutex i2c_lock;
 
 	int type;
@@ -254,6 +248,10 @@ struct max77854_dev {
 	struct mutex irqlock;
 	int irq_masks_cur[MAX77854_IRQ_GROUP_NR];
 	int irq_masks_cache[MAX77854_IRQ_GROUP_NR];
+
+	struct pinctrl *i2c_pinctrl;
+	struct pinctrl_state *i2c_gpio_state_active;
+	struct pinctrl_state *i2c_gpio_state_suspend;
 
 #ifdef CONFIG_HIBERNATION
 	/* For hibernation */
@@ -291,6 +289,9 @@ extern int max77854_update_reg(struct i2c_client *i2c, u8 reg, u8 val, u8 mask);
 /* MAX77854 check muic path fucntion */
 extern bool is_muic_usb_path_ap_usb(void);
 extern bool is_muic_usb_path_cp_usb(void);
+
+/* MAX77854 Debug. ft */
+extern void max77854_muic_read_register(struct i2c_client *i2c);
 
 /* for charger api */
 extern void max77854_hv_muic_charger_init(void);

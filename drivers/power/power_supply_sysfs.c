@@ -1,10 +1,10 @@
 /*
  *  Sysfs interface for the universal power supply monitor class
  *
- *  Copyright © 2007  David Woodhouse <dwmw2@infradead.org>
- *  Copyright © 2007  Anton Vorontsov <cbou@mail.ru>
- *  Copyright © 2004  Szabolcs Gyurko
- *  Copyright © 2003  Ian Molton <spyro@f2s.com>
+ *  Copyright  2007  David Woodhouse <dwmw2@infradead.org>
+ *  Copyright  2007  Anton Vorontsov <cbou@mail.ru>
+ *  Copyright  2004  Szabolcs Gyurko
+ *  Copyright  2003  Ian Molton <spyro@f2s.com>
  *
  *  Modified: 2004, Oct     Szabolcs Gyurko
  *
@@ -46,24 +46,25 @@ static ssize_t power_supply_show_property(struct device *dev,
 	static char *type_text[] = {
 		"Unknown", "Battery", "UPS", "Mains", "USB",
 		"USB_DCP", "USB_CDP", "USB_ACA", "BMS", "MISC",
-		"Wireless", "HV_Wireless", "PMA_Wireless", "CARDOCK", "UARTOFF", "OTG", "LAN_HUB",
+		"Wireless", "CARDOCK", "UARTOFF", "OTG", "LAN_HUB",
 		"MHL_500", "MHL_900", "MHL_1500", "MHL_USB",
 		"SMART_OTG", "SMART_NOTG", "POWER_SHARING",
-		"HV_Mains", "HV_Mains_12V", "HV_Prepare_Mains", "HV_ERR", "MHL_USB_100", "MHL_2000",
-		"HV_Unknown", "MDOCK_TA", "HMT_CONNECTED", "HMT_CHARGE", "Wireless_Pack", "Wireless_Pack_TA",
-		"Wireless_Stand", "HV_Wireless_Stand", "PDIC", "HV_Mains_CHG_LIMIT"
+		"HV_Mains", "HV_Prepare_Mains", "HV_ERR", "MHL_USB_100", "MHL_2000",
+		"HV_Unknown", "MDOCK_TA", "HMT_CONNECTED", "HMT_CHARGE", "USB_HVDCP_3",
+		"HV_Wireless", "PMA_Wireless", "Wireless_Pack", "Wireless_Pack_TA",
+		"Wireless_Stand", "HV_Wireless_Stand", "HV_Mains_12V", "PDIC", "HV_Mains_CHG_LIMIT", "QC20", "QC30", "USB_HVDCP_3",
+		"USB_Parallel", "Wipower", "TYPEC", "TYPEC_UFP", "TYPEC_DFP"
 	};
 	static char *status_text[] = {
 		"Unknown", "Charging", "Discharging", "Not charging", "Full"
 	};
 	static char *charge_type[] = {
-		"Unknown", "N/A", "Trickle", "Fast", "Slow"
+		"Unknown", "N/A", "Trickle", "Fast", "Taper", "Slow"
 	};
 	static char *health_text[] = {
-		"Unknown", "Good", "Overheat", "Warm", "Dead", "Over voltage",
-		"Unspecified failure", "Cold", "Cool",
-		"Watchdog timer expire", "Safety timer expire",
-		"Under voltage", "OverheatLimit"
+		"Unknown", "Good", "Overheat", "Dead", "Over voltage",
+		"Unspecified failure", "Cold", "Watchdog timer expire", "Safety timer expire", "Warm",
+		"Cool", "Under voltage", "OverheatLimit"
 	};
 	static char *technology_text[] = {
 		"Unknown", "NiMH", "Li-ion", "Li-poly", "LiFe", "NiCd",
@@ -80,19 +81,20 @@ static ssize_t power_supply_show_property(struct device *dev,
 	const ptrdiff_t off = attr - power_supply_attrs;
 	union power_supply_propval value;
 
-	if (off == POWER_SUPPLY_PROP_TYPE)
+	if (off == POWER_SUPPLY_PROP_TYPE) {
 		value.intval = psy->type;
-	else
+	} else {
 		ret = psy->get_property(psy, off, &value);
 
-	if (ret < 0) {
-		if (ret == -ENODATA)
-			dev_dbg(dev, "driver has no data for `%s' property\n",
-				attr->attr.name);
-		else if (ret != -ENODEV)
-			dev_err(dev, "driver failed to report `%s' property: %zd\n",
-				attr->attr.name, ret);
-		return ret;
+		if (ret < 0) {
+			if (ret == -ENODATA)
+				dev_dbg(dev, "driver has no data for `%s' property\n",
+					attr->attr.name);
+			else if (ret != -ENODEV)
+				dev_err(dev, "driver failed to report `%s' property: %zd\n",
+					attr->attr.name, ret);
+			return ret;
+		}
 	}
 
 	if (off == POWER_SUPPLY_PROP_STATUS)
@@ -150,7 +152,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(present),
 	POWER_SUPPLY_ATTR(online),
 	POWER_SUPPLY_ATTR(authentic),
-	POWER_SUPPLY_ATTR(charging_enabled),
 	POWER_SUPPLY_ATTR(technology),
 	POWER_SUPPLY_ATTR(cycle_count),
 	POWER_SUPPLY_ATTR(voltage_max),
@@ -160,11 +161,11 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(voltage_now),
 	POWER_SUPPLY_ATTR(voltage_avg),
 	POWER_SUPPLY_ATTR(voltage_ocv),
-	POWER_SUPPLY_ATTR(input_voltage_regulation),
+	POWER_SUPPLY_ATTR(voltage_boot),
 	POWER_SUPPLY_ATTR(current_max),
-	POWER_SUPPLY_ATTR(input_current_max),
 	POWER_SUPPLY_ATTR(current_now),
 	POWER_SUPPLY_ATTR(current_avg),
+	POWER_SUPPLY_ATTR(current_boot),
 	POWER_SUPPLY_ATTR(current_full),
 	POWER_SUPPLY_ATTR(power_design),
 	POWER_SUPPLY_ATTR(power_now),
@@ -175,6 +176,8 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(charge_full),
 	POWER_SUPPLY_ATTR(charge_empty),
 	POWER_SUPPLY_ATTR(charge_now),
+	POWER_SUPPLY_ATTR(charge_now_raw),
+	POWER_SUPPLY_ATTR(charge_now_error),
 	POWER_SUPPLY_ATTR(charge_avg),
 	POWER_SUPPLY_ATTR(charge_counter),
 	POWER_SUPPLY_ATTR(charge_otg_control),
@@ -186,7 +189,7 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(constant_charge_voltage_max),
 	POWER_SUPPLY_ATTR(charge_control_limit),
 	POWER_SUPPLY_ATTR(charge_control_limit_max),
-	POWER_SUPPLY_ATTR(charge_counter_shadow),
+	POWER_SUPPLY_ATTR(input_current_limit),
 	POWER_SUPPLY_ATTR(energy_full_design),
 	POWER_SUPPLY_ATTR(energy_empty_design),
 	POWER_SUPPLY_ATTR(energy_full),
@@ -197,11 +200,12 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(capacity_alert_min),
 	POWER_SUPPLY_ATTR(capacity_alert_max),
 	POWER_SUPPLY_ATTR(capacity_level),
+	POWER_SUPPLY_ATTR(capacity_raw),
 	POWER_SUPPLY_ATTR(temp),
+	POWER_SUPPLY_ATTR(temp_max),
+	POWER_SUPPLY_ATTR(temp_min),
 	POWER_SUPPLY_ATTR(temp_alert_min),
 	POWER_SUPPLY_ATTR(temp_alert_max),
-	POWER_SUPPLY_ATTR(temp_cool),
-	POWER_SUPPLY_ATTR(temp_warm),
 	POWER_SUPPLY_ATTR(temp_ambient),
 	POWER_SUPPLY_ATTR(temp_ambient_alert_min),
 	POWER_SUPPLY_ATTR(temp_ambient_alert_max),
@@ -211,18 +215,62 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(time_to_full_avg),
 	POWER_SUPPLY_ATTR(type),
 	POWER_SUPPLY_ATTR(scope),
-	POWER_SUPPLY_ATTR(system_temp_level),
-	POWER_SUPPLY_ATTR(resistance),
+	POWER_SUPPLY_ATTR(charge_term_current),
+	POWER_SUPPLY_ATTR(calibrate),
 	/* Local extensions */
+	POWER_SUPPLY_ATTR(usb_hc),
 	POWER_SUPPLY_ATTR(usb_otg),
 	POWER_SUPPLY_ATTR(charge_enabled),
+	POWER_SUPPLY_ATTR(battery_charging_enabled),
+	POWER_SUPPLY_ATTR(charging_enabled),
+	POWER_SUPPLY_ATTR(input_suspend),
+	POWER_SUPPLY_ATTR(input_voltage_regulation),
+	POWER_SUPPLY_ATTR(input_current_max),
+	POWER_SUPPLY_ATTR(input_current_trim),
+	POWER_SUPPLY_ATTR(input_current_settled),
+	POWER_SUPPLY_ATTR(bypass_vchg_loop_debouncer),
+	POWER_SUPPLY_ATTR(charge_counter_shadow),
+	POWER_SUPPLY_ATTR(hi_power),
+	POWER_SUPPLY_ATTR(low_power),
+	POWER_SUPPLY_ATTR(temp_cool),
+	POWER_SUPPLY_ATTR(temp_warm),
+	POWER_SUPPLY_ATTR(system_temp_level),
+	POWER_SUPPLY_ATTR(resistance),
+	POWER_SUPPLY_ATTR(resistance_capacitive),
+	POWER_SUPPLY_ATTR(resistance_id),
+	POWER_SUPPLY_ATTR(resistance_now),
+	POWER_SUPPLY_ATTR(flash_current_max),
+	POWER_SUPPLY_ATTR(update_now),
+	POWER_SUPPLY_ATTR(esr_count),
+	POWER_SUPPLY_ATTR(safety_timer_enabled),
+	POWER_SUPPLY_ATTR(charge_done),
+	POWER_SUPPLY_ATTR(allow_detection),
+	POWER_SUPPLY_ATTR(flash_active),
+	POWER_SUPPLY_ATTR(flash_trigger),
+	POWER_SUPPLY_ATTR(force_tlim),
+	POWER_SUPPLY_ATTR(dp_dm),
+	POWER_SUPPLY_ATTR(input_current_limited),
+	POWER_SUPPLY_ATTR(input_current_now),
+	POWER_SUPPLY_ATTR(rerun_aicl),
+	POWER_SUPPLY_ATTR(cycle_count_id),
+	POWER_SUPPLY_ATTR(safety_timer_expired),
+	POWER_SUPPLY_ATTR(restricted_charging),
+	POWER_SUPPLY_ATTR(current_capability),
+	POWER_SUPPLY_ATTR(typec_mode),
+	POWER_SUPPLY_ATTR(allow_hvdcp3),
+	POWER_SUPPLY_ATTR(max_pulse_allowed),
+	POWER_SUPPLY_ATTR(soc_reporting_ready),
+	POWER_SUPPLY_ATTR(ignore_false_negative_isense),
+	POWER_SUPPLY_ATTR(enable_jeita_detection),
+	POWER_SUPPLY_ATTR(battery_info),
+	POWER_SUPPLY_ATTR(battery_info_id),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
-	/* Properties of type `const char *' */
 	POWER_SUPPLY_ATTR(manufacturer),
 	POWER_SUPPLY_ATTR(serial_number),
+	POWER_SUPPLY_ATTR(battery_type),
 	POWER_SUPPLY_ATTR(afc_charger_mode),
-	POWER_SUPPLY_ATTR(usb_hc),
+	/* Properties of type `const char *' */
 	POWER_SUPPLY_ATTR(model_name),
 };
 

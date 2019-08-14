@@ -249,8 +249,6 @@ static void sec_multi_chg_check_input_current(struct sec_multi_charger_info *cha
 
 		psy_do_property(charger->pdata->sub_charger_name, set,
 			POWER_SUPPLY_PROP_CHARGING_ENABLED, value);
-
-		sec_multi_chg_set_charging_current(charger);
 	}
 }
 
@@ -331,7 +329,6 @@ static int sec_multi_chg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_OTG_CONTROL:
 	case POWER_SUPPLY_PROP_CHARGE_UNO_CONTROL:
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
-	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		psy_do_property(charger->pdata->main_charger_name, get, psp, value);
 		val->intval = value.intval;
 		break;
@@ -642,7 +639,7 @@ static int sec_multi_charger_parse_dt(struct device *dev,
 }
 #endif
 
-static int __devinit sec_multi_charger_probe(struct platform_device *pdev)
+static int sec_multi_charger_probe(struct platform_device *pdev)
 {
 	struct sec_multi_charger_info *charger;
 	struct sec_multi_charger_platform_data *pdata = NULL;
@@ -708,7 +705,7 @@ err_charger_free:
 	return ret;
 }
 
-static int __devexit sec_multi_charger_remove(struct platform_device *pdev)
+static int sec_multi_charger_remove(struct platform_device *pdev)
 {
 	struct sec_multi_charger_info *charger = platform_get_drvdata(pdev);
 
@@ -760,7 +757,7 @@ static struct platform_driver sec_multi_charger_driver = {
 #endif
 	},
 	.probe = sec_multi_charger_probe,
-	.remove = __devexit_p(sec_multi_charger_remove),
+	.remove = sec_multi_charger_remove,
 };
 
 static int __init sec_multi_charger_init(void)

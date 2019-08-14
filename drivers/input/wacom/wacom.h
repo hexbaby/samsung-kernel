@@ -19,7 +19,7 @@
 #include <linux/earlysuspend.h>
 #endif
 
-#include <linux/i2c/wacom_i2c.h>
+#include "wacom_i2c.h"
 
 #ifdef CONFIG_INPUT_BOOSTER
 #include <linux/input/input_booster.h>
@@ -64,7 +64,7 @@
 #define COM_SURVEYSCAN     0x2B
 #define COM_QUERY          0x2A
 #define COM_SURVEYEXIT     0x2D
-#define COM_SURVEYREQUESTDATA	0x2E
+#define COM_SURVEYREQUESTDATA     0x2E
 #define COM_SURVEY_TARGET_GARAGE_AOP	0x3A
 #define COM_SURVEY_TARGET_GARAGEONLY	0x3B
 #define COM_FLASH          0xff
@@ -88,13 +88,13 @@
 /*--------------------------------------------------*/
 // function setting by user or default
 // wac_i2c->function_set
-//  7.Garage | 6.Power Save | 5.AOP | 4.reserved || 3.reserved | 2. reserved | 1. reserved | 0. reserved |
+// 7.Garage | 6.Power Save | 5.AOP | 4.reserved || 3.reserved | 2. reserved | 1. reserved | 0. reserved |
 //
 // 6. Power Save - not imported
 //
 //
 // event 
-//wac_i2c->function_result
+// wac_i2c->function_result
 // 7. ~ 4. reserved || 3. Garage | 2. Power Save | 1. AOP | 0. Pen In/Out |
 //
 // 0. Pen In/Out ( pen_insert )
@@ -304,6 +304,9 @@ struct wacom_i2c {
 	struct delayed_work pen_insert_dwork;
 #ifdef WACOM_USE_SURVEY_MODE
 	struct delayed_work pen_survey_resetdwork;
+	struct completion resume_done;
+	struct wake_lock wakelock;
+	bool pm_suspend;
 #endif
 #ifdef WACOM_IMPORT_FW_ALGO
 	bool use_offset_table;
@@ -358,5 +361,9 @@ struct wacom_i2c {
 	struct pinctrl_state *pin_state_gpio;
 #endif
 };
+
+#ifdef CONFIG_SAMSUNG_LPM_MODE
+extern int poweroff_charging;
+#endif
 
 #endif /* _LINUX_WACOM_H */

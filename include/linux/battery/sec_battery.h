@@ -21,13 +21,11 @@
 #define __SEC_BATTERY_H __FILE__
 
 #include <linux/battery/sec_charging_common.h>
-#include <linux/of_gpio.h>
 #include <linux/alarmtimer.h>
 #include <linux/wakelock.h>
 #include <linux/workqueue.h>
 #include <linux/proc_fs.h>
 #include <linux/jiffies.h>
-
 #if defined(CONFIG_BATTERY_NOTIFIER)
 #include <linux/battery/battery_notifier.h>
 #endif /* CONFIG_BATTERY_NOTIFIER */
@@ -36,24 +34,24 @@
 #include <linux/ccic/ccic_notifier.h>
 #endif /* CONFIG_CCIC_NOTIFIER */
 
+#include <linux/of_gpio.h>
+#include <linux/i2c.h>
+#include <linux/qpnp/qpnp-adc.h>
 #if defined(CONFIG_MUIC_NOTIFIER)
 #include <linux/muic/muic.h>
 #include <linux/muic/muic_notifier.h>
 #endif /* CONFIG_MUIC_NOTIFIER */
-
 #if defined(CONFIG_VBUS_NOTIFIER)
 #include <linux/vbus_notifier.h>
 #endif
 #if defined(CONFIG_BATTERY_CISD)
 #include <linux/battery/sec_cisd.h>
 #endif
-#include <linux/sec_batt.h>
 
 #define SEC_BAT_CURRENT_EVENT_NONE					0x0000
 #define SEC_BAT_CURRENT_EVENT_AFC					0x0001
 #define SEC_BAT_CURRENT_EVENT_LOW_TEMP_SWELLING		0x0010
 #define SEC_BAT_CURRENT_EVENT_HIGH_TEMP_SWELLING	0x0020
-#define SEC_BAT_CURRENT_EVENT_LOW_TEMP				0x0080
 
 #define SIOP_EVENT_NONE 	0x0000
 #define SIOP_EVENT_WPC_CALL 	0x0001
@@ -82,40 +80,6 @@
 #define SIOP_HV_CHARGING_LIMIT_CURRENT             1000
 
 #define BATT_MISC_EVENT_UNDEFINED_RANGE_TYPE	0x00000001
-#define BATT_MISC_EVENT_BATTERY_HEALTH			0x000F0000
-
-#define BATTERY_HEALTH_SHIFT                16
-enum misc_battery_health {
-	BATTERY_HEALTH_UNKNOWN = 0,
-	BATTERY_HEALTH_GOOD,
-	BATTERY_HEALTH_NORMAL,
-	BATTERY_HEALTH_AGED,
-	BATTERY_HEALTH_MAX = BATTERY_HEALTH_AGED,
-
-	/* For event */
-	BATTERY_HEALTH_BAD = 0xF,
-};
-
-enum store_mode_type {
-	STORE_MODE_NONE = 0,
-	STORE_MODE_LDU_RDU = 1,
-	STORE_MODE_RDU_TA = 2,
-};
-
-#if defined(CONFIG_BATTERY_SWELLING)
-enum swelling_mode_state {
-	SWELLING_MODE_NONE = 0,
-	SWELLING_MODE_CHARGING,
-	SWELLING_MODE_FULL,
-};
-
-#define DEFAULT_SWELLING_HIGH_TEMP_BLOCK	410
-#define DEFAULT_SWELLING_HIGH_TEMP_RECOV	390
-#define DEFAULT_SWELLING_LOW_TEMP_BLOCK_1ST	150
-#define DEFAULT_SWELLING_LOW_TEMP_RECOV_1ST	200
-#define DEFAULT_SWELLING_LOW_TEMP_BLOCK_2ND	50
-#define DEFAULT_SWELLING_LOW_TEMP_RECOV_2ND	100
-#endif
 
 struct adc_sample_info {
 	unsigned int cnt;
@@ -147,8 +111,6 @@ struct sec_battery_info {
 #if defined(CONFIG_VBUS_NOTIFIER)
 	struct notifier_block vbus_nb;
 #endif
-	bool safety_timer_set;
-	bool lcd_status;
 
 	int status;
 	int health;
@@ -162,7 +124,7 @@ struct sec_battery_info {
 	int current_avg;		/* average current (mA) */
 	int current_max;		/* input current limit (mA) */
 	int current_adc;
-	unsigned int input_voltage; 	/* CHGIN/WCIN input voltage (V) */
+
 	unsigned int capacity;			/* SOC (%) */
 
 	struct mutex adclock;
@@ -186,11 +148,7 @@ struct sec_battery_info {
 
 #if defined(CONFIG_BATTERY_CISD)
 	struct cisd cisd;
-#endif
-
-#if defined(CONFIG_PREVENT_SWELLING_BATTERY)
-	void *psb;
-#endif
+#endif	
 
 	/* battery check */
 	unsigned int check_count;
@@ -307,7 +265,7 @@ struct sec_battery_info {
 	/* test mode */
 	int test_mode;
 	bool factory_mode;
-	unsigned int store_mode;
+	bool store_mode;
 	bool ignore_store_mode;
 	bool slate_mode;
 
@@ -320,11 +278,6 @@ struct sec_battery_info {
 	int stability_test;
 	int eng_not_full_status;
 
-	bool stop_timer;
-	unsigned long prev_safety_time;
-	unsigned long expired_time;
-	unsigned long cal_safety_time;
-
 	bool wpc_temp_mode;
 #if defined(CONFIG_BATTERY_SWELLING_SELF_DISCHARGING)
 	bool factory_self_discharging_mode_on;
@@ -336,8 +289,9 @@ struct sec_battery_info {
 #endif
 	bool charging_block;
 #if defined(CONFIG_BATTERY_SWELLING)
-	bool skip_swelling;
-	unsigned int swelling_mode;
+	bool swelling_mode;
+	unsigned long swelling_block_start;
+	unsigned long swelling_block_passed;
 	int swelling_full_check_cnt;
 #endif
 #if defined(CONFIG_AFC_CHARGER_MODE)
@@ -351,9 +305,8 @@ struct sec_battery_info {
 #if defined(CONFIG_BATTERY_AGE_FORECAST)
 	int batt_cycle;
 #endif
-	int batt_asoc;
 #if defined(CONFIG_STEP_CHARGING)
-	unsigned int step_charging_type;
+	int step_charging_type;
 	int step_charging_status;
 	int step_charging_step;
 #endif
@@ -482,6 +435,7 @@ enum {
 	BATT_DISCHARGING_NTC_ADC,
 	BATT_SELF_DISCHARGING_CONTROL,
 #endif
+	CHECK_SLAVE_CHG,
 	BATT_INBAT_WIRELESS_CS100,
 	HMT_TA_CONNECTED,
 	HMT_TA_CHARGE,
@@ -535,9 +489,6 @@ enum {
 #if defined(CONFIG_BATTERY_CISD)
 	CISD_DATA,
 	CISD_WIRE_COUNT,
-#endif
-#if defined(CONFIG_BATTERY_SWELLING)
-	BATT_SWELLING_CONTROL,
 #endif
 };
 

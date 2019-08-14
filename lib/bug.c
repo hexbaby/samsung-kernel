@@ -45,8 +45,9 @@
 #include <linux/kernel.h>
 #include <linux/bug.h>
 #include <linux/sched.h>
-#ifdef CONFIG_SEC_DEBUG
-#include <linux/sec_debug.h>
+
+#ifdef CONFIG_USER_RESET_DEBUG
+#include <linux/qcom/sec_debug.h>
 #endif
 
 extern const struct bug_entry __start___bug_table[], __stop___bug_table[];
@@ -157,6 +158,11 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 		warning = (bug->flags & BUGFLAG_WARNING) != 0;
 	}
 
+#ifdef CONFIG_USER_RESET_DEBUG
+	if (file)
+		sec_debug_store_bug_string("%s:%u!", file, line);
+#endif
+
 	if (warning) {
 		/* this is a WARN_ON rather than BUG/BUG_ON */
 		pr_warn("------------[ cut here ]------------\n");
@@ -177,15 +183,10 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 
 	printk(KERN_DEFAULT "------------[ cut here ]------------\n");
 
-#ifdef CONFIG_SEC_DEBUG_EXTRA_INFO
 	if (file)
-		sec_debug_set_extra_info_bug(file, line);
-#endif
-
-	if (file)
-		pr_auto(ASL1, "kernel BUG at %s:%u!\n", file, line);
+		pr_crit("kernel BUG at %s:%u!\n", file, line);
 	else
-		pr_auto(ASL1, "Kernel BUG at %p [verbose debug info unavailable]\n",
+		pr_crit("Kernel BUG at %p [verbose debug info unavailable]\n",
 			(void *)bugaddr);
 
 	return BUG_TRAP_TYPE_BUG;

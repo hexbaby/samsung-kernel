@@ -49,13 +49,17 @@
 #include "muic_apis.h"
 #include "muic_i2c.h"
 #include "muic_vps.h"
-
+#include "muic_debug.h"
+#include "muic_regmap.h"
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+#include <linux/muic/muic_afc.h>
+#endif
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+extern void muic_afc_delay_check_state(int state);
+#endif
 #if defined(CONFIG_MUIC_SUPPORT_CCIC)
 #include "muic_ccic.h"
-#include <linux/ccic/s2mm005.h>
 #endif
-
-#include "../../battery_v2/include/sec_charging_common.h"
 
 extern void muic_send_dock_intent(int type);
 
@@ -77,6 +81,9 @@ static void muic_handle_attach(muic_data_t *pmuic,
 
 	if((new_dev == pmuic->attached_dev) &&
 		(new_dev != ATTACHED_DEV_JIG_UART_OFF_MUIC) &&
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+		(new_dev != ATTACHED_DEV_EARJACK_MUIC) &&
+#endif
 		(new_dev != ATTACHED_DEV_UNIVERSAL_MMDOCK_MUIC)) {
 		pr_info("%s:%s Duplicated device %d just ignore\n",
 				MUIC_DEV_NAME, __func__,pmuic->attached_dev);
@@ -121,7 +128,10 @@ static void muic_handle_attach(muic_data_t *pmuic,
 			muic_send_dock_intent(MUIC_DOCK_DETACHED);
 		}
 	case ATTACHED_DEV_USB_LANHUB_MUIC:
-		if (new_dev != pmuic->attached_dev) {
+		if (new_dev == ATTACHED_DEV_OTG_MUIC) {
+			pr_info("%s:%s LANHUB=>OTG. Do not detach LANHUB.\n",
+					__func__, MUIC_DEV_NAME);
+		} else if (new_dev != pmuic->attached_dev) {
 			pr_warn("%s:%s new(%d)!=attached(%d), assume detach\n",
 					MUIC_DEV_NAME, __func__, new_dev,
 					pmuic->attached_dev);
@@ -158,9 +168,6 @@ static void muic_handle_attach(muic_data_t *pmuic,
         case ATTACHED_DEV_AFC_CHARGER_5V_MUIC:
         case ATTACHED_DEV_AFC_CHARGER_5V_DUPLI_MUIC:
         case ATTACHED_DEV_AFC_CHARGER_9V_MUIC:
-        case ATTACHED_DEV_AFC_CHARGER_9V_DUPLI_MUIC:
-        case ATTACHED_DEV_AFC_CHARGER_12V_MUIC:
-        case ATTACHED_DEV_AFC_CHARGER_12V_DUPLI_MUIC:
         case ATTACHED_DEV_AFC_CHARGER_ERR_V_MUIC:
         case ATTACHED_DEV_AFC_CHARGER_ERR_V_DUPLI_MUIC:
         case ATTACHED_DEV_QC_CHARGER_PREPARE_MUIC:
@@ -188,8 +195,10 @@ static void muic_handle_attach(muic_data_t *pmuic,
 
 			if (pmuic->is_factory_start)
 				ret = detach_deskdock(pmuic);
-			else
+			else {
+//				noti_f = false;
 				ret = detach_jig_uart_boot_on(pmuic);
+			}
 		}
 		break;
 	case ATTACHED_DEV_DESKDOCK_MUIC:
@@ -234,26 +243,19 @@ static void muic_handle_attach(muic_data_t *pmuic,
 			  */
 			muic_send_dock_intent(MUIC_DOCK_GAMEPAD_WITH_EARJACK);
 		}
-		break;		
+		break;
 	case ATTACHED_DEV_UNDEFINED_CHARGING_MUIC:
 	case ATTACHED_DEV_UNDEFINED_RANGE_MUIC:
 		break;
-#if defined(CONFIG_MUIC_HV_SUPPORT_POGO_DOCK)
-	case ATTACHED_DEV_POGO_DOCK_MUIC:
-	case ATTACHED_DEV_POGO_DOCK_5V_MUIC:
-	case ATTACHED_DEV_POGO_DOCK_9V_MUIC:
-		hv_do_detach(pmuic->phv);
-		pmuic->attached_dev = ATTACHED_DEV_NONE_MUIC;
-		detach_ta(pmuic);
-		break;
-#endif
 
 	default:
 		noti_f = false;
 	}
 
-	if (noti_f)
+	if (noti_f) {
+		MUIC_INFO("muic_notifier_detach_attached_dev: %d\n", pmuic->attached_dev);
 		muic_notifier_detach_attached_dev(pmuic->attached_dev);
+	}
 
 	noti_f = true;
 	switch (new_dev) {
@@ -275,33 +277,24 @@ static void muic_handle_attach(muic_data_t *pmuic,
 		break;
 	case ATTACHED_DEV_TA_MUIC:
 #if defined(CONFIG_MUIC_HV)
-                if (pmuic->pdata->afc_disable)
-                        pr_info("%s:%s AFC Disable(%d) by USER!\n", MUIC_DEV_NAME,
-                                __func__, pmuic->pdata->afc_disable);
-#if defined(CONFIG_MUIC_SUPPORT_CCIC)
-		else if (pmuic->afc_water_disable)
-                        pr_info("%s:%s AFC Disable(%d) by WATER!\n", MUIC_DEV_NAME,
-                                __func__, pmuic->afc_water_disable);
-		else if (!pmuic->is_ccic_attach)
-			pr_info("%s:%s AFC Disable(%d), not CC attach!\n", MUIC_DEV_NAME,
-				__func__, pmuic->is_ccic_attach);
-		else if (pmuic->afc_tsub_disable)
-			pr_info("%s:%s AFC Disable(%d) by TSUB too hot!\n", MUIC_DEV_NAME,
-				__func__, pmuic->afc_tsub_disable);
-		else if (pmuic->is_ccic_afc_enable == Rp_Abnormal)
-			pr_info("%s:%s AFC Disable(%d) by CC or SBU short!\n", MUIC_DEV_NAME,
-				__func__, pmuic->is_ccic_afc_enable);
-#endif
-                else {
-                        if ((pmuic->phv->is_afc_muic_ready == false) &&
-				vps_is_hv_ta(&pmuic->vps)) {
-                                max77854_muic_prepare_afc_charger(pmuic->phv);
-                       	}
-                }
+		if (pmuic->phv) {
+	                if (pmuic->pdata->afc_disable)
+                        	pr_info("%s:%s AFC Disable(%d) by USER!\n", MUIC_DEV_NAME,
+	                                __func__, pmuic->pdata->afc_disable);
+                	else {
+	                        if ((pmuic->phv->is_afc_muic_ready == false) &&
+					vps_is_hv_ta(&pmuic->vps)) {
+	                                max77854_muic_prepare_afc_charger(pmuic->phv);
+	                       	}
+	                }
+		}
 #endif /* CONFIG_MUIC_HV */
 		attach_ta(pmuic);
 		mdelay(150);
 		pmuic->attached_dev = new_dev;
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+		muic_afc_delay_check_state(1);
+#endif        
 		break;
 	case ATTACHED_DEV_JIG_UART_OFF_MUIC:
 		new_dev = attach_jig_uart_boot_off(pmuic, new_dev, vbvolt);
@@ -311,10 +304,12 @@ static void muic_handle_attach(muic_data_t *pmuic,
 		/* Keep AP UART path and
 		 *  call attach_deskdock to wake up the device in the Facory Build Binary.
 		 */
-		if (pmuic->is_factory_start)
+		 if (pmuic->is_factory_start)
 			ret = attach_deskdock(pmuic, new_dev);
-		else
+		 else {
+//			noti_f = false;
 			ret = attach_jig_uart_boot_on(pmuic, new_dev);
+		}
 		break;
 	case ATTACHED_DEV_JIG_USB_OFF_MUIC:
 		ret = attach_jig_usb_boot_off(pmuic, vbvolt);
@@ -351,12 +346,17 @@ static void muic_handle_attach(muic_data_t *pmuic,
 	case ATTACHED_DEV_GAMEPAD_MUIC:
 		ret = attach_gamepad(pmuic, new_dev);
 		break;
-#if defined(CONFIG_MUIC_HV_SUPPORT_POGO_DOCK)
-	case ATTACHED_DEV_POGO_DOCK_MUIC:
-		max77854_muic_prepare_afc_pogo_dock(pmuic->phv);
-		attach_ta(pmuic);
-		mdelay(150);
-		pmuic->attached_dev = new_dev;
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+	case ATTACHED_DEV_SEND_MUIC:
+	case ATTACHED_DEV_VOLDN_MUIC:
+	case ATTACHED_DEV_VOLUP_MUIC:
+		if (pmuic->attached_dev == ATTACHED_DEV_EARJACK_MUIC)
+			pmuic->is_earkeypressed = true;
+		
+		ret = attach_earjack(pmuic, new_dev);
+		break;
+	case ATTACHED_DEV_EARJACK_MUIC:
+		ret = attach_earjack(pmuic, new_dev);
 		break;
 #endif
 	default:
@@ -367,12 +367,14 @@ static void muic_handle_attach(muic_data_t *pmuic,
 	}
 
 #if defined(CONFIG_MUIC_HV)
-	if (!pmuic->pdata->afc_disable)
-		new_dev = hv_muic_check_id_err(pmuic->phv, new_dev);
+	if (pmuic->phv && !pmuic->pdata->afc_disable)
+        	new_dev = hv_muic_check_id_err(pmuic->phv, new_dev);
 #endif
 
-	if (noti_f)
+	if (noti_f) {
+		MUIC_INFO("muic_notifier_attach_attached_dev: %d\n", new_dev);
 		muic_notifier_attach_attached_dev(new_dev);
+	}
 	else
 		pr_info("%s:%s attach Noti. for (%d) discarded.\n",
 				MUIC_DEV_NAME, __func__, new_dev);
@@ -389,9 +391,8 @@ static void muic_handle_detach(muic_data_t *pmuic)
 
 	ret = com_to_open_with_vbus(pmuic);
 
-	enable_chgdet(pmuic, 1);
-	if (get_adc_scan_mode(pmuic) != ADC_SCANMODE_ONESHOT)
-		set_adc_scan_mode(pmuic, ADC_SCANMODE_ONESHOT);
+	//Fixme.
+	//muic_enable_accdet(pmuic);
 
 #if defined(CONFIG_MUIC_HV)
 	hv_do_detach(pmuic->phv);
@@ -413,7 +414,6 @@ static void muic_handle_detach(muic_data_t *pmuic)
 	case ATTACHED_DEV_USB_LANHUB_MUIC:
 		ret = detach_otg_usb(pmuic);
 		break;
-
 	case ATTACHED_DEV_RDU_TA_MUIC:
 	case ATTACHED_DEV_TA_MUIC:
 		pmuic->attached_dev = ATTACHED_DEV_NONE_MUIC;
@@ -427,8 +427,10 @@ static void muic_handle_detach(muic_data_t *pmuic)
 	case ATTACHED_DEV_JIG_UART_ON_MUIC:
 		if (pmuic->is_factory_start)
 			ret = detach_deskdock(pmuic);
-		else
+		else {
+			noti_f = false;
 			ret = detach_jig_uart_boot_on(pmuic);
+		}
 		break;
 	case ATTACHED_DEV_DESKDOCK_MUIC:
 	case ATTACHED_DEV_DESKDOCK_VB_MUIC:
@@ -463,12 +465,9 @@ static void muic_handle_detach(muic_data_t *pmuic)
 	case ATTACHED_DEV_GAMEPAD_MUIC:
 		ret = detach_gamepad(pmuic);
 		break;
-#if defined(CONFIG_MUIC_HV_SUPPORT_POGO_DOCK)
-	case ATTACHED_DEV_POGO_DOCK_MUIC:
-	case ATTACHED_DEV_POGO_DOCK_5V_MUIC:
-	case ATTACHED_DEV_POGO_DOCK_9V_MUIC:
-		pmuic->attached_dev = ATTACHED_DEV_NONE_MUIC;
-		detach_ta(pmuic);
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+	case ATTACHED_DEV_EARJACK_MUIC:
+		ret = detach_earjack(pmuic);
 		break;
 #endif
 	default:
@@ -478,9 +477,10 @@ static void muic_handle_detach(muic_data_t *pmuic)
 		break;
 	}
 
-	if (noti_f)
+	if (noti_f) {
+		MUIC_INFO("muic_notifier_detach_attached_dev: %d\n", pmuic->attached_dev);
 		muic_notifier_detach_attached_dev(pmuic->attached_dev);
-
+	}
 	else
 		pr_info("%s:%s detach Noti. for (%d) discarded.\n",
 				MUIC_DEV_NAME, __func__, pmuic->attached_dev);
@@ -490,31 +490,55 @@ static void muic_handle_detach(muic_data_t *pmuic)
 
 }
 
-void muic_detect_dev(muic_data_t *pmuic, int irq)
+static void update_jig_state(muic_data_t *pmuic)
+{
+	int jig_state;
+
+	switch (pmuic->attached_dev) {
+	case ATTACHED_DEV_JIG_UART_OFF_MUIC:
+	case ATTACHED_DEV_JIG_UART_OFF_VB_MUIC: 	/* VBUS enabled */
+	case ATTACHED_DEV_JIG_UART_OFF_VB_OTG_MUIC:	/* for otg test */
+	case ATTACHED_DEV_JIG_UART_OFF_VB_FG_MUIC:	/* for fg test */
+	case ATTACHED_DEV_JIG_USB_OFF_MUIC:
+	case ATTACHED_DEV_JIG_USB_ON_MUIC:
+		jig_state = true;
+		break;
+	default:
+		jig_state = false;
+		break;
+	}
+	pr_err("%s:%s update_jig_state : %d\n", MUIC_DEV_NAME, __func__, jig_state);
+
+	if (pmuic->pdata->jig_uart_cb)
+		pmuic->pdata->jig_uart_cb(jig_state);
+}
+
+void muic_detect_dev(muic_data_t *pmuic)
 {
 	muic_attached_dev_t new_dev = ATTACHED_DEV_UNKNOWN_MUIC;
 	int intr = MUIC_INTR_DETACH;
 	u8 adc = 0, vbvolt = 0;
-#if !defined(CONFIG_SEC_FACTORY) && defined(CONFIG_MUIC_SUPPORT_CCIC)
-	union power_supply_propval tsub_val;
+#if defined(CONFIG_MUIC_SUPPORT_CCIC)
+	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
+	bool dcd;
 #endif
 
 	get_vps_data(pmuic, &pmuic->vps);
 
 	if (pmuic->vps_table == VPS_TYPE_SCATTERED) {
-		pr_info("%s:%s dev[1:0x%x, 2:0x%x, 3:0x%x], adc:0x%x, vbvolt:0x%x\n",
+		MUIC_INFO_K("%s:%s dev[1:0x%x, 2:0x%x, 3:0x%x], adc:0x%x, vbvolt:0x%x\n",
 			MUIC_DEV_NAME, __func__, pmuic->vps.s.val1, pmuic->vps.s.val2,
 			pmuic->vps.s.val3, pmuic->vps.s.adc, pmuic->vps.s.vbvolt);
 		adc = pmuic->vps.s.adc;
 		vbvolt = pmuic->vps.s.vbvolt;
 	} else if (pmuic->vps_table == VPS_TYPE_TABLE) {
-		pr_info("%s:%s ST[0x%02x 0x%02x 0x%02x] CT[0x%02x 0x%02x 0x%02x 0x%02x] HVCT[0x%02x 0x%02x]\n",
+		MUIC_INFO_K("%s:%s ST[0x%02x 0x%02x 0x%02x] CT[0x%02x 0x%02x 0x%02x 0x%02x] HVCT[0x%02x 0x%02x]\n",
 			MUIC_DEV_NAME, __func__,
 			pmuic->vps.t.status[0], pmuic->vps.t.status[1], pmuic->vps.t.status[2],
 			pmuic->vps.t.control[0], pmuic->vps.t.control[1], pmuic->vps.t.control[2], pmuic->vps.t.control[3],
 			pmuic->vps.t.hvcontrol[0], pmuic->vps.t.hvcontrol[1]);
 		
-		pr_info("%s:%s adc:%02x vbvolt:%02x chgtyp:%02x adcerr:%02x adclow:%02x chgdetrun:%02x\n",
+		MUIC_INFO_K("%s:%s adc:%02x vbvolt:%02x chgtyp:%02x adcerr:%02x adclow:%02x chgdetrun:%02x\n",
 			MUIC_DEV_NAME, __func__,
 			pmuic->vps.t.adc, pmuic->vps.t.vbvolt, pmuic->vps.t.chgtyp, pmuic->vps.t.adcerr,
 			pmuic->vps.t.adclow, pmuic->vps.t.chgdetrun);
@@ -527,12 +551,6 @@ void muic_detect_dev(muic_data_t *pmuic, int irq)
 		}
 #endif
 
-#if defined(CONFIG_MUIC_HV_SUPPORT_POGO_DOCK)
-		if (gpio_is_valid(pmuic->dock_int_ap))
-			pr_info("%s:%s dock_int_ap(%c)\n", MUIC_DEV_NAME, __func__,
-				gpio_get_value(pmuic->dock_int_ap) ? 'x' : 'o');
-#endif
-
 		adc = pmuic->vps.t.adc;
 		vbvolt = pmuic->vps.t.vbvolt;
 	}
@@ -543,29 +561,21 @@ void muic_detect_dev(muic_data_t *pmuic, int irq)
 	}
 
 #if defined(CONFIG_MUIC_SUPPORT_CCIC)
+	if (pvendor->get_dcdtmr_irq) {
+		dcd = pvendor->get_dcdtmr_irq(pmuic->regmapdesc);
+		pr_info("%s:%s: get dcd timer state: %s\n",
+				MUIC_DEV_NAME, __func__, dcd ? "true": "false");
+		pmuic->is_dcdtmr_intr = dcd;
+	}
+
 	if (new_dev == ATTACHED_DEV_USB_MUIC && pmuic->is_dcdtmr_intr) {
 		new_dev = ATTACHED_DEV_TIMEOUT_OPEN_MUIC;
 	}
 	if (pmuic->opmode & OPMODE_CCIC) {
-		if (irq > 0) {
-			if (!mdev_continue_for_TA_USB(pmuic, new_dev))
-				return;
-		} else
-			muic_set_legacy_dev(pmuic, new_dev);
+		if (!mdev_continue_for_TA_USB(pmuic, new_dev))
+			return;
 	}
-
-#if !defined(CONFIG_SEC_FACTORY)
-	if (irq < 0) {
-		pmuic->afc_tsub_disable = false;
-	} else {
-		psy_do_property("battery", get, POWER_SUPPLY_EXT_PROP_SUB_PBA_TEMP_REC, tsub_val);
-		if (!tsub_val.intval)
-			pmuic->afc_tsub_disable = true;
-		else
-			pmuic->afc_tsub_disable = false;
-	}
-#endif /* CONFIG_SEC_FACTORY */
-#endif /* CONFIG_MUIC_SUPPORT_CCIC */
+#endif
 
 	if (intr == MUIC_INTR_ATTACH)
 		muic_handle_attach(pmuic, new_dev, adc, vbvolt);
@@ -576,4 +586,5 @@ void muic_detect_dev(muic_data_t *pmuic, int irq)
 	/* AFC should refer to the change of attached_dev */
 	hv_update_status(pmuic->phv, pmuic->attached_dev);
 #endif
+	update_jig_state(pmuic);
 }

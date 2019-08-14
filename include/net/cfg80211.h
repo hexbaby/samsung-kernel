@@ -62,6 +62,13 @@
 
 struct wiphy;
 
+#define SUPPORT_WDEV_CFG80211_VENDOR_EVENT_ALLOC 1
+#define CFG80211_SCAN_BSSID 1
+#define CFG80211_CONNECT_PREV_BSSID 1
+#define CFG80211_CONNECT_BSS 1
+#define CFG80211_ABORT_SCAN 1
+#define CFG80211_DISCONNECTED_V2 1
+
 /*
  * wireless hardware capability structures
  */
@@ -213,6 +220,39 @@ enum ieee80211_rate_flags {
 	IEEE80211_RATE_SUPPORTS_5MHZ	= 1<<5,
 	IEEE80211_RATE_SUPPORTS_10MHZ	= 1<<6,
 };
+
+/**
+ * enum ieee80211_bss_type - BSS type filter
+ *
+ * @IEEE80211_BSS_TYPE_ESS: Infrastructure BSS
+ * @IEEE80211_BSS_TYPE_PBSS: Personal BSS
+ * @IEEE80211_BSS_TYPE_IBSS: Independent BSS
+ * @IEEE80211_BSS_TYPE_MBSS: Mesh BSS
+ * @IEEE80211_BSS_TYPE_ANY: Wildcard value for matching any BSS type
+ */
+enum ieee80211_bss_type {
+	IEEE80211_BSS_TYPE_ESS,
+	IEEE80211_BSS_TYPE_PBSS,
+	IEEE80211_BSS_TYPE_IBSS,
+	IEEE80211_BSS_TYPE_MBSS,
+	IEEE80211_BSS_TYPE_ANY
+};
+
+/**
+ * enum ieee80211_privacy - BSS privacy filter
+ *
+ * @IEEE80211_PRIVACY_ON: privacy bit set
+ * @IEEE80211_PRIVACY_OFF: privacy bit clear
+ * @IEEE80211_PRIVACY_ANY: Wildcard value for matching any privacy setting
+ */
+enum ieee80211_privacy {
+	IEEE80211_PRIVACY_ON,
+	IEEE80211_PRIVACY_OFF,
+	IEEE80211_PRIVACY_ANY
+};
+
+#define IEEE80211_PRIVACY(x)	\
+	((x) ? IEEE80211_PRIVACY_ON : IEEE80211_PRIVACY_OFF)
 
 /**
  * struct ieee80211_rate - bitrate definition
@@ -670,6 +710,8 @@ struct cfg80211_acl_data {
  * @p2p_opp_ps: P2P opportunistic PS
  * @acl: ACL configuration used by the drivers which has support for
  *	MAC address based access control
+ * @pbss: If set, start as a PCP instead of AP. Relevant for DMG
+ *	networks.
  */
 struct cfg80211_ap_settings {
 	struct cfg80211_chan_def chandef;
@@ -688,6 +730,7 @@ struct cfg80211_ap_settings {
 	u8 p2p_ctwindow;
 	bool p2p_opp_ps;
 	const struct cfg80211_acl_data *acl;
+	bool pbss;
 };
 
 /**
@@ -1408,6 +1451,7 @@ struct cfg80211_ssid {
  * @aborted: (internal) scan request was notified as aborted
  * @notified: (internal) scan request was notified as done or aborted
  * @no_cck: used to send probe requests at non CCK rate in 2GHz band
+ * @bssid: BSSID to scan for (most commonly, the wildcard BSSID)
  */
 struct cfg80211_scan_request {
 	struct cfg80211_ssid *ssids;
@@ -1421,6 +1465,8 @@ struct cfg80211_scan_request {
 	u32 rates[IEEE80211_NUM_BANDS];
 
 	struct wireless_dev *wdev;
+
+	u8 bssid[ETH_ALEN] __aligned(2);
 
 	/* internal */
 	struct wiphy *wiphy;
@@ -1779,6 +1825,9 @@ struct cfg80211_ibss_params {
  * @ht_capa_mask:  The bits of ht_capa which are to be used.
  * @vht_capa:  VHT Capability overrides
  * @vht_capa_mask: The bits of vht_capa which are to be used.
+ * @pbss: if set, connect to a PCP instead of AP. Valid for DMG
+ *	networks.
+ * @prev_bssid: previous BSSID, if not %NULL use reassociate frame
  */
 struct cfg80211_connect_params {
 	struct ieee80211_channel *channel;
@@ -1801,6 +1850,8 @@ struct cfg80211_connect_params {
 	struct ieee80211_ht_cap ht_capa_mask;
 	struct ieee80211_vht_cap vht_capa;
 	struct ieee80211_vht_cap vht_capa_mask;
+	bool pbss;
+	const u8 *prev_bssid;
 };
 
 /**
@@ -2177,6 +2228,8 @@ struct cfg80211_qos_map {
  *	the driver, and will be valid until passed to cfg80211_scan_done().
  *	For scan results, call cfg80211_inform_bss(); you can call this outside
  *	the scan/scan_done bracket too.
+ * @abort_scan: Tell the driver to abort an ongoing scan. The driver shall
+ *	indicate the status of the scan through cfg80211_scan_done().
  *
  * @auth: Request to authenticate with the specified peer
  *	(invoked with the wireless_dev mutex held)
@@ -2425,6 +2478,7 @@ struct cfg80211_ops {
 
 	int	(*scan)(struct wiphy *wiphy,
 			struct cfg80211_scan_request *request);
+	void	(*abort_scan)(struct wiphy *wiphy, struct wireless_dev *wdev);
 
 	int	(*auth)(struct wiphy *wiphy, struct net_device *dev,
 			struct cfg80211_auth_request *req);
@@ -2630,6 +2684,7 @@ struct cfg80211_ops {
  *	TSPEC sessions (TID aka TSID 0-7) with the NL80211_CMD_ADD_TX_TS
  *	command. Standard IEEE 802.11 TSPEC setup is not yet supported, it
  *	needs to be able to handle Block-Ack agreements and other things.
+ * @WIPHY_FLAG_DFS_OFFLOAD: The driver handles all the DFS related operations.
  */
 enum wiphy_flags {
 	WIPHY_FLAG_SUPPORTS_WMM_ADMISSION	= BIT(0),
@@ -2655,6 +2710,7 @@ enum wiphy_flags {
 	WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL	= BIT(21),
 	WIPHY_FLAG_SUPPORTS_5_10_MHZ		= BIT(22),
 	WIPHY_FLAG_HAS_CHANNEL_SWITCH		= BIT(23),
+	WIPHY_FLAG_DFS_OFFLOAD                  = BIT(24)
 };
 
 /**
@@ -2845,6 +2901,24 @@ struct wiphy_vendor_command {
 };
 
 /**
+ * struct wiphy_iftype_ext_capab - extended capabilities per interface type
+ * @iftype: interface type
+ * @extended_capabilities: extended capabilities supported by the driver,
+ *	additional capabilities might be supported by userspace; these are the
+ *	802.11 extended capabilities ("Extended Capabilities element") and are
+ *	in the same format as in the information element. See IEEE Std
+ *	802.11-2012 8.4.2.29 for the defined fields.
+ * @extended_capabilities_mask: mask of the valid values
+ * @extended_capabilities_len: length of the extended capabilities
+ */
+struct wiphy_iftype_ext_capab {
+	enum nl80211_iftype iftype;
+	const u8 *extended_capabilities;
+	const u8 *extended_capabilities_mask;
+	u8 extended_capabilities_len;
+};
+
+/**
  * struct wiphy - wireless hardware description
  * @reg_notifier: the driver's regulatory notification callback,
  *	note that if your driver uses wiphy_apply_custom_regulatory()
@@ -2953,9 +3027,14 @@ struct wiphy_vendor_command {
  *	additional capabilities might be supported by userspace; these are
  *	the 802.11 extended capabilities ("Extended Capabilities element")
  *	and are in the same format as in the information element. See
- *	802.11-2012 8.4.2.29 for the defined fields.
+ *	802.11-2012 8.4.2.29 for the defined fields. These are the default
+ *	extended capabilities to be used if the capabilities are not specified
+ *	for a specific interface type in iftype_ext_capab.
  * @extended_capabilities_mask: mask of the valid values
  * @extended_capabilities_len: length of the extended capabilities
+ * @iftype_ext_capab: array of extended capabilities per interface type
+ * @num_iftype_ext_capab: number of interface types for which extended
+ *	capabilities are specified separately.
  * @coalesce: packet coalescing support information
  *
  * @vendor_commands: array of vendor commands supported by the hardware
@@ -3047,6 +3126,9 @@ struct wiphy {
 
 	const u8 *extended_capabilities, *extended_capabilities_mask;
 	u8 extended_capabilities_len;
+
+	const struct wiphy_iftype_ext_capab *iftype_ext_capab;
+	unsigned int num_iftype_ext_capab;
 
 	/* If multiple wiphys are registered and you're handed e.g.
 	 * a regular netdev with assigned ieee80211_ptr, you won't
@@ -3266,6 +3348,7 @@ struct cfg80211_cached_keys;
  *	registered for unexpected class 3 frames (AP mode)
  * @conn: (private) cfg80211 software SME connection state machine data
  * @connect_keys: (private) keys to set after connection is established
+ * @conn_bss_type: connecting/connected BSS type
  * @ibss_fixed: (private) IBSS is using fixed BSSID
  * @ibss_dfs_possible: (private) IBSS may change to a DFS channel
  * @event_list: (private) list for internal event processing
@@ -3296,6 +3379,7 @@ struct wireless_dev {
 	u8 ssid_len, mesh_id_len, mesh_id_up_len;
 	struct cfg80211_conn *conn;
 	struct cfg80211_cached_keys *connect_keys;
+	enum ieee80211_bss_type conn_bss_type;
 
 	struct list_head event_list;
 	spinlock_t event_lock;
@@ -3669,6 +3753,32 @@ const u8 *cfg80211_find_vendor_ie(unsigned int oui, u8 oui_type,
 int regulatory_hint(struct wiphy *wiphy, const char *alpha2);
 
 /**
+ * regulatory_hint_user - hint to the wireless core a regulatory domain
+ * which the driver has received from an application
+ * @alpha2: the ISO/IEC 3166 alpha2 the driver claims its regulatory domain
+ *	should be in. If @rd is set this should be NULL. Note that if you
+ *	set this to NULL you should still set rd->alpha2 to some accepted
+ *	alpha2.
+ * @user_reg_hint_type: the type of user regulatory hint.
+ *
+ * Wireless drivers can use this function to hint to the wireless core
+ * the current regulatory domain as specified by trusted applications,
+ * it is the driver's responsibilty to estbalish which applications it
+ * trusts.
+ *
+ * The wiphy should be registered to cfg80211 prior to this call.
+ * For cfg80211 drivers this means you must first use wiphy_register(),
+ * for mac80211 drivers you must first use ieee80211_register_hw().
+ *
+ * Drivers should check the return value, its possible you can get
+ * an -ENOMEM or an -EINVAL.
+ *
+ * Return: 0 on success. -ENOMEM, -EINVAL.
+ */
+int regulatory_hint_user(const char *alpha2,
+			 enum nl80211_user_reg_hint_type user_reg_hint_type);
+
+/**
  * wiphy_apply_custom_regulatory - apply a custom driver regulatory domain
  * @wiphy: the wireless device we want to process the regulatory domain on
  * @regd: the custom regulatory domain to use for this wiphy
@@ -3858,14 +3968,16 @@ struct cfg80211_bss *cfg80211_get_bss(struct wiphy *wiphy,
 				      struct ieee80211_channel *channel,
 				      const u8 *bssid,
 				      const u8 *ssid, size_t ssid_len,
-				      u16 capa_mask, u16 capa_val);
+				      enum ieee80211_bss_type bss_type,
+				      enum ieee80211_privacy);
 static inline struct cfg80211_bss *
 cfg80211_get_ibss(struct wiphy *wiphy,
 		  struct ieee80211_channel *channel,
 		  const u8 *ssid, size_t ssid_len)
 {
 	return cfg80211_get_bss(wiphy, channel, NULL, ssid, ssid_len,
-				WLAN_CAPABILITY_IBSS, WLAN_CAPABILITY_IBSS);
+				IEEE80211_BSS_TYPE_IBSS,
+				IEEE80211_PRIVACY_ANY);
 }
 
 /**
@@ -4106,6 +4218,7 @@ struct sk_buff *__cfg80211_alloc_reply_skb(struct wiphy *wiphy,
 					   int approxlen);
 
 struct sk_buff *__cfg80211_alloc_event_skb(struct wiphy *wiphy,
+					   struct wireless_dev *wdev,
 					   enum nl80211_commands cmd,
 					   enum nl80211_attrs attr,
 					   int vendor_event_idx,
@@ -4160,6 +4273,7 @@ int cfg80211_vendor_cmd_reply(struct sk_buff *skb);
 /**
  * cfg80211_vendor_event_alloc - allocate vendor-specific event skb
  * @wiphy: the wiphy
+ * @wdev: the wireless device
  * @event_idx: index of the vendor event in the wiphy's vendor_events
  * @approxlen: an upper bound of the length of the data that will
  *	be put into the skb
@@ -4168,16 +4282,20 @@ int cfg80211_vendor_cmd_reply(struct sk_buff *skb);
  * This function allocates and pre-fills an skb for an event on the
  * vendor-specific multicast group.
  *
+ * If wdev != NULL, both the ifindex and identifier of the specified
+ * wireless device are added to the event message before the vendor data
+ * attribute.
+ *
  * When done filling the skb, call cfg80211_vendor_event() with the
  * skb to send the event.
  *
  * Return: An allocated and pre-filled skb. %NULL if any errors happen.
  */
 static inline struct sk_buff *
-cfg80211_vendor_event_alloc(struct wiphy *wiphy, int approxlen,
-			    int event_idx, gfp_t gfp)
+cfg80211_vendor_event_alloc(struct wiphy *wiphy, struct wireless_dev *wdev,
+			     int approxlen, int event_idx, gfp_t gfp)
 {
-	return __cfg80211_alloc_event_skb(wiphy, NL80211_CMD_VENDOR,
+	return __cfg80211_alloc_event_skb(wiphy, wdev, NL80211_CMD_VENDOR,
 					  NL80211_ATTR_VENDOR_DATA,
 					  event_idx, approxlen, gfp);
 }
@@ -4278,7 +4396,7 @@ static inline int cfg80211_testmode_reply(struct sk_buff *skb)
 static inline struct sk_buff *
 cfg80211_testmode_alloc_event_skb(struct wiphy *wiphy, int approxlen, gfp_t gfp)
 {
-	return __cfg80211_alloc_event_skb(wiphy, NL80211_CMD_TESTMODE,
+	return __cfg80211_alloc_event_skb(wiphy, NULL, NL80211_CMD_TESTMODE,
 					  NL80211_ATTR_TESTDATA, -1,
 					  approxlen, gfp);
 }
@@ -4306,6 +4424,32 @@ static inline void cfg80211_testmode_event(struct sk_buff *skb, gfp_t gfp)
 #endif
 
 /**
+ * cfg80211_connect_bss - notify cfg80211 of connection result
+ *
+ * @dev: network device
+ * @bssid: the BSSID of the AP
+ * @bss: entry of bss to which STA got connected to, can be obtained
+ *	through cfg80211_get_bss (may be %NULL)
+ * @req_ie: association request IEs (maybe be %NULL)
+ * @req_ie_len: association request IEs length
+ * @resp_ie: association response IEs (may be %NULL)
+ * @resp_ie_len: assoc response IEs length
+ * @status: status code, 0 for successful connection, use
+ *      %WLAN_STATUS_UNSPECIFIED_FAILURE if your device cannot give you
+ *      the real status code for failures.
+ * @gfp: allocation flags
+ *
+ * It should be called by the underlying driver whenever connect() has
+ * succeeded. This is similar to cfg80211_connect_result(), but with the
+ * option of identifying the exact bss entry for the connection. Only one of
+ * these functions should be called.
+ */
+void cfg80211_connect_bss(struct net_device *dev, const u8 *bssid,
+			  struct cfg80211_bss *bss, const u8 *req_ie,
+			  size_t req_ie_len, const u8 *resp_ie,
+			  size_t resp_ie_len, u16 status, gfp_t gfp);
+
+/**
  * cfg80211_connect_result - notify cfg80211 of connection result
  *
  * @dev: network device
@@ -4322,10 +4466,15 @@ static inline void cfg80211_testmode_event(struct sk_buff *skb, gfp_t gfp)
  * It should be called by the underlying driver whenever connect() has
  * succeeded.
  */
-void cfg80211_connect_result(struct net_device *dev, const u8 *bssid,
-			     const u8 *req_ie, size_t req_ie_len,
-			     const u8 *resp_ie, size_t resp_ie_len,
-			     u16 status, gfp_t gfp);
+static inline void
+cfg80211_connect_result(struct net_device *dev, const u8 *bssid,
+			const u8 *req_ie, size_t req_ie_len,
+			const u8 *resp_ie, size_t resp_ie_len,
+			u16 status, gfp_t gfp)
+{
+	cfg80211_connect_bss(dev, bssid, NULL, req_ie, req_ie_len, resp_ie,
+			     resp_ie_len, status, gfp);
+}
 
 /**
  * cfg80211_roamed - notify cfg80211 of roaming
@@ -4381,13 +4530,15 @@ void cfg80211_roamed_bss(struct net_device *dev, struct cfg80211_bss *bss,
  * @ie: information elements of the deauth/disassoc frame (may be %NULL)
  * @ie_len: length of IEs
  * @reason: reason code for the disconnection, set it to 0 if unknown
+ * @locally_generated: disconnection was requested locally
  * @gfp: allocation flags
  *
  * After it calls this function, the driver should enter an idle state
  * and not try to connect to any AP any more.
  */
 void cfg80211_disconnected(struct net_device *dev, u16 reason,
-			   const u8 *ie, size_t ie_len, gfp_t gfp);
+			   const u8 *ie, size_t ie_len,
+			   bool locally_generated, gfp_t gfp);
 
 /**
  * cfg80211_ready_on_channel - notification of remain_on_channel start
@@ -4874,6 +5025,22 @@ void cfg80211_shutdown_all_interfaces(struct wiphy *wiphy);
 
 /* ethtool helper */
 void cfg80211_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info);
+
+/**
+ * cfg80211_ap_stopped - notify userspace that AP mode stopped
+ * @netdev: network device
+ * @gfp: context flags
+ */
+void cfg80211_ap_stopped(struct net_device *netdev, gfp_t gfp);
+/**
+ * cfg80211_is_gratuitous_arp_unsolicited_na - packet is grat. ARP/unsol. NA
+ * @skb: the input packet, must be an ethernet frame already
+ *
+ * Return: %true if the packet is a gratuitous ARP or unsolicited NA packet.
+ * This is used to drop packets that shouldn't occur because the AP implements
+ * a proxy service.
+ */
+bool cfg80211_is_gratuitous_arp_unsolicited_na(struct sk_buff *skb);
 
 /* Logging, debugging and troubleshooting/diagnostic helpers. */
 

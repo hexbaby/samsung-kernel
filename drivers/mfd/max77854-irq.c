@@ -236,9 +236,7 @@ static irqreturn_t max77854_irq_thread(int irq, void *data)
 		return IRQ_NONE;
 	}
 
-	pr_info("%s:%s: irq[%d] %d/%d/%d irq_src=0x%02x\n", MFD_DEV_NAME, __func__,
-		irq, max77854->irq, max77854->irq_base, max77854->irq_gpio, irq_src);
-
+	pr_debug("%s: interrupt source(0x%02x)\n", __func__, irq_src);
 
 	if (irq_src & MAX77854_IRQSRC_CHG) {
 		/* CHG_INT */
@@ -403,16 +401,6 @@ int max77854_irq_init(struct max77854_dev *max77854)
 #endif
 	}
 
-	ret = request_threaded_irq(max77854->irq, NULL, max77854_irq_thread,
-				   IRQF_TRIGGER_LOW | IRQF_ONESHOT,
-				   "max77854-irq", max77854);
-	if (ret) {
-		dev_err(max77854->dev, "Failed to request IRQ %d: %d\n",
-			max77854->irq, ret);
-		return ret;
-	}
-
-
 	/* Unmask max77854 interrupt */
 	ret = max77854_read_reg(max77854->i2c, MAX77854_PMIC_REG_INTSRC_MASK,
 			  &i2c_data);
@@ -430,6 +418,15 @@ int max77854_irq_init(struct max77854_dev *max77854)
 
 	pr_info("%s:%s max77854_PMIC_REG_INTSRC_MASK=0x%02x\n",
 			MFD_DEV_NAME, __func__, i2c_data);
+
+	ret = request_threaded_irq(max77854->irq, NULL, max77854_irq_thread,
+				   IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+				   "max77854-irq", max77854);
+	if (ret) {
+		dev_err(max77854->dev, "Failed to request IRQ %d: %d\n",
+			max77854->irq, ret);
+		return ret;
+	}
 
 	return 0;
 }

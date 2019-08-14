@@ -2,6 +2,7 @@
  * drivers/staging/android/ion/ion_heap.c
  *
  * Copyright (C) 2011 Google, Inc.
+ * Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -22,7 +23,9 @@
 #include <linux/sched.h>
 #include <linux/scatterlist.h>
 #include <linux/vmalloc.h>
+#include <linux/slab.h>
 #include <linux/highmem.h>
+#include <linux/dma-mapping.h>
 #include "ion.h"
 #include "ion_priv.h"
 
@@ -39,7 +42,7 @@ void *ion_heap_map_kernel(struct ion_heap *heap,
 	struct page **tmp = pages;
 
 	if (!pages)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	if (buffer->flags & ION_FLAG_CACHED)
 		pgprot = PAGE_KERNEL;
@@ -133,23 +136,8 @@ static int ion_heap_sglist_zero(struct scatterlist *sgl, unsigned int nents,
 			p = 0;
 		}
 	}
-
-	while (p-- > 0) {
-		void *va = kmap(pages[p]);
-
-		/* skip clear if kmap failed because this is not a core job */
-		if (!va)
-			break;
-		clear_page(va);
-#ifdef CONFIG_ARM64
-		if (pgprot == pgprot_writecombine(PAGE_KERNEL))
-			__flush_dcache_area(va, PAGE_SIZE);
-#else
-		if (pgprot == pgprot_writecombine(PAGE_KERNEL))
-			dmac_flush_range(va, va + PAGE_SIZE);
-#endif
-		kunmap(pages[p]);
-	}
+	if (p)
+		ret = ion_heap_clear_pages(pages, p, pgprot);
 
 	return ret;
 }
@@ -158,20 +146,13 @@ int ion_heap_buffer_zero(struct ion_buffer *buffer)
 {
 	struct sg_table *table = buffer->sg_table;
 	pgprot_t pgprot;
-	int ret;
-
-	ION_EVENT_BEGIN();
 
 	if (buffer->flags & ION_FLAG_CACHED)
 		pgprot = PAGE_KERNEL;
 	else
 		pgprot = pgprot_writecombine(PAGE_KERNEL);
 
-	ret = ion_heap_sglist_zero(table->sgl, table->nents, pgprot);
-
-	ION_EVENT_CLEAR(buffer, ION_EVENT_DONE());
-
-	return ret;
+	return ion_heap_sglist_zero(table->sgl, table->nents, pgprot);
 }
 
 int ion_heap_pages_zero(struct page *page, size_t size, pgprot_t pgprot)
@@ -276,8 +257,6 @@ int ion_heap_init_deferred_free(struct ion_heap *heap)
 	struct sched_param param = { .sched_priority = 0 };
 
 	INIT_LIST_HEAD(&heap->free_list);
-	heap->free_list_size = 0;
-	spin_lock_init(&heap->free_lock);
 	init_waitqueue_head(&heap->waitqueue);
 	heap->task = kthread_run(ion_heap_deferred_free, heap,
 				 "%s", heap->name);
@@ -328,8 +307,6 @@ static unsigned long ion_heap_shrink_scan(struct shrinker *shrinker,
 
 	if (heap->ops->shrink)
 		freed += heap->ops->shrink(heap, sc->gfp_mask, to_scan);
-		
-	trace_ion_shrink(sc->nr_to_scan, freed);
 	return freed;
 }
 
@@ -349,7 +326,7 @@ struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
 	switch (heap_data->type) {
 	case ION_HEAP_TYPE_SYSTEM_CONTIG:
 		pr_err("%s: Heap type is disabled: %d\n", __func__,
-			heap_data->type);
+		       heap_data->type);
 		return ERR_PTR(-EINVAL);
 	case ION_HEAP_TYPE_SYSTEM:
 		heap = ion_system_heap_create(heap_data);
@@ -370,14 +347,15 @@ struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
 	}
 
 	if (IS_ERR_OR_NULL(heap)) {
-		pr_err("%s: error creating heap %s type %d base %lu size %zu\n",
+		pr_err("%s: error creating heap %s type %d base %pa size %zu\n",
 		       __func__, heap_data->name, heap_data->type,
-		       heap_data->base, heap_data->size);
+		       &heap_data->base, heap_data->size);
 		return ERR_PTR(-EINVAL);
 	}
 
 	heap->name = heap_data->name;
 	heap->id = heap_data->id;
+	heap->priv = heap_data->priv;
 	return heap;
 }
 
@@ -389,7 +367,7 @@ void ion_heap_destroy(struct ion_heap *heap)
 	switch (heap->type) {
 	case ION_HEAP_TYPE_SYSTEM_CONTIG:
 		pr_err("%s: Heap type is disabled: %d\n", __func__,
-			heap->type);
+		       heap->type);
 		break;
 	case ION_HEAP_TYPE_SYSTEM:
 		ion_system_heap_destroy(heap);

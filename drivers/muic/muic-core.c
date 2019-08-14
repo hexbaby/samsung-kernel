@@ -11,6 +11,7 @@
 #include <linux/i2c.h>
 #include <linux/i2c-gpio.h>
 #include <linux/gpio.h>
+//#include <mach/irqs.h>
 
 /* switch device header */
 #ifdef CONFIG_SWITCH
@@ -36,6 +37,9 @@
 #elif defined(CONFIG_MFD_MAX77888)
 #include <linux/mfd/max77888.h>
 #include <linux/mfd/max77888-private.h>
+#elif defined(CONFIG_MFD_MAX77854)
+#include <linux/mfd/max77854.h>
+#include <linux/mfd/max77854-private.h>
 #endif
 
 #include <linux/muic/muic.h>
@@ -54,19 +58,30 @@ static struct switch_dev switch_dock = {
 };
 
 struct switch_dev switch_uart3 = {
-	.name = "uart3", /* sys/class/switch/uart3/state */
+	.name = "uart3",	/* sys/class/switch/uart3/state */
+};
+EXPORT_SYMBOL(switch_uart3);
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+static struct switch_dev switch_earjack = {
+	.name = "h2w",          /* /sys/class/switch/h2w/state */
 };
 
-#ifdef CONFIG_SEC_FACTORY
-struct switch_dev switch_attached_muic_cable = {
-	.name = "attached_muic_cable", /* sys/class/switch/attached_muic_cable/state */
+static struct switch_dev switch_earjackkey = {
+	.name = "send_end",     /* /sys/class/switch/send_end/state */
 };
 #endif
 #endif /* CONFIG_SWITCH */
 
 #if defined(CONFIG_MUIC_NOTIFIER)
 static struct notifier_block dock_notifier_block;
-static struct notifier_block cable_data_notifier_block;
+
+static void muic_jig_uart_cb(int jig_state)
+{
+	pr_info("%s: MUIC uart type(%d)\n", __func__, jig_state);
+#ifdef CONFIG_SWITCH
+	switch_set_state(&switch_uart3, jig_state);
+#endif
+}
 
 void muic_send_dock_intent(int type)
 {
@@ -76,16 +91,24 @@ void muic_send_dock_intent(int type)
 #endif
 }
 
-#ifdef CONFIG_SEC_FACTORY
-void muic_send_attached_muic_cable_intent(int type)
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+static int muic_earjack_intent(int state)
 {
-	pr_info("%s: MUIC attached_muic_cable type(%d)\n", __func__, type);
+	pr_info("%s: MUIC earjack(%d)\n", __func__, state);
 #ifdef CONFIG_SWITCH
-	switch_set_state(&switch_attached_muic_cable, type);
+	switch_set_state(&switch_earjack, state);
 #endif
+	return NOTIFY_OK;
+}
+static int muic_earjackkey_intent(int state)
+{
+	pr_info("%s: MUIC earjackkey(%d)\n", __func__, state);
+#ifdef CONFIG_SWITCH
+	switch_set_state(&switch_earjackkey, state);
+#endif
+	return NOTIFY_OK;
 }
 #endif
-
 static int muic_dock_attach_notify(int type, const char *name)
 {
 	pr_info("%s: %s\n", __func__, name);
@@ -184,46 +207,23 @@ static int muic_handle_dock_notification(struct notifier_block *nb,
 		} else if (action == MUIC_NOTIFY_CMD_DETACH)
 			return muic_dock_detach_notify();
 		break;
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+	case ATTACHED_DEV_SEND_MUIC:
+	case ATTACHED_DEV_VOLDN_MUIC:
+	case ATTACHED_DEV_VOLUP_MUIC:
+			return muic_earjackkey_intent(1);
+	case ATTACHED_DEV_EARJACK_MUIC:
+		if (action == MUIC_NOTIFY_CMD_ATTACH) {
+			return muic_earjack_intent(1);
+		} else if (action == MUIC_NOTIFY_CMD_DETACH)
+			return muic_earjack_intent(0);
+		break;
+#endif
 	default:
 		break;
 	}
 
 	pr_info("%s: ignore(%d)\n", __func__, attached_dev);
-	return NOTIFY_DONE;
-}
-
-static int muic_handle_cable_data_notification(struct notifier_block *nb,
-			unsigned long action, void *data)
-{
-#if defined(CONFIG_CCIC_NOTIFIER) && defined(CONFIG_MUIC_SUPPORT_CCIC)
-	CC_NOTI_ATTACH_TYPEDEF *pnoti = (CC_NOTI_ATTACH_TYPEDEF *)data;
-	muic_attached_dev_t attached_dev = pnoti->cable_type;
-#else
-	muic_attached_dev_t attached_dev = *(muic_attached_dev_t *)data;
-#endif
-	int jig_state = 0;
-
-	switch (attached_dev) {
-	case ATTACHED_DEV_JIG_UART_OFF_MUIC:
-	case ATTACHED_DEV_JIG_UART_OFF_VB_MUIC:		/* VBUS enabled */
-	case ATTACHED_DEV_JIG_UART_OFF_VB_OTG_MUIC:	/* for otg test */
-	case ATTACHED_DEV_JIG_UART_OFF_VB_FG_MUIC:	/* for fg test */
-	case ATTACHED_DEV_JIG_UART_ON_MUIC:
-	case ATTACHED_DEV_JIG_UART_ON_VB_MUIC:		/* VBUS enabled */
-	case ATTACHED_DEV_JIG_USB_OFF_MUIC:
-	case ATTACHED_DEV_JIG_USB_ON_MUIC:
-		if (action == MUIC_NOTIFY_CMD_ATTACH)
-			jig_state = 1;
-		break;
-	default:
-		jig_state = 0;
-		break;
-	}
-
-	pr_info("%s: MUIC uart type(%d)\n", __func__, jig_state);
-#ifdef CONFIG_SWITCH
-	switch_set_state(&switch_uart3, jig_state);
-#endif
 	return NOTIFY_DONE;
 }
 #endif /* CONFIG_MUIC_NOTIFIER */
@@ -299,41 +299,47 @@ static void muic_init_switch_dev_cb(void)
 				__func__, ret);
 		return;
 	}
-
-	/* for UART event */
+	
 	ret = switch_dev_register(&switch_uart3);
 	if (ret < 0) {
-		pr_err("%s: Failed to register uart3 switch(%d)\n",
-				__func__, ret);
-		return;
+		pr_err("%s : Failed to register switch_uart3 device\n", __func__);
+		goto err_switch_uart3_dev_register;
 	}
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+        ret = switch_dev_register(&switch_earjack);
+        if (ret < 0) {
+                pr_info("%s : Failed to register switch device\n", __func__);
+                goto err_switch_dev_register;
+        }
 
-#ifdef CONFIG_SEC_FACTORY
-	/* for cable type event */
-	ret = switch_dev_register(&switch_attached_muic_cable);
-	if (ret < 0) {
-		pr_err("%s: Failed to register attached_muic_cable switch(%d)\n",
-				__func__, ret);
-		return;
-	}
+        ret = switch_dev_register(&switch_earjackkey);
+        if (ret < 0) {
+                pr_info("%s : Failed to register switch device\n", __func__);
+                goto err_switch_dev_register;
+        }
 #endif
 #endif /* CONFIG_SWITCH */
 
 #if defined(CONFIG_MUIC_NOTIFIER)
 	muic_notifier_register(&dock_notifier_block,
 			muic_handle_dock_notification, MUIC_NOTIFY_DEV_DOCK);
-	muic_notifier_register(&cable_data_notifier_block,
-			muic_handle_cable_data_notification, MUIC_NOTIFY_DEV_CABLE_DATA);
 #endif /* CONFIG_MUIC_NOTIFIER */
 
 	pr_info("%s: done\n", __func__);
+	return;
+#if defined(CONFIG_MUIC_SUPPORT_EARJACK)
+err_switch_dev_register:
+	switch_dev_unregister(&switch_earjack);
+	switch_dev_unregister(&switch_earjackkey);
+#endif
+err_switch_uart3_dev_register:
+	switch_dev_unregister(&switch_dock);
 }
 
 static void muic_cleanup_switch_dev_cb(void)
 {
 #if defined(CONFIG_MUIC_NOTIFIER)
 	muic_notifier_unregister(&dock_notifier_block);
-	muic_notifier_unregister(&cable_data_notifier_block);
 #endif /* CONFIG_MUIC_NOTIFIER */
 
 	pr_info("%s: done\n", __func__);
@@ -373,6 +379,7 @@ static int __init set_afc_mode(char *str)
 {
 	int mode;
 	get_option(&str, &mode);
+	pr_info("%s: mode is 0x%02x\n", __func__, mode);
 	afc_mode = (mode & 0x0000FF00) >> 8;
 	pr_info("%s: afc_mode is 0x%02x\n", __func__, afc_mode);
 
@@ -451,6 +458,7 @@ struct muic_platform_data muic_pdata = {
 	.init_switch_dev_cb	= muic_init_switch_dev_cb,
 	.cleanup_switch_dev_cb	= muic_cleanup_switch_dev_cb,
 	.init_gpio_cb		= muic_init_gpio_cb,
+	.jig_uart_cb		= muic_jig_uart_cb,
 #if defined(CONFIG_USE_SAFEOUT)
 	.set_safeout		= muic_set_safeout,
 #endif /* CONFIG_USE_SAFEOUT */

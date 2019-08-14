@@ -89,7 +89,6 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/random.h>
 #include <linux/slab.h>
-#include <linux/netfilter/xt_qtaguid.h>
 
 #include <asm/uaccess.h>
 
@@ -126,13 +125,6 @@
 #ifdef CONFIG_ANDROID_PARANOID_NETWORK
 #include <linux/android_aid.h>
 
-/* START_OF_KNOX_NPA */
-#include <net/ncm.h>
-#include <linux/kfifo.h>
-#include <asm/current.h>
-#include <linux/pid.h>
-/* END_OF_KNOX_NPA */
-
 static inline int current_has_network(void)
 {
 	return in_egroup_p(AID_INET) || capable(CAP_NET_RAW);
@@ -143,6 +135,8 @@ static inline int current_has_network(void)
 	return 1;
 }
 #endif
+
+int sysctl_reserved_port_bind __read_mostly = 1;
 
 /* The inetsw table contains everything that inet_create needs to
  * build a new socket.
@@ -164,10 +158,12 @@ void inet_sock_destruct(struct sock *sk)
 	if (sk->sk_type == SOCK_STREAM && sk->sk_state != TCP_CLOSE) {
 		pr_err("Attempt to release TCP socket in state %d %p\n",
 		       sk->sk_state, sk);
+		BUG();
 		return;
 	}
 	if (!sock_flag(sk, SOCK_DEAD)) {
 		pr_err("Attempt to release alive inet socket %p\n", sk);
+		BUG();
 		return;
 	}
 
@@ -291,6 +287,9 @@ static int inet_create(struct net *net, struct socket *sock, int protocol,
 	unsigned char answer_flags;
 	int try_loading_module = 0;
 	int err;
+
+	if (protocol < 0 || protocol >= IPPROTO_MAX)
+		return -EINVAL;
 
 	if (!current_has_network())
 		return -EACCES;
@@ -422,17 +421,6 @@ out_rcu_unlock:
 	goto out;
 }
 
-/* START_OF_KNOX_NPA */
-/** The function is used to check if the ncm feature is enabled or not;
- * if enabled then collect the socket meta-data information;
- * if enabled then it calls knox_collect_socket_data function in ncm.c to record all the socket data; **/
-static void knox_collect_metadata(struct socket *sock)
-{
-	if (check_ncm_flag()) {
-		knox_collect_socket_data(sock);
-	}
-}
-/* END_OF_KNOX_NPA */
 
 /*
  *	The peer socket should always be NULL (or else). When we call this
@@ -446,9 +434,6 @@ int inet_release(struct socket *sock)
 	if (sk) {
 		long timeout;
 
-#ifdef CONFIG_NETFILTER_XT_MATCH_QTAGUID
-		qtaguid_untag(sock, true);
-#endif
 		sock_rps_reset_flow(sk);
 
 		/* Applications forget to leave groups before exiting */
@@ -465,9 +450,6 @@ int inet_release(struct socket *sock)
 		if (sock_flag(sk, SOCK_LINGER) &&
 		    !(current->flags & PF_EXITING))
 			timeout = sk->sk_lingertime;
-		/* START_OF_KNOX_NPA */
-		knox_collect_metadata(sock);
-		/* END_OF_KNOX_NPA */
 		sock->sk = NULL;
 		sk->sk_prot->close(sk, timeout);
 	}
@@ -798,7 +780,6 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		 size_t size)
 {
 	struct sock *sk = sock->sk;
-	int err;
 
 	sock_rps_record_flow(sk);
 
@@ -807,16 +788,7 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	    inet_autobind(sk))
 		return -EAGAIN;
 
-    err = sk->sk_prot->sendmsg(iocb, sk, msg, size);
-
-    if (err >= 0) {
-        if(sock->knox_sent + err > ULLONG_MAX) {
-            sock->knox_sent = ULLONG_MAX;
-        } else {
-            sock->knox_sent = sock->knox_sent + err;
-        }
-    }
-    return err;
+	return sk->sk_prot->sendmsg(iocb, sk, msg, size);
 }
 EXPORT_SYMBOL(inet_sendmsg);
 
@@ -849,14 +821,8 @@ int inet_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 
 	err = sk->sk_prot->recvmsg(iocb, sk, msg, size, flags & MSG_DONTWAIT,
 				   flags & ~MSG_DONTWAIT, &addr_len);
-	if (err >= 0) {
+	if (err >= 0)
 		msg->msg_namelen = addr_len;
-        if(sock->knox_recv + err > ULLONG_MAX) {
-            sock->knox_recv = ULLONG_MAX;
-        } else {
-            sock->knox_recv = sock->knox_recv + err;
-        }
-    }
 	return err;
 }
 EXPORT_SYMBOL(inet_recvmsg);
@@ -960,6 +926,7 @@ int inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	case SIOCSIFPFLAGS:
 	case SIOCGIFPFLAGS:
 	case SIOCSIFFLAGS:
+	case SIOCKILLADDR:
 		err = devinet_ioctl(net, cmd, (void __user *)arg);
 		break;
 	default:
@@ -1103,7 +1070,7 @@ static struct inet_protosw inetsw_array[] =
 		.type =       SOCK_DGRAM,
 		.protocol =   IPPROTO_ICMP,
 		.prot =       &ping_prot,
-		.ops =        &inet_sockraw_ops,
+		.ops =        &inet_dgram_ops,
 		.flags =      INET_PROTOSW_REUSE,
        },
 
@@ -1422,6 +1389,7 @@ static struct sk_buff **inet_gro_receive(struct sk_buff **head,
 
 	for (p = *head; p; p = p->next) {
 		struct iphdr *iph2;
+		u16 flush_id;
 
 		if (!NAPI_GRO_CB(p)->same_flow)
 			continue;
@@ -1445,14 +1413,24 @@ static struct sk_buff **inet_gro_receive(struct sk_buff **head,
 			(iph->tos ^ iph2->tos) |
 			((iph->frag_off ^ iph2->frag_off) & htons(IP_DF));
 
-		/* Save the IP ID check to be included later when we get to
-		 * the transport layer so only the inner most IP ID is checked.
-		 * This is because some GSO/TSO implementations do not
-		 * correctly increment the IP ID for the outer hdrs.
-		 */
-		NAPI_GRO_CB(p)->flush_id =
-			    ((u16)(ntohs(iph2->id) + NAPI_GRO_CB(p)->count) ^ id);
 		NAPI_GRO_CB(p)->flush |= flush;
+
+		/* We must save the offset as it is possible to have multiple
+		 * flows using the same protocol and address pairs so we
+		 * need to wait until we can validate this is part of the
+		 * same flow with a 5-tuple or better to avoid unnecessary
+		 * collisions between flows.  We can support one of two
+		 * possible scenarios, either a fixed value with DF bit set
+		 * or an incrementing value with DF either set or unset.
+		 * In the case of a fixed value we will end up losing the
+		 * data that the IP ID was a fixed value, however per RFC
+		 * 6864 in such a case the actual value of the IP ID is
+		 * meant to be ignored anyway.
+		 */
+		flush_id = (u16)(id - ntohs(iph2->id));
+		if (flush_id || !(iph2->frag_off & htons(IP_DF)))
+			NAPI_GRO_CB(p)->flush_id |= flush_id ^
+						    NAPI_GRO_CB(p)->count;
 	}
 
 	NAPI_GRO_CB(skb)->flush |= flush;
@@ -1490,32 +1468,6 @@ static struct sk_buff **ipip_gro_receive(struct sk_buff **head,
 
 	return inet_gro_receive(head, skb);
 }
-
-#define SECONDS_PER_DAY	86400
-
-/* inet_current_timestamp - Return IP network timestamp
- *
- * Return milliseconds since midnight in network byte order.
- */
-__be32 inet_current_timestamp(void)
-{
-	u32 secs;
-	u32 msecs;
-	struct timespec64 ts;
-
-	ktime_get_real_ts64(&ts);
-
-	/* Get secs since midnight. */
-	(void)div_u64_rem(ts.tv_sec, SECONDS_PER_DAY, &secs);
-	/* Convert to msecs. */
-	msecs = secs * MSEC_PER_SEC;
-	/* Convert nsec to msec. */
-	msecs += (u32)ts.tv_nsec / NSEC_PER_MSEC;
-
-	/* Convert to network byte order. */
-	return htons(msecs);
-}
-EXPORT_SYMBOL(inet_current_timestamp);
 
 int inet_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
 {
@@ -1557,13 +1509,6 @@ out_unlock:
 	rcu_read_unlock();
 
 	return err;
-}
-
-static int ipip_gro_complete(struct sk_buff *skb, int nhoff)
-{
-	skb->encapsulation = 1;
-	skb_shinfo(skb)->gso_type |= SKB_GSO_IPIP;
-	return inet_gro_complete(skb, nhoff);
 }
 
 int inet_ctl_sock_create(struct sock **sk, unsigned short family,
@@ -1783,7 +1728,7 @@ static const struct net_offload ipip_offload = {
 	.callbacks = {
 		.gso_segment	= inet_gso_segment,
 		.gro_receive	= ipip_gro_receive,
-		.gro_complete	= ipip_gro_complete,
+		.gro_complete	= inet_gro_complete,
 	},
 };
 

@@ -33,9 +33,15 @@ void first_crypto_text (void)
 
 #ifdef  KERNEL_KASLR_16K_ALGIN
 #define KASLR_FIRST_SLOT	(0x80080000)
+#if defined(CONFIG_GRACEQLTE_RAM_6G)
+#define KASLR_FIRST_SLOT_6G	(0x40080000)
+#endif
 #define KASLR_ALIGN	(0x4000)
 #else 
 #define KASLR_FIRST_SLOT	(0x85000000)
+#if defined(CONFIG_GRACEQLTE_RAM_6G)
+#define KASLR_FIRST_SLOT_6G	(0x45000000)
+#endif
 #define KASLR_ALIGN	(0x200000)
 #endif
 
@@ -44,8 +50,19 @@ get_builtime_crypto_hmac (void)
 {
 	extern u64 *__boot_kernel_offset; 
 	u64 *kernel_addr = (u64 *) &__boot_kernel_offset;
-	u64 offset = kernel_addr[1]  + kernel_addr[0] - KASLR_FIRST_SLOT;
-	u64 idx = (offset / KASLR_ALIGN);  
+	u64 offset = 0;
+	u64 idx = 0;
+#if defined(CONFIG_GRACEQLTE_RAM_6G)
+	if(ddr_size_6g == 1) {
+		offset = kernel_addr[1]  + kernel_addr[0] - (u64) KASLR_FIRST_SLOT_6G;
+	} else {
+		offset = kernel_addr[1]  + kernel_addr[0] - (u64) KASLR_FIRST_SLOT;
+	}
+#else
+		offset = kernel_addr[1]  + kernel_addr[0] - (u64) KASLR_FIRST_SLOT;
+#endif		
+
+	idx = (offset / KASLR_ALIGN);  
 	return builtime_crypto_hmac[idx];
 }
 #else

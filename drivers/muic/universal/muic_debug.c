@@ -47,6 +47,10 @@
 
 #define MAX_LOG 25
 
+#ifdef CONFIG_SEC_BSP 
+void *muic_dump;
+#endif
+
 extern bool muic_is_online(void);
 static u8 muic_log_cnt;
 static u8 muic_log[MAX_LOG][3];

@@ -50,7 +50,7 @@ static int cfq_throttle_async = 1;
 #define CFQ_MIN_TT		(2)
 
 #define CFQ_SLICE_SCALE		(5)
-#define CFQ_HW_QUEUE_MIN	(5)
+#define CFQ_HW_QUEUE_MIN	(4)
 #define CFQ_SERVICE_SHIFT       12
 
 #define CFQQ_SEEK_THR		(sector_t)(8 * 100)
@@ -4001,8 +4001,14 @@ static void cfq_update_hw_tag(struct cfq_data *cfqd)
 	if (cfqd->hw_tag_samples++ < 50)
 		return;
 
-	if (cfqd->hw_tag_est_depth >= CFQ_HW_QUEUE_MIN)
+	if (cfqd->hw_tag_est_depth >= CFQ_HW_QUEUE_MIN) {
 		cfqd->hw_tag = 1;
+		/*
+		 * for queueing devices, such as UFS and eMMC CQ,
+		 * set slice_idle to 0 if no one touched it yet.
+		 */
+		cfqd->cfq_slice_idle = 0;
+	}
 	else
 		cfqd->hw_tag = 0;
 }
@@ -4648,7 +4654,7 @@ static int __init cfq_init(void)
 	/*
 	if (!cfq_slice_idle)
 		cfq_slice_idle = 1;
-	 */
+         */
 
 #ifdef CONFIG_CFQ_GROUP_IOSCHED
 	if (!cfq_group_idle)

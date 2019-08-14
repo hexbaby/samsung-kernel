@@ -74,12 +74,6 @@
 #define ECRYPTFS_BASE_PATH_SIZE 1024
 #define ECRYPTFS_LABEL_SIZE 1024
 
-#if defined(CONFIG_MMC_DW_FMP_ECRYPT_FS) || defined(CONFIG_UFS_FMP_ECRYPT_FS)
-#define RA_CLEAR	0
-#define RA_RESTORE	1
-#define FMPINFO_CLEAR	0
-#define FMPINFO_SET	1
-#endif
 #ifdef CONFIG_SDP
 #define PKG_NAME_SIZE 16
 #endif
@@ -118,16 +112,11 @@ struct ecryptfs_page_crypt_context {
 static inline struct ecryptfs_auth_tok *
 ecryptfs_get_encrypted_key_payload_data(struct key *key)
 {
-	struct encrypted_key_payload *payload;
-
-	if (key->type != &key_type_encrypted)
+	if (key->type == &key_type_encrypted)
+		return (struct ecryptfs_auth_tok *)
+			(&((struct encrypted_key_payload *)key->payload.data)->payload_data);
+	else
 		return NULL;
-
-	payload = key->payload.data;
-	if (!payload)
-		return ERR_PTR(-EKEYREVOKED);
-
-	return (struct ecryptfs_auth_tok *)payload->payload_data;
 }
 
 static inline struct key *ecryptfs_get_encrypted_key(char *sig)
@@ -153,17 +142,13 @@ static inline struct ecryptfs_auth_tok *
 ecryptfs_get_key_payload_data(struct key *key)
 {
 	struct ecryptfs_auth_tok *auth_tok;
-	struct user_key_payload *ukp;
 
 	auth_tok = ecryptfs_get_encrypted_key_payload_data(key);
-	if (auth_tok)
+	if (!auth_tok)
+		return (struct ecryptfs_auth_tok *)
+			(((struct user_key_payload *)key->payload.data)->data);
+	else
 		return auth_tok;
-
-	ukp = key->payload.data;
-	if (!ukp)
-		return ERR_PTR(-EKEYREVOKED);
-
-	return (struct ecryptfs_auth_tok *)ukp->data;
 }
 
 #ifdef CONFIG_CRYPTO_FIPS
@@ -307,7 +292,7 @@ struct ecryptfs_crypt_stat {
 	struct crypto_ablkcipher *tfm;
 	struct crypto_hash *hash_tfm; /* Crypto context for generating
 				       * the initialization vectors */
-	unsigned char cipher[ECRYPTFS_MAX_CIPHER_NAME_SIZE];
+	unsigned char cipher[ECRYPTFS_MAX_CIPHER_NAME_SIZE + 1];
 	unsigned char key[ECRYPTFS_MAX_KEY_BYTES];
 	unsigned char root_iv[ECRYPTFS_MAX_IV_BYTES];
 #ifdef CONFIG_ECRYPTFS_FEK_INTEGRITY
@@ -318,6 +303,7 @@ struct ecryptfs_crypt_stat {
 	struct mutex cs_tfm_mutex;
 	struct mutex cs_hash_tfm_mutex;
 	struct mutex cs_mutex;
+	unsigned char cipher_mode[ECRYPTFS_MAX_CIPHER_NAME_SIZE + 1];
 #ifdef CONFIG_SDP
 	int engine_id;
 	dek_t sdp_dek;
@@ -418,9 +404,6 @@ struct ecryptfs_mount_crypt_stat {
 #define ECRYPTFS_GLOBAL_ENCFN_USE_MOUNT_FNEK   0x00000020
 #define ECRYPTFS_GLOBAL_ENCFN_USE_FEK          0x00000040
 #define ECRYPTFS_GLOBAL_MOUNT_AUTH_TOK_ONLY    0x00000080
-#if defined(CONFIG_MMC_DW_FMP_ECRYPT_FS) || defined(CONFIG_UFS_FMP_ECRYPT_FS)
-#define ECRYPTFS_USE_FMP		       0x00001000
-#endif
 #ifdef CONFIG_WTL_ENCRYPTION_FILTER
 #define ECRYPTFS_ENABLE_FILTERING              0x00000100
 #define ECRYPTFS_ENABLE_NEW_PASSTHROUGH        0x00000200
@@ -445,9 +428,8 @@ struct ecryptfs_mount_crypt_stat {
 	unsigned char global_default_fn_cipher_name[
 		ECRYPTFS_MAX_CIPHER_NAME_SIZE + 1];
 	char global_default_fnek_sig[ECRYPTFS_SIG_SIZE_HEX + 1];
-#if defined(CONFIG_MMC_DW_FMP_ECRYPT_FS) || defined(CONFIG_UFS_FMP_ECRYPT_FS)
-	u8 cipher_code;
-#endif
+	unsigned char global_default_cipher_mode[ECRYPTFS_MAX_CIPHER_NAME_SIZE
+							 + 1];
 #ifdef CONFIG_WTL_ENCRYPTION_FILTER
 	int max_name_filter_len;
 	char enc_filter_name[ENC_NAME_FILTER_MAX_INSTANCE]
@@ -668,6 +650,53 @@ ecryptfs_dentry_to_lower_path(struct dentry *dentry)
 	return &((struct ecryptfs_dentry_info *)dentry->d_fsdata)->lower_path;
 }
 
+/**
+ * Given a cipher and mode strings, the function
+ * concatenates them to create a new string of
+ * <cipher>_<mode> format.
+ */
+static inline unsigned char *ecryptfs_get_full_cipher(
+	unsigned char *cipher, unsigned char *mode,
+	unsigned char *final, size_t final_size)
+{
+	memset(final, 0, final_size);
+
+	if (strlen(mode) > 0) {
+		snprintf(final, final_size, "%s_%s", cipher, mode);
+		return final;
+	}
+
+	return cipher;
+}
+
+/**
+ * Given a <cipher>[_<mode>] formatted string, the function
+ * extracts cipher string and/or mode string.
+ * Note: the passed cipher and/or mode strings will be null-terminated.
+ */
+static inline void ecryptfs_parse_full_cipher(
+	char *s, char *cipher, char *mode)
+{
+	char input[2*ECRYPTFS_MAX_CIPHER_NAME_SIZE+1+1];
+			/* +1 for '_'; +1 for '\0' */
+	char *p;
+	char *input_p = input;
+
+	if (s == NULL || cipher == NULL)
+		return;
+
+	memset(input, 0, sizeof(input));
+	strlcpy(input, s, sizeof(input));
+
+	p = strsep(&input_p, "_");
+	strlcpy(cipher, p, ECRYPTFS_MAX_CIPHER_NAME_SIZE + 1);
+
+
+	/* check if mode is specified */
+	if (input_p != NULL && mode != NULL)
+		strlcpy(mode, input_p, ECRYPTFS_MAX_CIPHER_NAME_SIZE + 1);
+}
+
 #define ecryptfs_printk(type, fmt, arg...) \
         __ecryptfs_printk(type "%s: " fmt, __func__, ## arg);
 __printf(1, 2)
@@ -717,6 +746,10 @@ int ecryptfs_encrypt_and_encode_filename(
 	const char *name, size_t name_size);
 struct dentry *ecryptfs_lower_dentry(struct dentry *this_dentry);
 void ecryptfs_dump_hex(char *data, int bytes);
+void ecryptfs_dump_salt_hex(char *data, int key_size,
+		const struct ecryptfs_crypt_stat *crypt_stat);
+extern void ecryptfs_dump_cipher(struct ecryptfs_crypt_stat *stat);
+
 int virt_to_scatterlist(const void *addr, int size, struct scatterlist *sg,
 			int sg_size);
 int ecryptfs_compute_root_iv(struct ecryptfs_crypt_stat *crypt_stat);
@@ -878,10 +911,35 @@ int ecryptfs_set_f_namelen(long *namelen, long lower_namelen,
 			   struct ecryptfs_mount_crypt_stat *mount_crypt_stat);
 int ecryptfs_derive_iv(char *iv, struct ecryptfs_crypt_stat *crypt_stat,
 		       loff_t offset);
-#if defined(CONFIG_MMC_DW_FMP_ECRYPT_FS) || defined(CONFIG_UFS_FMP_ECRYPT_FS)
-void ecryptfs_propagate_rapages(struct file *file, unsigned int crypt);
-int ecryptfs_propagate_fmpinfo(struct inode *inode, unsigned int flag);
-#endif
+
+void clean_inode_pages(struct address_space *mapping,
+		pgoff_t start, pgoff_t end);
+
+void ecryptfs_drop_pagecache_sb(struct super_block *sb, void *unused);
+
+void ecryptfs_free_events(void);
+
+void ecryptfs_freepage(struct page *page);
+
+struct ecryptfs_events *get_events(void);
+
+size_t ecryptfs_get_salt_size_for_cipher(
+		const struct ecryptfs_crypt_stat *crypt_stat);
+
+size_t ecryptfs_get_salt_size_for_cipher_mount(
+		const struct ecryptfs_mount_crypt_stat *mount_crypt_stat);
+
+size_t ecryptfs_get_key_size_to_enc_data(
+		const struct ecryptfs_crypt_stat *crypt_stat);
+
+size_t ecryptfs_get_key_size_to_store_key(
+		const struct ecryptfs_crypt_stat *crypt_stat);
+
+size_t ecryptfs_get_key_size_to_restore_key(size_t stored_key_size,
+		const struct ecryptfs_crypt_stat *crypt_stat);
+
+bool ecryptfs_check_space_for_salt(const size_t key_size,
+		const size_t salt_size);
 
 #ifdef CONFIG_WTL_ENCRYPTION_FILTER
 extern int is_file_name_match(struct ecryptfs_mount_crypt_stat *mcs,

@@ -30,29 +30,28 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/iio/consumer.h>
 #include <linux/platform_data/sec_thermistor.h>
-#include <linux/sec_sysfs.h>
 
-#define ADC_SAMPLING_CNT	5
+#define ADC_SAMPLING_CNT	7
+
+struct qpnp_vadc_chip *therm_vadc_dev;
 
 struct sec_therm_info {
 	struct device *dev;
 	struct device *hwmon_dev;
 	struct sec_therm_platform_data *pdata;
-	struct iio_channel *chan;
+	struct qpnp_vadc_chip	*vadc_dev;
 	char name[PLATFORM_NAME_SIZE];
 };
 
 #ifdef CONFIG_OF
 enum sec_thermistor_type {
 	TYPE_SEC_THREM_AP,	/* Close to AP */
-	TYPE_SEC_THREM_PA,	/* Close to PA */
-	TYPE_SEC_THREM_CAM_FLASH,	/* Close to CAM_FLASH */
+	TYPE_SEC_THREM_CAM_FLASH,  /* Camera Flash Thermistor */
 	NR_TYPE_SEC_TERM
 };
 
 static const struct platform_device_id sec_thermistor_id[] = {
 	{ "sec-ap-thermistor", TYPE_SEC_THREM_AP },
-	{ "sec-pa-thermistor", TYPE_SEC_THREM_PA },
 	{ "sec-cf-thermistor", TYPE_SEC_THREM_CAM_FLASH },
 	{ },
 };
@@ -60,8 +59,6 @@ static const struct platform_device_id sec_thermistor_id[] = {
 static const struct of_device_id sec_therm_match[] = {
 	{ .compatible = "samsung,sec-ap-thermistor",
 		.data = &sec_thermistor_id[TYPE_SEC_THREM_AP] },
-	{ .compatible = "samsung,sec-pa-thermistor",
-		.data = &sec_thermistor_id[TYPE_SEC_THREM_PA] },
 	{ .compatible = "samsung,sec-cf-thermistor",
 		.data = &sec_thermistor_id[TYPE_SEC_THREM_CAM_FLASH] },
 	{ },
@@ -77,7 +74,7 @@ sec_therm_parse_dt(struct platform_device *pdev)
 	struct sec_therm_platform_data *pdata;
 	u32 len1, len2;
 	int i;
-	u32 adc, temp;
+	u32 adc, temp, channel = 0;
 
 	if (!np)
 		return NULL;
@@ -91,12 +88,15 @@ sec_therm_parse_dt(struct platform_device *pdev)
 	if (!of_get_property(np, "temp_array", &len2))
 		return ERR_PTR(-ENOENT);
 
+	of_property_read_u32(np, "adc_channel", &channel);
+
 	if (len1 != len2) {
 		dev_err(&pdev->dev, "%s: invalid array length(%u,%u)\n",
 				__func__, len1, len2);
 		return ERR_PTR(-EINVAL);
 	}
 
+	pdata->adc_channel = channel;
 	pdata->adc_arr_size = len1 / sizeof(u32);
 	pdata->adc_table = devm_kzalloc(&pdev->dev,
 			sizeof(*pdata->adc_table) * pdata->adc_arr_size,
@@ -123,17 +123,26 @@ sec_therm_parse_dt(struct platform_device *pdev) { return NULL; }
 
 static int sec_therm_get_adc_data(struct sec_therm_info *info)
 {
-	int adc_data;
-	int adc_max = 0, adc_min = 0, adc_total = 0;
+	int adc_data, adc_ch;
+	int adc_max = 0, adc_min = 0, adc_total = 0, rc = 0;
 	int i;
+	struct qpnp_vadc_result result;
+
+	adc_ch = info->pdata->adc_channel;
 
 	for (i = 0; i < ADC_SAMPLING_CNT; i++) {
-		int ret = iio_read_channel_raw(info->chan, &adc_data);
-		if (ret < 0) {
-			dev_err(info->dev, "%s : err(%d) returned, skip read\n",
-				__func__, adc_data);
-			return ret;
+		rc = qpnp_vadc_read(therm_vadc_dev, adc_ch, &result);
+
+		if (rc) {
+			pr_err("%s: read fail: AMUX(%d), rc(%d)\n",
+					__func__, adc_ch, rc);
+			return rc;
+		} else if (i == 0) {
+			pr_debug("%s: read: AMUX(%d), adc(%d)\n",
+					__func__, adc_ch, result.adc_code);
 		}
+
+		adc_data = result.adc_code;
 
 		if (i != 0) {
 			if (adc_data > adc_max)
@@ -154,6 +163,7 @@ static int convert_adc_to_temper(struct sec_therm_info *info, unsigned int adc)
 {
 	int low = 0;
 	int high = 0;
+	int mid = 0;
 	int temp = 0;
 	int temp2 = 0;
 
@@ -170,7 +180,6 @@ static int convert_adc_to_temper(struct sec_therm_info *info, unsigned int adc)
 		return info->pdata->adc_table[high].temperature;
 
 	while (low <= high) {
-		int mid = 0;
 		mid = (low + high) / 2;
 		if (info->pdata->adc_table[mid].adc > adc)
 			high = mid - 1;
@@ -298,15 +307,19 @@ static int sec_therm_probe(struct platform_device *pdev)
 	strlcpy(info->name, pdev_id->name, sizeof(info->name));
 	platform_set_drvdata(pdev, info);
 
-	info->chan = iio_channel_get(&pdev->dev, NULL);
-	if (IS_ERR(info->chan)) {
-		dev_err(&pdev->dev, "%s: fail to get iio channel\n", __func__);
-		return PTR_ERR(info->chan);
+	info->vadc_dev = therm_vadc_dev = qpnp_get_vadc(info->dev, "therm");
+
+	if (IS_ERR(info->vadc_dev)) {
+		ret = PTR_ERR(info->vadc_dev);
+		pr_err("%s: ret(%d)\n", __func__, ret);
+		if (ret != -EPROBE_DEFER)
+			pr_err("vadc property missing\n");
+		else
+			goto err_therm;
 	}
 
 	switch (pdev_id->driver_data) {
 	case TYPE_SEC_THREM_AP:
-	case TYPE_SEC_THREM_PA:
 	case TYPE_SEC_THREM_CAM_FLASH:
 		/* Allow only a single device instance for each device type */
 		if (sec_therm_single_inst[pdev_id->driver_data])
@@ -314,7 +327,7 @@ static int sec_therm_probe(struct platform_device *pdev)
 		else
 			sec_therm_single_inst[pdev_id->driver_data] = true;
 
-		info->dev = sec_device_create(info, pdev_id->name);
+		info->dev = device_create(sec_class, NULL, 0, info, pdev_id->name);
 		if (IS_ERR(info->dev)) {
 			dev_err(&pdev->dev, "%s: fail to create sec_dev\n",
 					__func__);
@@ -322,7 +335,7 @@ static int sec_therm_probe(struct platform_device *pdev)
 		}
 		break;
 	default:
-		dev_err(&pdev->dev, "%s: Unknown device type: %lu\n", __func__,
+		pr_info("%s: Unknown device type: %lu\n", __func__,
 				pdev_id->driver_data);
 		return -EINVAL;
 	}
@@ -350,7 +363,9 @@ static int sec_therm_probe(struct platform_device *pdev)
 err_register_hwmon:
 	sysfs_remove_group(&info->dev->kobj, &sec_therm_attr_group);
 err_create_sysfs:
-	sec_device_destroy(info->dev->devt);
+	//	sec_device_destroy(info->dev->devt);
+err_therm:
+	devm_kfree(&pdev->dev, info);
 	return ret;
 }
 
@@ -370,9 +385,10 @@ static int sec_therm_remove(struct platform_device *pdev)
 
 	hwmon_device_unregister(info->hwmon_dev);
 	sysfs_remove_group(&info->dev->kobj, &sec_therm_attr_group);
-	iio_channel_release(info->chan);
-	sec_device_destroy(info->dev->devt);
+	//	sec_device_destroy(info->dev->devt);
 	platform_set_drvdata(pdev, NULL);
+
+	kfree(info);
 
 	return 0;
 }

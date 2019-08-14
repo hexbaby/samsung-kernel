@@ -16,7 +16,7 @@
 #ifndef __DA9155_CHARGER_H__
 #define __DA9155_CHARGER_H__
 
-#include "../sec_charging_common.h"
+#include "include/sec_charging_common.h"
 
 #define DA9155_REGS_BASE                    0
 #define DA9155_REGS_SIZE                    1024
@@ -232,7 +232,6 @@ struct da9155_charger_data {
 	unsigned int is_charging;
 	unsigned int charging_type;
 	unsigned int cable_type;
-	unsigned int prev_cable_type;
 	unsigned int charging_current_max;
 	unsigned int charging_current;
 	unsigned int float_voltage;

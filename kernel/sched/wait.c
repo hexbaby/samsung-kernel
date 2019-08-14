@@ -580,7 +580,7 @@ __sched int bit_wait(struct wait_bit_key *word, int mode)
 {
 	schedule();
 	if (signal_pending_state(mode, current))
-		return -EINTR;
+		return -EINTR;  
 	return 0;
 }
 EXPORT_SYMBOL(bit_wait);
@@ -589,31 +589,31 @@ __sched int bit_wait_io(struct wait_bit_key *word, int mode)
 {
 	io_schedule();
 	if (signal_pending_state(mode, current))
-		return -EINTR;
+		return -EINTR;  
 	return 0;
 }
 EXPORT_SYMBOL(bit_wait_io);
 
 __sched int bit_wait_timeout(struct wait_bit_key *word, int mode)
 {
-	unsigned long now = READ_ONCE(jiffies);
+	unsigned long now = ACCESS_ONCE(jiffies);
 	if (time_after_eq(now, word->timeout))
 		return -EAGAIN;
 	schedule_timeout(word->timeout - now);
 	if (signal_pending_state(mode, current))
-		return -EINTR;
+		return -EINTR;  
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bit_wait_timeout);
 
 __sched int bit_wait_io_timeout(struct wait_bit_key *word, int mode)
 {
-	unsigned long now = READ_ONCE(jiffies);
+	unsigned long now = ACCESS_ONCE(jiffies);
 	if (time_after_eq(now, word->timeout))
 		return -EAGAIN;
 	io_schedule_timeout(word->timeout - now);
-	if (signal_pending_state(mode, current))
-		return -EINTR;
+	if (signal_pending(current))  
+		return -EINTR;  
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bit_wait_io_timeout);

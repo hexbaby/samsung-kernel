@@ -27,17 +27,20 @@
 #include <linux/battery/fuelgauge/max17042_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_MAX17048)
 #include <linux/battery/fuelgauge/max17048_fuelgauge.h>
+#elif defined(CONFIG_FUELGAUGE_MAX17050)
+#include <linux/battery/fuelgauge/max17050_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_MAX77823)
 #include <linux/battery/fuelgauge/max77823_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_MAX77833)
 #include <linux/battery/fuelgauge/max77833_fuelgauge.h>
-#elif defined(CONFIG_FUELGAUGE_MAX77843)
-#include <linux/battery/fuelgauge/max77843_fuelgauge.h>
-#elif defined(CONFIG_FUELGAUGE_MAX17050)
-#include <linux/battery/fuelgauge/max17050_fuelgauge.h>
-#elif defined(CONFIG_FUELGAUGE_MAX77854)
-#include <linux/battery/fuelgauge/max77854_fuelgauge.h>
-
+#elif defined(CONFIG_FUELGAUGE_RT5033)
+#include <linux/battery/fuelgauge/rt5033_fuelgauge.h>
+#elif defined(CONFIG_FUELGAUGE_STC3117)
+#include <linux/battery/fuelgauge/stc3117_fuelgauge.h>
+#else
+struct sec_fg_info {
+	bool dummy;
+};
 #endif
 
 struct sec_fuelgauge_reg_data {
@@ -105,6 +108,11 @@ ssize_t sec_fg_show_attrs(struct device *dev,
 ssize_t sec_fg_store_attrs(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count);
+
+#ifdef CONFIG_OF
+extern void board_fuelgauge_init(void *fuelgauge);
+extern bool sec_bat_check_jig_status(void);
+#endif
 
 #define SEC_FG_ATTR(_name)				\
 {							\

@@ -169,12 +169,10 @@ struct usb_hcd {
 	 * bandwidth_mutex should be dropped after a successful control message
 	 * to the device, or resetting the bandwidth after a failed attempt.
 	 */
-	struct mutex		*address0_mutex;
 	struct mutex		*bandwidth_mutex;
 	struct usb_hcd		*shared_hcd;
 	struct usb_hcd		*primary_hcd;
 
-	bool			is_in_hub_event;
 
 #define HCD_BUFFER_POOLS	4
 	struct dma_pool		*pool[HCD_BUFFER_POOLS];
@@ -237,6 +235,8 @@ struct hc_driver {
 #define	HCD_MEMORY	0x0001		/* HC regs use memory (else I/O) */
 #define	HCD_LOCAL_MEM	0x0002		/* HC needs local memory */
 #define	HCD_SHARED	0x0004		/* Two (or more) usb_hcds share HW */
+#define	HCD_RT_OLD_ENUM	0x0008		/* HC supports short enumeration
+					   on root port */
 #define	HCD_USB11	0x0010		/* USB 1.1 */
 #define	HCD_USB2	0x0020		/* USB 2.0 */
 #define	HCD_USB25	0x0030		/* Wireless USB 1.0 (USB 2.5)*/
@@ -383,6 +383,10 @@ struct hc_driver {
 	int	(*disable_usb3_lpm_timeout)(struct usb_hcd *,
 			struct usb_device *, enum usb3_link_state state);
 	int	(*find_raw_port_number)(struct usb_hcd *, int);
+	void	(*log_urb)(struct urb *urb, char *event, unsigned extra);
+	void	(*dump_regs)(struct usb_hcd *);
+	void	(*set_autosuspend_delay)(struct usb_device *);
+	void	(*reset_sof_bug_handler)(struct usb_hcd *hcd, u32 val);
 };
 
 static inline int hcd_giveback_urb_in_bh(struct usb_hcd *hcd)
@@ -500,45 +504,6 @@ extern void usb_destroy_configuration(struct usb_device *dev);
 
 #include <linux/usb/ch11.h>
 
-#ifdef CONFIG_HOST_COMPLIANT_TEST
-/*
- * Hub Port Test Mode Selector Codes
- * See USB 2.0 spec Table 11-24
- */
-#define USB_PORT_TEST_J			0x01
-#define USB_PORT_TEST_K			0x02
-#define USB_PORT_TEST_SE0_NAK		0x03
-#define USB_PORT_TEST_PACKET		0x04
-#define USB_PORT_TEST_FORCE_ENABLE	0x05
-
-/*
- * Product IDs used to trigger USB Hi-Speed Host Electrical Tests
- * on the root hub. See USB 2.0 spec 7.1.20 and the
- * Embedded High-speed Host Electrical Test Procedure.
- */
-#define EHSET_TEST_SE0_NAK			0x0101
-#define EHSET_TEST_J				0x0102
-#define EHSET_TEST_K				0x0103
-#define EHSET_TEST_PACKET			0x0104
-/* Note that the FORCE ENABLE test is no longer used in the EHSET spec. */
-#define EHSET_TEST_FORCE_ENABLE			0x0105
-#define EHSET_HS_HOST_PORT_SUSPEND_RESUME	0x0106
-#define EHSET_SINGLE_STEP_GET_DEV_DESC		0x0107
-#define EHSET_SINGLE_STEP_SET_FEATURE		0x0108
-#define LOW_LEVEL_TEST_J			0x010a
-#define LOW_LEVEL_TEST_K			0x010b
-#define LOW_LEVEL_SE0_NAK			0x010c
-#define LOW_LEVEL_TEST_PACKET			0x010d
-
-/*
- * This is used for the Hi-Speed Host Electrical Tests
- * on the root hub. See USB 2.0 spec 7.1.20 and the
- * Embedded High-speed Host Electrical Test Procedure.
- */
-#define USB_PORT_TEST_SINGLE_STEP_SET_FEATURE	0x00
-
-#endif
-
 /*
  * As of USB 2.0, full/low speed devices are segregated into trees.
  * One type grows from USB 1.1 host controllers (OHCI, UHCI etc).
@@ -585,9 +550,9 @@ extern void usb_ep0_reinit(struct usb_device *);
 	((USB_DIR_IN|USB_TYPE_STANDARD|USB_RECIP_INTERFACE)<<8)
 
 #define EndpointRequest \
-	((USB_DIR_IN|USB_TYPE_STANDARD|USB_RECIP_ENDPOINT)<<8)
+	((USB_DIR_IN|USB_TYPE_STANDARD|USB_RECIP_INTERFACE)<<8)
 #define EndpointOutRequest \
-	((USB_DIR_OUT|USB_TYPE_STANDARD|USB_RECIP_ENDPOINT)<<8)
+	((USB_DIR_OUT|USB_TYPE_STANDARD|USB_RECIP_INTERFACE)<<8)
 
 /* class requests from the USB 2.0 hub spec, table 11-15 */
 /* GetBusState and SetHubDescriptor are optional, omitted */

@@ -274,9 +274,6 @@ static ssize_t at24_read(struct at24_data *at24,
 	if (unlikely(!count))
 		return count;
 
-	if (off + count > at24->chip.byte_len)
-		return -EINVAL;
-
 	/*
 	 * Read data from chip, protecting against concurrent updates
 	 * from this host, but not from other I2C masters.
@@ -330,9 +327,6 @@ static ssize_t at24_eeprom_write(struct at24_data *at24, const char *buf,
 	ssize_t status;
 	unsigned long timeout, write_time;
 	unsigned next_page;
-
-	if (offset + count > at24->chip.byte_len)
-		return -EINVAL;
 
 	/* Get corresponding I2C address and adjust offset */
 	client = at24_translate_offset(at24, &offset);
@@ -668,11 +662,17 @@ static int at24_remove(struct i2c_client *client)
 }
 
 /*-------------------------------------------------------------------------*/
+static const struct of_device_id at24_of_match[] = {
+	{ .compatible = "atmel,24c32", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, at24_of_match);
 
 static struct i2c_driver at24_driver = {
 	.driver = {
 		.name = "at24",
 		.owner = THIS_MODULE,
+		.of_match_table = at24_of_match,
 	},
 	.probe = at24_probe,
 	.remove = at24_remove,

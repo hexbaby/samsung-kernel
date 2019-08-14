@@ -23,6 +23,7 @@
 #  define DEBUG
 #endif
 #endif
+#define CREATE_TRACE_POINTS
 
 #include <linux/memblock.h>
 #include <linux/err.h>
@@ -33,62 +34,40 @@
 #include <linux/log2.h>
 #include <linux/cma.h>
 #include <linux/highmem.h>
-#include <linux/io.h>
+#include <linux/delay.h>
+#include <linux/kmemleak.h>
+#include <trace/events/cma.h>
 
-struct cma {
-	unsigned long	base_pfn;
-	unsigned long	count;
-	unsigned long	*bitmap;
-	unsigned int order_per_bit; /* Order of pages represented by one bit */
-	struct mutex	lock;
-};
+#include "cma.h"
 
-static struct cma cma_areas[MAX_CMA_AREAS];
-static unsigned cma_area_count;
+struct cma cma_areas[MAX_CMA_AREAS];
+unsigned cma_area_count;
 static DEFINE_MUTEX(cma_mutex);
 
-phys_addr_t cma_get_base(const struct cma *cma)
+phys_addr_t cma_get_base(struct cma *cma)
 {
 	return PFN_PHYS(cma->base_pfn);
 }
 
-unsigned long cma_get_size(const struct cma *cma)
+unsigned long cma_get_size(struct cma *cma)
 {
 	return cma->count << PAGE_SHIFT;
 }
 
-static unsigned long cma_bitmap_aligned_mask(const struct cma *cma,
-					     unsigned int align_order)
+static unsigned long cma_bitmap_aligned_mask(struct cma *cma, int align_order)
 {
 	if (align_order <= cma->order_per_bit)
 		return 0;
 	return (1UL << (align_order - cma->order_per_bit)) - 1;
 }
 
-/*
- * Find the offset of the base PFN from the specified align_order.
- * The value returned is represented in order_per_bits.
- */
-static unsigned long cma_bitmap_aligned_offset(const struct cma *cma,
-					       unsigned int align_order)
-{
-	return (cma->base_pfn & ((1UL << align_order) - 1))
-		>> cma->order_per_bit;
-}
-
-static unsigned long cma_bitmap_maxno(struct cma *cma)
-{
-	return cma->count >> cma->order_per_bit;
-}
-
-static unsigned long cma_bitmap_pages_to_bits(const struct cma *cma,
-					      unsigned long pages)
+static unsigned long cma_bitmap_pages_to_bits(struct cma *cma,
+						unsigned long pages)
 {
 	return ALIGN(pages, 1UL << cma->order_per_bit) >> cma->order_per_bit;
 }
 
-static void cma_clear_bitmap(struct cma *cma, unsigned long pfn,
-			     unsigned int count)
+static void cma_clear_bitmap(struct cma *cma, unsigned long pfn, int count)
 {
 	unsigned long bitmap_no, bitmap_count;
 
@@ -134,6 +113,16 @@ static int __init cma_activate_area(struct cma *cma)
 	} while (--i);
 
 	mutex_init(&cma->lock);
+
+#ifdef CONFIG_CMA_DEBUGFS
+	INIT_HLIST_HEAD(&cma->mem_head);
+	spin_lock_init(&cma->mem_head_lock);
+#endif
+
+	if (!PageHighMem(pfn_to_page(cma->base_pfn)))
+		kmemleak_free_part(__va(cma->base_pfn << PAGE_SHIFT),
+				cma->count << PAGE_SHIFT);
+
 	return 0;
 
 err:
@@ -167,8 +156,7 @@ core_initcall(cma_init_reserved_areas);
  * This function creates custom contiguous area from already reserved memory.
  */
 int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
-				 unsigned int order_per_bit,
-				 struct cma **res_cma)
+				 int order_per_bit, struct cma **res_cma)
 {
 	struct cma *cma;
 	phys_addr_t alignment;
@@ -183,8 +171,7 @@ int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
 		return -EINVAL;
 
 	/* ensure minimal alignment requied by mm core */
-	alignment = PAGE_SIZE <<
-			max_t(unsigned long, MAX_ORDER - 1, pageblock_order);
+	alignment = PAGE_SIZE << max(MAX_ORDER - 1, pageblock_order);
 
 	/* alignment should be aligned with order_per_bit */
 	if (!IS_ALIGNED(alignment >> PAGE_SHIFT, 1 << order_per_bit))
@@ -203,7 +190,6 @@ int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
 	cma->order_per_bit = order_per_bit;
 	*res_cma = cma;
 	cma_area_count++;
-	totalcma_pages += (size / PAGE_SIZE);
 
 	return 0;
 }
@@ -267,8 +253,8 @@ int __init cma_declare_contiguous(phys_addr_t base,
 	 * migratetype page by page allocator's buddy algorithm. In the case,
 	 * you couldn't get a contiguous memory, which is not what we want.
 	 */
-	alignment = max(alignment,  (phys_addr_t)PAGE_SIZE <<
-			  max_t(unsigned long, MAX_ORDER - 1, pageblock_order));
+	alignment = max(alignment,
+		(phys_addr_t)PAGE_SIZE << max(MAX_ORDER - 1, pageblock_order));
 	base = ALIGN(base, alignment);
 	size = ALIGN(size, alignment);
 	limit &= ~(alignment - 1);
@@ -330,11 +316,9 @@ int __init cma_declare_contiguous(phys_addr_t base,
 			}
 		}
 
-		/*
-		 * kmemleak scans/reads tracked objects for pointers to other
-		 * objects but this address isn't mapped and accessible
-		 */
-		kmemleak_ignore(phys_to_virt(addr));
+		if (addr < highmem_start)
+			kmemleak_no_scan(__va(addr));
+
 		base = addr;
 	}
 
@@ -351,6 +335,20 @@ err:
 	return ret;
 }
 
+enum dma_cont_reason {
+	DMA_CONT_SUCCESS,
+	DMA_CONT_EBUSY,
+	DMA_CONT_ENOMEM,
+	DMA_CONT_EOTHER,
+};
+
+static const char *dma_cont_reason_str[] = {
+	"Success",
+	"EBUSY",
+	"ENOMEM",
+	"Other Error",
+};
+
 /**
  * cma_alloc() - allocate pages from contiguous area
  * @cma:   Contiguous memory region for which the allocation is performed.
@@ -362,10 +360,13 @@ err:
  */
 struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 {
-	unsigned long mask, offset, pfn, start = 0;
+	unsigned long mask, pfn, start = 0;
 	unsigned long bitmap_maxno, bitmap_no, bitmap_count;
 	struct page *page = NULL;
 	int ret;
+	int retry_after_sleep = 0;
+	enum dma_cont_reason fail_reason = DMA_CONT_SUCCESS;
+	unsigned int nr, nr_total = 0;
 
 	if (!cma || !cma->count)
 		return NULL;
@@ -376,19 +377,45 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 	if (!count)
 		return NULL;
 
+	trace_cma_alloc_start(count, align);
+
 	mask = cma_bitmap_aligned_mask(cma, align);
-	offset = cma_bitmap_aligned_offset(cma, align);
 	bitmap_maxno = cma_bitmap_maxno(cma);
 	bitmap_count = cma_bitmap_pages_to_bits(cma, count);
 
 	for (;;) {
 		mutex_lock(&cma->lock);
-		bitmap_no = bitmap_find_next_zero_area_off(cma->bitmap,
-				bitmap_maxno, start, bitmap_count, mask,
-				offset);
+		bitmap_no = bitmap_find_next_zero_area(cma->bitmap,
+				bitmap_maxno, start, bitmap_count, mask);
 		if (bitmap_no >= bitmap_maxno) {
-			mutex_unlock(&cma->lock);
-			break;
+			if (retry_after_sleep < 2) {
+				start = 0;
+				/*
+				* Page may be momentarily pinned by some other
+				* process which has been scheduled out, eg.
+				* in exit path, during unmap call, or process
+				* fork and so cannot be freed there. Sleep
+				* for 100ms and retry twice to see if it has
+				* been freed later.
+				*/
+				mutex_unlock(&cma->lock);
+				msleep(100);
+				retry_after_sleep++;
+				continue;
+			} else if (start != 0 && retry_after_sleep < 6) {
+				start = 0;
+				mutex_unlock(&cma->lock);
+				msleep(500);
+				retry_after_sleep++;
+				continue;
+			} else {
+				mutex_unlock(&cma->lock);
+				if (start == 0)
+					fail_reason = DMA_CONT_ENOMEM;
+				else
+					fail_reason = DMA_CONT_EBUSY;
+				break;
+			}
 		}
 		bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
 		/*
@@ -403,21 +430,52 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA);
 		mutex_unlock(&cma_mutex);
 		if (ret == 0) {
+			fail_reason = DMA_CONT_SUCCESS;
 			page = pfn_to_page(pfn);
 			break;
 		}
 
 		cma_clear_bitmap(cma, pfn, count);
-		if (ret != -EBUSY)
+		if (ret != -EBUSY) {
+			fail_reason = DMA_CONT_EOTHER;
 			break;
+		}
 
 		pr_debug("%s(): memory range at %p is busy, retrying\n",
 			 __func__, pfn_to_page(pfn));
+
+		trace_cma_alloc_busy_retry(pfn, pfn_to_page(pfn), count, align);
 		/* try again with a bit different memory target */
 		start = bitmap_no + mask + 1;
 	}
 
+	trace_cma_alloc(page ? pfn : -1UL, page, count, align);
+
 	pr_debug("%s(): returned %p\n", __func__, page);
+	if (fail_reason != DMA_CONT_SUCCESS)
+		pr_info("%s: alloc failed, req-size: %zu pages, reason %s (%d)\n",
+			__func__, count,
+			dma_cont_reason_str[fail_reason], fail_reason);
+	if (fail_reason == DMA_CONT_ENOMEM) {
+		mutex_lock(&cma->lock);
+		printk("number of available pages: ");
+		start = 0;
+		for (;;) {
+			bitmap_no = bitmap_find_next_zero_area_and_size(cma->bitmap,
+						cma->count, start, &nr);
+			if (bitmap_no >= cma->count)
+				break;
+			if (nr_total == 0)
+				printk("%u", nr);
+			else
+				printk("+%u", nr);
+			nr_total += nr;
+			start = bitmap_no + nr;
+		}
+		printk("=>%u pages, total: %lu pages\n", nr_total, cma->count);
+		mutex_unlock(&cma->lock);
+	}
+
 	return page;
 }
 
@@ -431,7 +489,7 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
  * It returns false when provided pages do not belong to contiguous area and
  * true otherwise.
  */
-bool cma_release(struct cma *cma, const struct page *pages, unsigned int count)
+bool cma_release(struct cma *cma, struct page *pages, int count)
 {
 	unsigned long pfn;
 
@@ -449,6 +507,7 @@ bool cma_release(struct cma *cma, const struct page *pages, unsigned int count)
 
 	free_contig_range(pfn, count);
 	cma_clear_bitmap(cma, pfn, count);
+	trace_cma_release(pfn, pages, count);
 
 	return true;
 }

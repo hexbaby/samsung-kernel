@@ -18,12 +18,12 @@
 #ifndef __MAX77854_FUELGAUGE_H
 #define __MAX77854_FUELGAUGE_H __FILE__
 
+#include <linux/battery/sec_charging_common.h>
+
 #include <linux/mfd/core.h>
 #include <linux/mfd/max77854.h>
 #include <linux/mfd/max77854-private.h>
 #include <linux/regulator/machine.h>
-
-#include <linux/sec_batt.h>
 
 /* Slave address should be shifted to the right 1bit.
  * R/W bit should NOT be included.
@@ -42,7 +42,7 @@ enum max77854_vempty_mode {
 	VEMPTY_MODE_SW_RECOVERY,
 };
 
-struct sec_fg_info {
+struct max77854_fg_info {
 	/* test print count */
 	int pr_cnt;
 	/* full charge comp */
@@ -149,7 +149,7 @@ struct max77854_fuelgauge_data {
 	 * used in individual fuel gauge file only
 	 * (ex. dummy_fuelgauge.c)
 	 */
-	struct sec_fg_info	info;
+	struct max77854_fg_info	info;
 	struct battery_data_t        *battery_data;
 
 	bool is_fuel_alerted;

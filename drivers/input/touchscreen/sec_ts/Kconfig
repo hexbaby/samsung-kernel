@@ -20,3 +20,14 @@ config TOUCHSCREEN_SEC_TS_GLOVEMODE
           support for the built-in touchscreen.
 
           If unsure, say N.
+
+config TOUCHSCREEN_DUMP_MODE
+	bool "tsp dump mode"
+	depends on I2C
+
+config TRUSTONIC_TRUSTED_UI
+		bool "tbase tui"
+		default n
+		help
+          Say Y here if you have a TBASE TUI and want to enable
+

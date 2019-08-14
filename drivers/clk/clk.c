@@ -24,6 +24,8 @@
 
 #include "clk.h"
 
+#if defined(CONFIG_COMMON_CLK)
+
 static DEFINE_SPINLOCK(enable_lock);
 static DEFINE_MUTEX(prepare_lock);
 
@@ -1802,6 +1804,10 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 	/* prevent racing with updates to the clock topology */
 	clk_prepare_lock();
 
+	/* bail early if nothing to do */
+	if (rate == clk_get_rate(clk))
+		goto out;
+
 	if ((clk->flags & CLK_SET_RATE_GATE) && clk->prepare_count) {
 		ret = -EBUSY;
 		goto out;
@@ -1943,6 +1949,9 @@ int clk_set_parent(struct clk *clk, struct clk *parent)
 
 	/* prevent racing with updates to the clock topology */
 	clk_prepare_lock();
+
+	if (clk->parent == parent)
+		goto out;
 
 	/* check that we are allowed to re-parent if the clock is in use */
 	if ((clk->flags & CLK_SET_PARENT_GATE) && clk->prepare_count) {
@@ -2657,6 +2666,8 @@ int clk_notifier_unregister(struct clk *clk, struct notifier_block *nb)
 }
 EXPORT_SYMBOL_GPL(clk_notifier_unregister);
 
+#endif /* CONFIG_COMMON_CLK */
+
 #ifdef CONFIG_OF
 /**
  * struct of_clk_provider - Clock provider registration structure
@@ -2698,6 +2709,8 @@ struct clk *of_clk_src_simple_get(struct of_phandle_args *clkspec,
 }
 EXPORT_SYMBOL_GPL(of_clk_src_simple_get);
 
+#if defined(CONFIG_COMMON_CLK)
+
 struct clk *of_clk_src_onecell_get(struct of_phandle_args *clkspec, void *data)
 {
 	struct clk_onecell_data *clk_data = data;
@@ -2711,6 +2724,11 @@ struct clk *of_clk_src_onecell_get(struct of_phandle_args *clkspec, void *data)
 	return clk_data->clks[idx];
 }
 EXPORT_SYMBOL_GPL(of_clk_src_onecell_get);
+
+#endif /* CONFIG_COMMON_CLK */
+
+/* forward declaration */
+void of_clk_del_provider(struct device_node *np);
 
 /**
  * of_clk_add_provider() - Register a clock provider for a node
@@ -2843,6 +2861,8 @@ const char *of_clk_get_parent_name(struct device_node *np, int index)
 }
 EXPORT_SYMBOL_GPL(of_clk_get_parent_name);
 
+#if defined(CONFIG_COMMON_CLK)
+
 struct clock_provider {
 	of_clk_init_cb_t clk_init_cb;
 	struct device_node *np;
@@ -2940,4 +2960,7 @@ void __init of_clk_init(const struct of_device_id *matches)
 			force = true;
 	}
 }
+
+#endif /* CONFIG_COMMON_CLK */
+
 #endif

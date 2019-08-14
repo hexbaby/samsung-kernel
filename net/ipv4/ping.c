@@ -64,11 +64,11 @@ EXPORT_SYMBOL_GPL(pingv6_ops);
 
 static u16 ping_port_rover;
 
-static inline int ping_hashfn(struct net *net, unsigned int num, unsigned int mask)
+static inline u32 ping_hashfn(const struct net *net, u32 num, u32 mask)
 {
-	int res = (num + net_hash_mix(net)) & mask;
+	u32 res = (num + net_hash_mix(net)) & mask;
 
-	pr_debug("hash(%d) = %d\n", num, res);
+	pr_debug("hash(%u) = %u\n", num, res);
 	return res;
 }
 EXPORT_SYMBOL_GPL(ping_hash);
@@ -154,9 +154,8 @@ void ping_hash(struct sock *sk)
 void ping_unhash(struct sock *sk)
 {
 	struct inet_sock *isk = inet_sk(sk);
-
 	pr_debug("ping_unhash(isk=%p,isk->num=%u)\n", isk, isk->inet_num);
-	write_lock_bh(&ping_table.lock);
+	write_lock_bh(&ping_table.lock);	
 	if (sk_hashed(sk)) {
 		hlist_nulls_del(&sk->sk_nulls_node);
 		sk_nulls_node_init(&sk->sk_nulls_node);
@@ -645,8 +644,6 @@ static int ping_v4_push_pending_frames(struct sock *sk, struct pingfakehdr *pfh,
 {
 	struct sk_buff *skb = skb_peek(&sk->sk_write_queue);
 
-	if (!skb)
-		return 0;
 	pfh->wcheck = csum_partial((char *)&pfh->icmph,
 		sizeof(struct icmphdr), pfh->wcheck);
 	pfh->icmph.checksum = csum_fold(pfh->wcheck);
@@ -659,12 +656,8 @@ int ping_common_sendmsg(int family, struct msghdr *msg, size_t len,
 			void *user_icmph, size_t icmph_len) {
 	u8 type, code;
 
-	if (len > 0xFFFF)
+	if (len > 0xFFFF || len < icmph_len)
 		return -EMSGSIZE;
-
-	/* Must have at least a full ICMP header. */
-	if (len < icmph_len)
-		return -EINVAL;
 
 	/*
 	 *	Check the flags.
@@ -797,7 +790,7 @@ static int ping_v4_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *m
 	flowi4_init_output(&fl4, ipc.oif, sk->sk_mark, tos,
 			   RT_SCOPE_UNIVERSE, sk->sk_protocol,
 			   inet_sk_flowi_flags(sk), faddr, saddr, 0, 0,
-			   sk->sk_uid);
+			   sock_i_uid(sk));
 
 	security_sk_classify_flow(sk, flowi4_to_flowi(&fl4));
 	rt = ip_route_output_flow(net, &fl4, sk);

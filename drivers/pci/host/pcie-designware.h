@@ -42,7 +42,6 @@ struct pcie_port {
 	u64			mem_mod_base;
 	phys_addr_t		mem_bus_addr;
 	u32			mem_size;
-	spinlock_t		conf_lock;
 	struct resource		cfg;
 	struct resource		io;
 	struct resource		mem;
@@ -68,16 +67,14 @@ struct pcie_host_ops {
 	int (*wr_other_conf)(struct pcie_port *pp, struct pci_bus *bus,
 			unsigned int devfn, int where, int size, u32 val);
 	int (*link_up)(struct pcie_port *pp);
+	void (*host_init)(struct pcie_port *pp);
 	void (*msi_set_irq)(struct pcie_port *pp, int irq);
 	void (*msi_clear_irq)(struct pcie_port *pp, int irq);
 	u32 (*get_msi_addr)(struct pcie_port *pp);
 	u32 (*get_msi_data)(struct pcie_port *pp, int pos);
 	void (*scan_bus)(struct pcie_port *pp);
-	int (*msi_host_init)(struct pcie_port *pp, struct msi_chip *chip);
+	int (*msi_host_init)(struct pcie_port *pp, struct msi_controller *chip);
 };
-
-int exynos_pcie_poweron(int);
-void exynos_pcie_poweroff(int);
 
 int dw_pcie_cfg_read(void __iomem *addr, int where, int size, u32 *val);
 int dw_pcie_cfg_write(void __iomem *addr, int where, int size, u32 val);
@@ -86,10 +83,5 @@ void dw_pcie_msi_init(struct pcie_port *pp);
 int dw_pcie_link_up(struct pcie_port *pp);
 void dw_pcie_setup_rc(struct pcie_port *pp);
 int dw_pcie_host_init(struct pcie_port *pp);
-void dw_pcie_prog_viewport_cfg0(struct pcie_port *pp, u32 busdev);
-void dw_pcie_prog_viewport_mem_outbound(struct pcie_port *pp);
-void dw_pcie_set_tpoweron(struct pcie_port *pp, int max);
-void dw_pcie_config_l1ss(struct pcie_port *pp);
-int dw_pcie_scan(struct pcie_port *pp);
 
 #endif /* _PCIE_DESIGNWARE_H */

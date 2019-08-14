@@ -91,14 +91,6 @@
 
 #define __exit          __section(.exit.text) __exitused __cold notrace
 
-/* Used for HOTPLUG */
-#define __devinit        __section(.devinit.text) __cold notrace
-#define __devinitdata    __section(.devinit.data)
-#define __devinitconst   __section(.devinit.rodata)
-#define __devexit        __section(.devexit.text) __exitused __cold notrace
-#define __devexitdata    __section(.devexit.data)
-#define __devexitconst   __section(.devexit.rodata)
-
 /* temporary, until all users are removed */
 #define __cpuinit
 #define __cpuinitdata
@@ -124,10 +116,6 @@
 #define __INITRODATA	.section	".init.rodata","a",%progbits
 #define __FINITDATA	.previous
 
-#define __DEVINIT        .section	".devinit.text", "ax"
-#define __DEVINITDATA    .section	".devinit.data", "aw"
-#define __DEVINITRODATA  .section	".devinit.rodata", "a"
-
 /* temporary, until all users are removed */
 #define __CPUINIT
 
@@ -147,6 +135,8 @@
 typedef int (*initcall_t)(void);
 typedef void (*exitcall_t)(void);
 
+extern int ddr_size_6g;
+
 extern initcall_t __con_initcall_start[], __con_initcall_end[];
 extern initcall_t __security_initcall_start[], __security_initcall_end[];
 
@@ -164,10 +154,6 @@ void setup_arch(char **);
 void prepare_namespace(void);
 void __init load_default_modules(void);
 int __init init_rootfs(void);
-
-#ifdef CONFIG_DEBUG_RODATA
-void mark_rodata_ro(void);
-#endif
 
 extern void (*late_time_init)(void);
 
@@ -389,18 +375,6 @@ void __init parse_early_options(char *cmdline);
 #define __INITDATA_OR_MODULE __INITDATA
 #define __INITRODATA_OR_MODULE __INITRODATA
 #endif /*CONFIG_MODULES*/
-
-/* Functions marked as __devexit may be discarded at kernel link time, depending
-   on config options.  Newer versions of binutils detect references from
-   retained sections to discarded sections and flag an error.  Pointers to
-   __devexit functions must use __devexit_p(function_name), the wrapper will
-   insert either the function_name or NULL, depending on the config options.
- */
-#if defined(MODULE) || defined(CONFIG_HOTPLUG)
-#define __devexit_p(x) x
-#else
-#define __devexit_p(x) NULL
-#endif
 
 #ifdef MODULE
 #define __exit_p(x) x

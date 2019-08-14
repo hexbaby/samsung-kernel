@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 TRUSTONIC LIMITED
+ * Copyright (c) 2013-2016 TRUSTONIC LIMITED
  * All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -39,19 +39,6 @@
 /* Static variables */
 static struct cdev tui_cdev;
 
-int tui_force_close(uint32_t arg)
-{
-	int ret = 0;
-
-	pr_info("Force TUI_IO_NOTIFY %d\n", arg);
-
-	if (tlc_notify_event(arg))
-		ret = 0;
-	else
-		ret = -EFAULT;
-}
-EXPORT_SYMBOL(tui_force_close);
-
 static long tui_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	int ret = -ENOTTY;
@@ -73,21 +60,22 @@ static long tui_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 
 	case TUI_IO_WAITCMD: {
-		uint32_t cmd_id;
+		struct tlc_tui_command_t tui_cmd = {0};
 
 		pr_info("TUI_IO_WAITCMD\n");
 
-		ret = tlc_wait_cmd(&cmd_id);
+		ret = tlc_wait_cmd(&tui_cmd);
 		if (ret) {
 			pr_debug("ERROR %s:%d tlc_wait_cmd returned (0x%08X)\n",
-				__func__, __LINE__, ret);
+				 __func__, __LINE__, ret);
 			return ret;
 		}
 
 		/* Write command id to user */
-		pr_debug("IOCTL: sending command %d to user.\n", cmd_id);
+		pr_debug("IOCTL: sending command %d to user.\n", tui_cmd.id);
 
-		if (copy_to_user(uarg, &cmd_id, sizeof(cmd_id)))
+		if (copy_to_user(uarg, &tui_cmd, sizeof(
+						struct tlc_tui_command_t)))
 			ret = -EFAULT;
 		else
 			ret = 0;
@@ -113,13 +101,21 @@ static long tui_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	}
 
-    case TUI_IO_INIT_DRIVER: {
-        pr_info("TUI_IO_INIT_DRIVER : no action\n");
-		return 0;
-    }
+	case TUI_IO_INIT_DRIVER: {
+		pr_info("TUI_IO_INIT_DRIVER\n");
+
+		ret = tlc_init_driver();
+		if (ret) {
+			pr_debug("ERROR %s:%d tlc_init_driver returned (0x%08X)\n",
+				 __func__, __LINE__, ret);
+			return ret;
+		}
+		break;
+	}
 
 	default:
-		pr_info("undefined!\n");
+		pr_info("ERROR %s:%d Unknown ioctl (%u)!\n", __func__,
+			__LINE__, cmd);
 		return -ENOTTY;
 	}
 
@@ -127,17 +123,20 @@ static long tui_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 }
 
 atomic_t fileopened;
+
 static int tui_open(struct inode *inode, struct file *file)
 {
-	printk(KERN_INFO "TUI file opened");
+	pr_info("TUI file opened\n");
 	atomic_inc(&fileopened);
 	return 0;
 }
 
 static int tui_release(struct inode *inode, struct file *file)
 {
-	printk(KERN_INFO "TUI file closed");
-	atomic_dec(&fileopened);
+	pr_info("TUI file closed\n");
+	if (atomic_dec_and_test(&fileopened))
+		tlc_notify_event(NOT_TUI_CANCEL_EVENT);
+
 	return 0;
 }
 
@@ -148,7 +147,7 @@ static const struct file_operations tui_fops = {
 	.compat_ioctl = tui_ioctl,
 #endif
 	.open = tui_open,
-	.release = tui_release,
+	.release = tui_release
 };
 
 /*--------------------------------------------------------------------------- */
@@ -166,7 +165,7 @@ static int __init tlc_tui_init(void)
 
 	err = alloc_chrdev_region(&devno, 0, 1, TUI_DEV_NAME);
 	if (err) {
-		pr_debug(KERN_ERR "Unable to allocate Trusted UI device number\n");
+		pr_debug("Unable to allocate Trusted UI device number\n");
 		return err;
 	}
 
@@ -176,7 +175,7 @@ static int __init tlc_tui_init(void)
 
 	err = cdev_add(&tui_cdev, devno, 1);
 	if (err) {
-		pr_debug(KERN_ERR "Unable to add Trusted UI char device\n");
+		pr_debug("Unable to add Trusted UI char device\n");
 		unregister_chrdev_region(devno, 1);
 		return err;
 	}
@@ -186,6 +185,7 @@ static int __init tlc_tui_init(void)
 
 	if (!hal_tui_init())
 		return -EPERM;
+
 	return 0;
 }
 

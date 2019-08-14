@@ -610,7 +610,7 @@ struct dev_pm_info {
 
 extern void update_pm_runtime_accounting(struct device *dev);
 extern int dev_pm_get_subsys_data(struct device *dev);
-extern int dev_pm_put_subsys_data(struct device *dev);
+extern void dev_pm_put_subsys_data(struct device *dev);
 
 /*
  * Power domains provide callbacks that are executed during system suspend,
@@ -773,7 +773,6 @@ enum dpm_order {
 	DPM_ORDER_DEV_AFTER_PARENT,
 	DPM_ORDER_PARENT_BEFORE_DEV,
 	DPM_ORDER_DEV_LAST,
-	DPM_ORDER_DEV_FIRST,
 };
 
 #endif /* _LINUX_PM_H */

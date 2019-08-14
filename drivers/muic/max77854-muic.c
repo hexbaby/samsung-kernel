@@ -42,6 +42,14 @@
 #include <linux/muic/muic_notifier.h>
 #endif /* CONFIG_MUIC_NOTIFIER */
 
+/* kkt usb enable temp */
+#include <linux/power_supply.h>
+#ifdef CONFIG_USB_NOTIFY_LAYER
+#include <linux/usb_notify.h>
+#endif
+static struct power_supply *psy;
+/* kkt temp end */
+
 #include <linux/delay.h>
 
 #if defined(CONFIG_MUIC_MAX77854_RESET_WA)
@@ -141,7 +149,6 @@ static const struct max77854_muic_vps_data muic_vps_table[] = {
 		.vps_name	= "Jig UART Off + VB",
 		.attached_dev	= ATTACHED_DEV_JIG_UART_OFF_VB_MUIC,
 	},
-#if defined(CONFIG_SEC_FACTORY)
 	{
 		.adc1k		= 0x00,
 		.adcerr		= 0x00,
@@ -153,7 +160,6 @@ static const struct max77854_muic_vps_data muic_vps_table[] = {
 		.vps_name	= "Jig UART On",
 		.attached_dev	= ATTACHED_DEV_JIG_UART_ON_MUIC,
 	},
-#endif /* CONFIG_SEC_FACTORY */
 	{
 		.adc1k		= 0x00,
 		.adcerr		= 0x00,
@@ -568,7 +574,10 @@ static int com_to_uart_ap(struct max77854_muic_data *muic_data)
 	max77854_reg_ctrl1_t reg_val;
 	int ret = 0;
 
-	reg_val = CTRL1_UART;
+	if (muic_data->pdata->rustproof_on)
+		reg_val = CTRL1_OPEN;
+	else
+		reg_val = CTRL1_UART;
 
 	/* write control1 register */
 	ret = write_muic_ctrl_reg(muic_data, MAX77854_MUIC_REG_CTRL1,
@@ -585,7 +594,10 @@ static int com_to_uart_cp(struct max77854_muic_data *muic_data)
 	max77854_reg_ctrl1_t reg_val;
 	int ret = 0;
 
-	reg_val = CTRL1_UART_CP;
+	if (muic_data->pdata->rustproof_on)
+		reg_val = CTRL1_OPEN;
+	else
+		reg_val = CTRL1_UART_CP;
 
 	/* write control1 register */
 	ret = write_muic_ctrl_reg(muic_data, MAX77854_MUIC_REG_CTRL1,
@@ -1147,6 +1159,28 @@ static ssize_t max77854_muic_set_afc_disable(struct device *dev,
 }
 #endif /* CONFIG_HV_MUIC_MAX77854_AFC */
 
+void max77854_update_jig_state(struct max77854_muic_data *muic_data)
+{
+	int jig_state;
+
+	switch (muic_data->attached_dev) {
+	case ATTACHED_DEV_JIG_UART_OFF_MUIC:
+	case ATTACHED_DEV_JIG_UART_OFF_VB_MUIC: 	/* VBUS enabled */
+	case ATTACHED_DEV_JIG_UART_OFF_VB_OTG_MUIC:	/* for otg test */
+	case ATTACHED_DEV_JIG_UART_OFF_VB_FG_MUIC:	/* for fg test */
+	case ATTACHED_DEV_JIG_USB_OFF_MUIC:
+	case ATTACHED_DEV_JIG_USB_ON_MUIC:
+		jig_state = true;
+		break;
+	default:
+		jig_state = false;
+		break;
+	}
+
+	if (muic_data->pdata->jig_uart_cb)
+		muic_data->pdata->jig_uart_cb(jig_state);
+}
+
 static DEVICE_ATTR(uart_sel, 0664, max77854_muic_show_uart_sel,
 		max77854_muic_set_uart_sel);
 static DEVICE_ATTR(usb_sel, 0664, max77854_muic_show_usb_sel,
@@ -1411,6 +1445,8 @@ static int max77854_muic_attach_usb_path(struct max77854_muic_data *muic_data,
 	return ret;
 }
 
+#if 0
+/* temp disable for QC MUIC bringup */
 static muic_attached_dev_t check_jig_uart_on_factory_test
 			(struct max77854_muic_data *muic_data,	muic_attached_dev_t new_dev)
 {
@@ -1427,6 +1463,7 @@ static muic_attached_dev_t check_jig_uart_on_factory_test
 
 	return ret_ndev;
 }
+#endif
 
 static int max77854_muic_handle_detach(struct max77854_muic_data *muic_data)
 {
@@ -1441,7 +1478,7 @@ static int max77854_muic_handle_detach(struct max77854_muic_data *muic_data)
 	}
 
 	/* Enable Factory Accessory Detection State Machine */
-	max77854_muic_enable_accdet(muic_data);
+//	max77854_muic_enable_accdet(muic_data);
 
 #if defined(CONFIG_HV_MUIC_MAX77854_AFC)
 	max77854_muic_set_afc_ready(muic_data, false);
@@ -1484,6 +1521,14 @@ static int max77854_muic_handle_detach(struct max77854_muic_data *muic_data)
 	case ATTACHED_DEV_AFC_CHARGER_ERR_V_DUPLI_MUIC:
 		break;
 	default:
+/* kkt usb enable temp */
+		psy = power_supply_get_by_name("dwc-usb");
+		pr_info("usb: dwc3 power supply set(%d)\n", false);
+		if(psy)
+			power_supply_set_present(psy, false);
+		else
+			pr_err("usb: dwc-usb power supply is null!\n");
+/* kkt usb enable end */
 		break;
 	}
 
@@ -1550,7 +1595,8 @@ static int max77854_muic_logically_detach(struct max77854_muic_data *muic_data,
 		break;
 	case ATTACHED_DEV_JIG_UART_ON_MUIC:
 	case ATTACHED_DEV_UNKNOWN_MUIC:
-		if (new_dev == ATTACHED_DEV_JIG_UART_OFF_MUIC)
+		if (new_dev == ATTACHED_DEV_JIG_UART_OFF_MUIC ||
+			new_dev == ATTACHED_DEV_JIG_UART_ON_MUIC)
 			force_path_open = false;
 		break;
 	case ATTACHED_DEV_DESKDOCK_MUIC:
@@ -1670,9 +1716,9 @@ static int max77854_muic_handle_attach(struct max77854_muic_data *muic_data,
 		ret = max77854_muic_attach_uart_path(muic_data, new_dev);
 		break;
 	case ATTACHED_DEV_JIG_UART_ON_MUIC:
-		new_dev = check_jig_uart_on_factory_test(muic_data, new_dev);
-		if (new_dev != ATTACHED_DEV_JIG_UART_ON_MUIC)
-			goto out;
+//		new_dev = check_jig_uart_on_factory_test(muic_data, new_dev);
+//		if (new_dev != ATTACHED_DEV_JIG_UART_ON_MUIC)
+//			goto out;
 		break;
 	case ATTACHED_DEV_TA_MUIC:
 #if defined(CONFIG_HV_MUIC_MAX77854_AFC)
@@ -1701,6 +1747,14 @@ static int max77854_muic_handle_attach(struct max77854_muic_data *muic_data,
 	case ATTACHED_DEV_UNOFFICIAL_ID_CDP_MUIC:
 	case ATTACHED_DEV_USB_MUIC:
 	case ATTACHED_DEV_CDP_MUIC:
+/* kkt usb enable temp */
+		psy = power_supply_get_by_name("dwc-usb");
+		pr_info("usb: dwc3 power supply set(%d)\n", true);
+		if(psy)
+			power_supply_set_present(psy, true);
+		else
+			pr_err("usb: dwc-usb power supply is null!\n");
+/* kkt usb enable end */
 		ret = max77854_muic_attach_usb_path(muic_data, new_dev);
 		break;
 	case ATTACHED_DEV_UNOFFICIAL_ID_MUIC:
@@ -2114,7 +2168,8 @@ static void max77854_muic_detect_dev(struct max77854_muic_data *muic_data, int i
 
 		if (!(muic_check_vps_chgtyp(tmp_vps, chgtyp)))
 			continue;
-
+#if 0
+		/* temp disable for QC MUIC bringup */
 		if (!(muic_check_support_dev(muic_data, tmp_vps->attached_dev))) {
 			if (vbvolt == VB_HIGH) {
 				new_dev = ATTACHED_DEV_UNSUPPORTED_ID_VB_MUIC;
@@ -2123,6 +2178,7 @@ static void max77854_muic_detect_dev(struct max77854_muic_data *muic_data, int i
 			}
 			break;
 		}
+#endif
 
 		pr_info("%s:%s vps table match found at i(%d), %s\n",
 				MUIC_DEV_NAME, __func__, i, tmp_vps->vps_name);
@@ -2165,6 +2221,7 @@ static void max77854_muic_detect_dev(struct max77854_muic_data *muic_data, int i
 			pr_err("%s:%s cannot handle detach(%d)\n", MUIC_DEV_NAME,
 								__func__, ret);
 	}
+	max77854_update_jig_state(muic_data);
 
 	return;
 }
@@ -2585,6 +2642,8 @@ static int max77854_muic_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, muic_data);
 
+	/* GONIL TEMP FORCE SETTING */
+	muic_data->pdata->switch_sel = 0x0B;
 	if (muic_data->pdata->init_gpio_cb) {
 		ret = muic_data->pdata->init_gpio_cb(get_switch_sel());
 		if (ret) {

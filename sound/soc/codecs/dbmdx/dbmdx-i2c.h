@@ -11,10 +11,6 @@
 #ifndef _DBMDX_I2C_COMMON_H
 #define _DBMDX_I2C_COMMON_H
 
-#ifdef CONFIG_PM_WAKELOCKS
-#include <linux/wakelock.h>
-#endif
-
 #define RETRY_COUNT				5
 
 struct dbmdx_i2c_private;
@@ -33,10 +29,6 @@ struct dbmdx_i2c_private {
 	struct dbmdx_i2c_data		*pdata;
 	struct i2c_client		*client;
 	struct chip_interface		chip;
-#ifdef CONFIG_PM_WAKELOCKS
-	struct wake_lock		ps_nosuspend_wl;
-#endif
-	u32				interface_enabled;
 };
 
 ssize_t write_i2c_data(struct dbmdx_private *p, const void *buf,
@@ -47,15 +39,11 @@ ssize_t send_i2c_cmd_va(struct dbmdx_private *p, u32 command,
 ssize_t send_i2c_cmd_vqe(struct dbmdx_private *p,
 	u32 command, u16 *response);
 
-int send_i2c_cmd_boot(struct dbmdx_private *p, u32 command);
-int i2c_verify_boot_checksum(struct dbmdx_private *p,
-	const void *checksum, size_t chksum_len);
+int send_i2c_cmd_boot(struct dbmdx_i2c_private *i2c_p, u32 command);
 int i2c_common_probe(struct i2c_client *client,
 		const struct i2c_device_id *id);
 
 int i2c_common_remove(struct i2c_client *client);
-void i2c_interface_resume(struct dbmdx_i2c_private *i2c_p);
-void i2c_interface_suspend(struct dbmdx_i2c_private *i2c_p);
 
 
 #endif

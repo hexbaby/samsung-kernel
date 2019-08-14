@@ -23,7 +23,7 @@
 #include <linux/mfd/max77833.h>
 #include <linux/mfd/max77833-private.h>
 #include <linux/regulator/machine.h>
-#include <linux/wakelock.h>
+#include <linux/battery/sec_charging_common.h>
 
 enum {
 	CHIP_ID = 0,
@@ -139,9 +139,11 @@ extern sec_battery_platform_data_t sec_battery_pdata;
 #define MINIMUM_INPUT_CURRENT					300
 #define SIOP_INPUT_LIMIT_CURRENT                1200
 #define SIOP_CHARGING_LIMIT_CURRENT             1000
-#define SIOP_WIRELESS_INPUT_LIMIT_CURRENT       530
-#define SIOP_WIRELESS_CHARGING_LIMIT_CURRENT    780
-#define SIOP_HV_INPUT_LIMIT_CURRENT                700
+#define SIOP_WIRELESS_INPUT_LIMIT_CURRENT       700
+#define SIOP_WIRELESS_CHARGING_LIMIT_CURRENT    600
+#define SIOP_HV_WIRELESS_INPUT_LIMIT_CURRENT	700
+#define SIOP_HV_WIRELESS_CHARGING_LIMIT_CURRENT	600
+#define SIOP_HV_INPUT_LIMIT_CURRENT                1200
 #define SIOP_HV_CHARGING_LIMIT_CURRENT             1000
 #define SLOW_CHARGING_CURRENT_STANDARD          400
 
@@ -155,6 +157,7 @@ struct max77833_charger_data {
 	struct max77833_platform_data *max77833_pdata;
 
 	struct power_supply	psy_chg;
+	struct power_supply	psy_otg;
 
 	struct workqueue_struct *wqueue;
 	struct work_struct	chgin_work;

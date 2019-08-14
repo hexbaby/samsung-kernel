@@ -55,3 +55,4 @@ extern void max77833_muic_hv_fchv_capa_read(struct max77833_muic_data *muic_data
 extern void max77833_muic_hv_chgin_read(struct max77833_muic_data *muic_data);
 
 #endif /* __MAX77833_MUIC_HV_H__ */
+

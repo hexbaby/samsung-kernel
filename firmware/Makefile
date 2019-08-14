@@ -108,7 +108,6 @@ fw-shipped-$(CONFIG_USB_KAWETH) += kaweth/new_code.bin kaweth/trigger_code.bin \
 fw-shipped-$(CONFIG_WIRELESS_FIRMWARE_UPDATE) += idt/p9220_otp.bin idt/p9220_sram.bin
 
 ifdef CONFIG_FIRMWARE_IN_KERNEL
-fw-shipped-$(CONFIG_EXYNOS8890_APM) += apm_8890_evt1.h
 fw-shipped-$(CONFIG_USB_SERIAL_KEYSPAN_MPR) += keyspan/mpr.fw
 fw-shipped-$(CONFIG_USB_SERIAL_KEYSPAN_USA18X) += keyspan/usa18x.fw
 fw-shipped-$(CONFIG_USB_SERIAL_KEYSPAN_USA19) += keyspan/usa19.fw
@@ -139,65 +138,81 @@ fw-shipped-$(CONFIG_USB_SERIAL_XIRCOM) += keyspan_pda/xircom_pgs.fw
 fw-shipped-$(CONFIG_USB_VICAM) += vicam/firmware.fw
 fw-shipped-$(CONFIG_VIDEO_CPIA2) += cpia2/stv0672_vp4.bin
 fw-shipped-$(CONFIG_YAM) += yam/1200.bin yam/9600.bin
-
 fw-shipped-$(CONFIG_CCIC_S2MM003) += usbpd/USB_PD_FULL_DRIVER.bin
-fw-shipped-$(CONFIG_CCIC_S2MM005) += usbpd/s2mm005.bin
 
+# Input Device firmware
+ifdef CONFIG_SEC_HEROQLTE_PROJECT
+fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_FT16XX)		+= abov/abov_tk_hero.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/sec_hero.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/sec_hero_octa.fw
+endif
+
+ifdef CONFIG_SEC_HERO2QLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_hero2_alps.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_hero2_ilsin.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_hero2_dongwoo.fw
+fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_FT16XX)		+= abov/abov_tk_hero2.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/sec_hero2.fw
+endif
+
+# based Zero
+ifdef CONFIG_SEC_AEROQLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_zero_f.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_zero_e.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_noble.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_hero2_alps.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_hero2_ilsin.fw
+fw-shipped-$(CONFIG_KEYBOARD_CYPRESS_TOUCHKEY)	+= tkey/zerof_cypress_tkey.fw
+fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_FT16XX)		+= abov/abov_tk_hero.fw
+fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_FT16XX)		+= abov/abov_tk_hero2.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/s6smc43_s6_img_REL.bin
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/s6smc41_blupdate_img_REL.bin
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/sec_hero.fw
+endif
+
+ifdef CONFIG_SEC_POSEIDONLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/fts7bd50_poseidon_rev00.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/fts7bd50_poseidon_rev04.fw
+endif
+
+ifdef CONFIG_SEC_HERO6LTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_STM)			+= tsp_stm/stm_hero6.fw
+fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_FT16XX)		+= abov/abov_tk_hero6.fw
+endif
+
+ifdef CONFIG_SEC_GRACEQLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/sec_hero2.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS)			+= tsp_sec/y661_grace.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_ATMEL_MXT748U)	+= tsp_atmel/mxt748u_grace.fw
+fw-shipped-$(CONFIG_KEYBOARD_CYPRESS_TOUCHKEY)	+= cypress/cy8cmbr3145_grace.fw
+fw-shipped-$(CONFIG_KEYBOARD_CYPRESS_TOUCHKEY)	+= tkey/cypress_grace.fw
 fw-shipped-$(CONFIG_EPEN_WACOM_W9018) += epen/W9018_GRACE.bin
-
-TSPFIRMWARE_DIRECTORY = firmware/tsp_stm
-ifeq ($(shell test -d $(TSPFIRMWARE_DIRECTORY) && echo yes),yes)
-fw-shipped-$(CONFIG_TOUCHSCREEN_FTS) += tsp_stm/stm_z1.fw tsp_stm/stm_z2a.fw
-fw-shipped-$(CONFIG_TOUCHSCREEN_FTS7) += tsp_stm/hero2i.fw tsp_stm/hero2a.fw tsp_stm/hero_e.fw
-fw-shipped-$(CONFIG_TOUCHSCREEN_FTS7_VALLEY) += tsp_stm/fts7bd50_vlte.fw
-fw-shipped-$(CONFIG_TOUCHSCREEN_FTS7_HAECHI) += tsp_stm/fts7bd50_haechi.fw
-fw-shipped-$(CONFIG_TOUCHSCREEN_FTS8) += tsp_stm/fts9cd56_of.fw
-else
-$(warning '$(TSPFIRMWARE_DIRECTORY)' directory dose not exist)
 endif
 
-TSPFIRMWARE_DIRECTORY = firmware/tsp_sec
-ifeq ($(shell test -d $(TSPFIRMWARE_DIRECTORY) && echo yes),yes)
-fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS) += tsp_sec/hero.bin
-fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS) += tsp_sec/hero_ub.bin tsp_sec/hero2la.bin
-fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS) += tsp_sec/y661_grace.fw
-else
-$(warning '$(TSPFIRMWARE_DIRECTORY)' directory dose not exist)
+ifdef CONFIG_SEC_VEYRONLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_MELFAS_MMS438)		+= tsp_melfas/mms438_veyron.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_SEC_TS_DUAL)		+= tsp_sec/sec_veyron.fw
+fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_FOLDER)		+= abov/abov_tk_veyron.fw
 endif
 
-TSPFIRMWARE_DIRECTORY = firmware/tsp_synaptics
-ifeq ($(shell test -d $(TSPFIRMWARE_DIRECTORY) && echo yes),yes)
-fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX2) += tsp_synaptics/synaptics_s5300_v_ab.fw \
-	tsp_synaptics/synaptics_s5300_v_ac.fw
-fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX) += tsp_synaptics/synaptics_s5100_haechi.fw
-else
-$(warning '$(TSPFIRMWARE_DIRECTORY)' directory dose not exist)
+ifdef CONFIG_SEC_GTS2LLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX2)	+= tsp_synaptics/s5807_gts2llte.fw
+fw-shipped-$(CONFIG_KEYBOARD_TC350K)			+= coreriver/tc350k_gts2llte.fw
 endif
 
-TSPFIRMWARE_DIRECTORY = firmware/tsp_atmel
-ifeq ($(shell test -d $(TSPFIRMWARE_DIRECTORY) && echo yes),yes)
-fw-shipped-$(CONFIG_TOUCHSCREEN_ATMEL_MXT874U) += tsp_atmel/mxt874u_ufo.fw tsp_atmel/mxt874u_grace.fw
-else
-$(warning '$(TSPFIRMWARE_DIRECTORY)' directory dose not exist)
+ifdef CONFIG_SEC_GTS3LLTE_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX2)	+= tsp_synaptics/s5807_gts3llte.fw
+fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte.fw
+fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte_r04.fw
+fw-shipped-$(CONFIG_EPEN_WACOM_W9019)			+= epen/w9019_gts3llte.fw
+endif
+ifdef CONFIG_SEC_GTS3LWIFI_PROJECT
+fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX2)	+= tsp_synaptics/s5807_gts3llte.fw
+fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte.fw
+fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte_r04.fw
+fw-shipped-$(CONFIG_EPEN_WACOM_W9019)			+= epen/w9019_gts3llte.fw
 endif
 
-TSPFIRMWARE_DIRECTORY = firmware/tsp_melfas
-ifeq ($(shell test -d $(TSPFIRMWARE_DIRECTORY) && echo yes),yes)
-fw-shipped-$(CONFIG_TOUCHSCREEN_MMS100S) += tsp_melfas/mms128s_ufo.fw tsp_melfas/mms128s_config_ufo.fw
-else
-$(warning '$(TSPFIRMWARE_DIRECTORY)' directory dose not exist)
-endif
-
-TSPFIRMWARE_DIRECTORY = firmware/tsp_g2tsp
-ifeq ($(shell test -d $(TSPFIRMWARE_DIRECTORY) && echo yes),yes)
-fw-shipped-$(CONFIG_TOUCHSCREEN_G2TOUCH) += tsp_g2tsp/g7400_of.bin
-else
-$(warning '$(TSPFIRMWARE_DIRECTORY)' directory dose not exist)
-endif
-
-fw-shipped-$(CONFIG_KEYBOARD_CYPRESS_TOUCH_MBR31X5) += cypress/cy8cmbr3145_grace.fw cypress/cy8cmbr3145_hero.fw
-fw-shipped-$(CONFIG_KEYBOARD_ABOV_FT16XX_TOUCH) += abov/abov_hero.fw abov/abov_hero2.fw abov/abov_valley.fw
-fw-shipped-$(CONFIG_KEYBOARD_ABOV_TOUCH_A96TA316) += abov/a96ta316aun_vlte.fw
 
 fw-shipped-all := $(fw-shipped-y) $(fw-shipped-m) $(fw-shipped-)
 

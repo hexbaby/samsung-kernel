@@ -70,7 +70,6 @@
 #define IRQF_FORCE_RESUME	0x00008000
 #define IRQF_NO_THREAD		0x00010000
 #define IRQF_EARLY_RESUME	0x00020000
-#define IRQF_GIC_MULTI_TARGET	0x10000000
 
 #define IRQF_TIMER		(__IRQF_TIMER | IRQF_NO_SUSPEND | IRQF_NO_THREAD)
 
@@ -346,6 +345,7 @@ static inline void enable_irq_lockdep_irqrestore(unsigned int irq, unsigned long
 
 /* IRQ wakeup (PM) control: */
 extern int irq_set_irq_wake(unsigned int irq, unsigned int on);
+extern int irq_read_line(unsigned int irq);
 
 static inline int enable_irq_wake(unsigned int irq)
 {
@@ -656,5 +656,5 @@ int arch_show_interrupts(struct seq_file *p, int prec);
 extern int early_irq_init(void);
 extern int arch_probe_nr_irqs(void);
 extern int arch_early_irq_init(void);
-
+extern void irq_set_pending(unsigned int irq);
 #endif

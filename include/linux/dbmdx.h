@@ -28,12 +28,6 @@ struct va_speed {
 	u32	spi_rate;
 };
 
-enum dbmdx_clocks {
-	DBMDX_CLK_CONSTANT = 0,
-	DBMDX_CLK_MASTER,
-	DBMDX_NR_OF_CLKS,
-};
-
 struct dbmdx_platform_data {
 	int				gpio_wakeup;
 	int				gpio_reset;
@@ -49,7 +43,8 @@ struct dbmdx_platform_data {
 	const char			*vqe_non_overlay_firmware_name;
 	int				firmware_id;
 
-	int				clock_rates[DBMDX_NR_OF_CLKS];
+	int				constant_clk_rate;
+	int				master_clk_rate;
 
 	int				feature_va;
 	int				feature_vqe;
@@ -63,7 +58,6 @@ struct dbmdx_platform_data {
 
 	int				auto_buffering;
 	int				auto_detection;
-	int				detection_after_buffering;
 	int				send_uevent_on_detection;
 	int				uart_low_speed_enabled;
 
@@ -72,21 +66,18 @@ struct dbmdx_platform_data {
 	u32				pcm_streaming_mode;
 
 	struct va_speed	va_speed_cfg[DBMDX_VA_NR_OF_SPEEDS];
-	u32				va_mic_config[5];
+	u32				va_mic_config[3];
 	u32				va_initial_mic_config;
-	u32				va_mic_gain_config[3];
 	int				va_audio_channels;
 	u32				vqe_tdm_bypass_config;
 	unsigned int			va_buffering_pcm_rate;
 
 	unsigned int			va_recovery_disabled;
 };
-int dbmdx_get_samples(struct snd_soc_codec *codec,
-	char *buffer, unsigned int samples);
-int dbmdx_codec_lock(struct snd_soc_codec *codec);
-int dbmdx_start_pcm_streaming(struct snd_soc_codec *codec,
-	struct snd_pcm_substream *substream);
-int dbmdx_stop_pcm_streaming(struct snd_soc_codec *codec);
-int dbmdx_codec_unlock(struct snd_soc_codec *codec);
+int dbmdx_get_samples(char *buffer, unsigned int samples);
+int dbmdx_codec_lock(void);
+int dbmdx_start_pcm_streaming(struct snd_pcm_substream *substream);
+int dbmdx_stop_pcm_streaming(void);
+int dbmdx_codec_unlock(void);
 
 #endif

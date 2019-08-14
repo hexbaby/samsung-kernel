@@ -2,6 +2,7 @@
  * s2mpb02-private.h - Voltage regulator driver for the Samsung s2mpb02
  *
  *  Copyright (C) 2014 Samsung Electrnoics
+ *  XXX <xxx@samsung.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

@@ -16,6 +16,9 @@
  */
 
 #include <linux/battery/charger/da9155_charger.h>
+#if defined(CONFIG_BATTERY_NOTIFIER)
+#include <linux/battery/battery_notifier.h>
+#endif
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 
@@ -235,6 +238,37 @@ static irqreturn_t da9155_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+#if defined(CONFIG_BATTERY_NOTIFIER)
+static int da9155_get_property(struct device * dev, int property)
+{
+	int ret;
+	u8 reg_data;
+	struct i2c_client *i2c = container_of(dev, struct i2c_client, dev);
+	struct da9155_charger_data *charger = i2c_get_clientdata(i2c);
+
+	switch (property) {
+	case CHECK_SLAVE_I2C:
+		ret = da9155_read_reg(charger->i2c, DA9155_EVENT_B, &reg_data);
+		if(ret < 0)
+			ret = 0;
+		else
+			ret = 1;
+		break;
+	default:
+		return -EINVAL;
+	}
+	pr_info("%s: property : %d\n", __func__,property);
+
+	return ret;
+}
+
+void da9155_set_battery_property(struct da9155_charger_data *charger)
+{
+	batt_cb.sub_chg_dev = charger->dev;
+	batt_cb.sub_chg_get_property = da9155_get_property;
+}
+#endif
+
 static int da9155_chg_get_property(struct power_supply *psy,
 	enum power_supply_property psp, union power_supply_propval *val)
 {
@@ -339,6 +373,106 @@ static int da9155_charger_parse_dt(struct da9155_charger_data *charger,
 	return ret;
 }
 
+static ssize_t da9155_store_addr(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	int x;
+	if (sscanf(buf, "0x%x\n", &x) == 1) {
+		charger->addr = x;
+	}
+	return count;
+}
+
+static ssize_t da9155_show_addr(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	return sprintf(buf, "0x%x\n", charger->addr);
+}
+
+static ssize_t da9155_store_size(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	int x;
+	if (sscanf(buf, "%d\n", &x) == 1) {
+		charger->size = x;
+	}
+	return count;
+}
+
+static ssize_t da9155_show_size(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	return sprintf(buf, "0x%x\n", charger->size);
+}
+static ssize_t da9155_store_data(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	int x;
+
+	if (sscanf(buf, "0x%x", &x) == 1) {
+		u8 data = x;
+		if (da9155_write_reg(charger->i2c, charger->addr, data) < 0)
+		{
+			dev_info(charger->dev,
+					"%s: addr: 0x%x write fail\n", __func__, charger->addr);
+		}
+	}
+	return count;
+}
+
+static ssize_t da9155_show_data(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	u8 data;
+	int i, count = 0;;
+	if (charger->size == 0)
+		charger->size = 1;
+
+	for (i = 0; i < charger->size; i++) {
+		if (da9155_read_reg(charger->i2c, charger->addr+i, &data) < 0) {
+			dev_info(charger->dev,
+					"%s: read fail\n", __func__);
+			count += sprintf(buf+count, "addr: 0x%x read fail\n", charger->addr+i);
+			continue;
+		}
+		count += sprintf(buf+count, "addr: 0x%x, data: 0x%x\n", charger->addr+i,data);
+	}
+	return count;
+}
+
+static DEVICE_ATTR(addr, 0644, da9155_show_addr, da9155_store_addr);
+static DEVICE_ATTR(size, 0644, da9155_show_size, da9155_store_size);
+static DEVICE_ATTR(data, 0644, da9155_show_data, da9155_store_data);
+
+static struct attribute *da9155_attributes[] = {
+	&dev_attr_addr.attr,
+	&dev_attr_size.attr,
+	&dev_attr_data.attr,
+	NULL
+};
+
+static const struct attribute_group da9155_attr_group = {
+	.attrs = da9155_attributes,
+};
+
 static int da9155_charger_probe(struct i2c_client *client,
 	const struct i2c_device_id *id)
 {
@@ -359,7 +493,7 @@ static int da9155_charger_probe(struct i2c_client *client,
 	charger->dev = &client->dev;
 	charger->i2c = client;
 	if (of_node) {
-		pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
+		pdata = kzalloc(sizeof(*pdata), GFP_KERNEL);
 		if (!pdata) {
 			pr_err("%s: Failed to allocate memory\n", __func__);
 			ret = -ENOMEM;
@@ -368,10 +502,7 @@ static int da9155_charger_probe(struct i2c_client *client,
 		ret = da9155_charger_parse_dt(charger, pdata);
 		if (ret < 0)
 			goto err_parse_dt;
-	} else {
-		pdata = client->dev.platform_data;
 	}
-
 	charger->pdata = pdata;
 	i2c_set_clientdata(client, charger);
 
@@ -392,14 +523,6 @@ static int da9155_charger_probe(struct i2c_client *client,
 		goto err_power_supply_register;
 	}
 
-	charger->wqueue =
-		create_singlethread_workqueue(dev_name(charger->dev));
-	if (!charger->wqueue) {
-		pr_err("%s: Fail to Create Workqueue\n", __func__);
-		ret = -1;
-		goto err_create_wqueue;
-	}
-
 	if (pdata->irq_gpio) {
 		charger->chg_irq = gpio_to_irq(pdata->irq_gpio);
 
@@ -413,19 +536,26 @@ static int da9155_charger_probe(struct i2c_client *client,
 		}
 	}
 	device_init_wakeup(charger->dev, 1);
+#if defined(CONFIG_BATTERY_NOTIFIER)
+	da9155_set_battery_property(charger);
+#endif
 
+	ret = sysfs_create_group(&charger->psy_chg.dev->kobj, &da9155_attr_group);
+	if (ret) {
+		dev_info(&client->dev,
+			"%s: sysfs_create_group failed\n", __func__);
+	}
 	pr_info("%s: DA9155 Charger Driver Loaded\n", __func__);
 
 	return 0;
 
 err_req_irq:
-err_create_wqueue:
 	power_supply_unregister(&charger->psy_chg);
 err_power_supply_register:
-	mutex_destroy(&charger->io_lock);
 err_parse_dt:
 	kfree(pdata);
 err_nomem:
+	mutex_destroy(&charger->io_lock);
 	kfree(charger);
 
 	return ret;
@@ -435,8 +565,8 @@ static int da9155_charger_remove(struct i2c_client *client)
 {
 	struct da9155_charger_data *charger = i2c_get_clientdata(client);
 
-	free_irq(charger->chg_irq, charger);
-	destroy_workqueue(charger->wqueue);
+	if (charger->chg_irq)
+		free_irq(charger->chg_irq, charger);
 	power_supply_unregister(&charger->psy_chg);
 	mutex_destroy(&charger->io_lock);
 	kfree(charger->pdata);
@@ -449,7 +579,8 @@ static void da9155_charger_shutdown(struct i2c_client *client)
 {
 	struct da9155_charger_data *charger = i2c_get_clientdata(client);
 
-	free_irq(charger->chg_irq, charger);
+	if (charger->chg_irq)
+		free_irq(charger->chg_irq, charger);
 	da9155_update_reg(client, DA9155_BUCK_CONT, 0, DA9155_BUCK_EN_MASK);
 	da9155_update_reg(client, DA9155_BUCK_IOUT, 0x7D, DA9155_BUCK_ILIM_MASK);
 }
@@ -475,10 +606,11 @@ static int da9155_charger_suspend(struct device *dev)
 	struct i2c_client *i2c = container_of(dev, struct i2c_client, dev);
 	struct da9155_charger_data *charger = i2c_get_clientdata(i2c);
 
-	if (device_may_wakeup(dev))
-		enable_irq_wake(charger->chg_irq);
-
-	disable_irq(charger->chg_irq);
+	if (charger->chg_irq) {
+		if (device_may_wakeup(dev))
+			enable_irq_wake(charger->chg_irq);
+		disable_irq(charger->chg_irq);
+	}
 
 	return 0;
 }
@@ -488,10 +620,11 @@ static int da9155_charger_resume(struct device *dev)
 	struct i2c_client *i2c = container_of(dev, struct i2c_client, dev);
 	struct da9155_charger_data *charger = i2c_get_clientdata(i2c);
 
-	if (device_may_wakeup(dev))
-		disable_irq_wake(charger->chg_irq);
-
-	enable_irq(charger->chg_irq);
+	if (charger->chg_irq) {
+		if (device_may_wakeup(dev))
+			disable_irq_wake(charger->chg_irq);
+		enable_irq(charger->chg_irq);
+	}
 
 	return 0;
 }

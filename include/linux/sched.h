@@ -25,7 +25,7 @@ struct sched_param {
 #include <linux/errno.h>
 #include <linux/nodemask.h>
 #include <linux/mm_types.h>
-#include <linux/preempt_mask.h>
+#include <linux/preempt.h>
 
 #include <asm/page.h>
 #include <asm/ptrace.h>
@@ -172,12 +172,9 @@ extern bool single_task_running(void);
 extern unsigned long nr_iowait(void);
 extern unsigned long nr_iowait_cpu(int cpu);
 extern void get_iowait_load(unsigned long *nr_waiters, unsigned long *load);
-#ifdef CONFIG_SCHED_HMP
-extern unsigned long nr_running_cpu(unsigned int cpu);
-extern int register_hmp_task_migration_notifier(struct notifier_block *nb);
-#define HMP_UP_MIGRATION       0
-#define HMP_DOWN_MIGRATION     1
-#endif
+
+extern void sched_update_nr_prod(int cpu, long delta, bool inc);
+extern void sched_get_nr_running_avg(int *avg, int *iowait_avg, int *big_avg);
 
 extern void calc_global_load(unsigned long ticks);
 extern void update_cpu_load_nohz(void);
@@ -273,6 +270,27 @@ extern char ___assert_task_state[1 - 2*!!(
 /* Task command name length */
 #define TASK_COMM_LEN 16
 
+extern const char *sched_window_reset_reasons[];
+
+enum task_event {
+	PUT_PREV_TASK   = 0,
+	PICK_NEXT_TASK  = 1,
+	TASK_WAKE       = 2,
+	TASK_MIGRATE    = 3,
+	TASK_UPDATE     = 4,
+	IRQ_UPDATE	= 5,
+};
+
+/* Note: this need to be in sync with migrate_type_names array */
+enum migrate_types {
+	GROUP_TO_RQ,
+	RQ_TO_GROUP,
+	RQ_TO_RQ,
+	GROUP_TO_GROUP,
+};
+
+extern const char *migrate_type_names[];
+
 #include <linux/spinlock.h>
 
 /*
@@ -328,7 +346,6 @@ extern void show_regs(struct pt_regs *);
  * task), SP is the stack pointer of the first frame that should be shown in the back
  * trace (or NULL if the entire call-chain of the task should be shown).
  */
-
 extern void show_stack(struct task_struct *task, unsigned long *sp);
 
 void io_schedule(void);
@@ -736,16 +753,6 @@ struct signal_struct {
 
 #define SIGNAL_UNKILLABLE	0x00000040 /* for init: ignore fatal signals */
 
-#define SIGNAL_STOP_MASK (SIGNAL_CLD_MASK | SIGNAL_STOP_STOPPED | \
-			  SIGNAL_STOP_CONTINUED)
-
-static inline void signal_set_stop_flags(struct signal_struct *sig,
-					 unsigned int flags)
-{
-	WARN_ON(sig->flags & (SIGNAL_GROUP_EXIT|SIGNAL_GROUP_COREDUMP));
-	sig->flags = (sig->flags & ~SIGNAL_STOP_MASK) | flags;
-}
-
 /* If true, all threads except ->group_exit_task have pending SIGKILL */
 static inline int signal_group_exit(const struct signal_struct *sig)
 {
@@ -775,8 +782,8 @@ struct user_struct {
 	unsigned long mq_bytes;	/* How many bytes can be allocated to mqueue? */
 #endif
 	unsigned long locked_shm; /* How many pages of mlocked shm ? */
-	unsigned long unix_inflight;	/* How many files in flight in unix sockets */
 	atomic_long_t pipe_bufs;  /* how many pages are allocated in pipe buffers */
+	unsigned long unix_inflight;	/* How many files in flight in unix sockets */
 
 #ifdef CONFIG_KEYS
 	struct key *uid_keyring;	/* UID specific keyring */
@@ -873,11 +880,6 @@ enum cpu_idle_type {
  */
 #define SCHED_CAPACITY_SHIFT	10
 #define SCHED_CAPACITY_SCALE	(1L << SCHED_CAPACITY_SHIFT)
-/*
- * Increase resolution of cpu_power calculations
- */
-#define SCHED_POWER_SHIFT	10
-#define SCHED_POWER_SCALE	(1L << SCHED_POWER_SHIFT)
 
 /*
  * sched-domains (multiprocessor balancing) declarations:
@@ -897,7 +899,6 @@ enum cpu_idle_type {
 #define SD_PREFER_SIBLING	0x1000	/* Prefer to place tasks in a sibling domain */
 #define SD_OVERLAP		0x2000	/* sched_domains of this level overlap */
 #define SD_NUMA			0x4000	/* cross-node balancing */
-#define SD_NO_LOAD_BALANCE	0x8000	/* flag for hmp scheduler */
 
 #ifdef CONFIG_SCHED_SMT
 static inline int cpu_smt_flags(void)
@@ -929,24 +930,6 @@ struct sched_domain_attr {
 }
 
 extern int sched_domain_level_max;
-
-struct capacity_state {
-	unsigned long cap;	/* compute capacity */
-	unsigned long power;	/* power consumption at this compute capacity */
-};
-
-struct idle_state {
-	unsigned long power;	 /* power consumption in this idle state */
-};
-
-struct sched_group_energy {
-	unsigned int nr_idle_states;	/* number of idle states */
-	struct idle_state *idle_states;	/* ptr to idle state array */
-	unsigned int nr_cap_states;	/* number of capacity states */
-	struct capacity_state *cap_states; /* ptr to capacity state array */
-};
-
-unsigned long capacity_curr_of(int cpu);
 
 struct sched_group;
 
@@ -1077,24 +1060,6 @@ extern void wake_up_if_idle(int cpu);
 # define SD_INIT_NAME(type)
 #endif
 
-#ifdef CONFIG_SCHED_HMP
-struct hmp_domain {
-	struct cpumask cpus;
-	struct cpumask possible_cpus;
-	struct list_head hmp_domains;
-};
-
-extern int set_hmp_boost(int enable);
-extern int set_hmp_semiboost(int enable);
-extern int set_hmp_boostpulse(int duration);
-extern int get_hmp_boost(void);
-extern int get_hmp_semiboost(void);
-extern int set_hmp_up_threshold(int value);
-extern int set_hmp_down_threshold(int value);
-extern int set_active_down_migration(int enable);
-extern int set_hmp_aggressive_up_migration(int enable);
-extern int set_hmp_aggressive_yield(int enable);
-#endif /* CONFIG_SCHED_HMP */
 #else /* CONFIG_SMP */
 
 struct sched_domain_attr;
@@ -1139,20 +1104,12 @@ struct sched_avg {
 	 * choices of y < 1-2^(-32)*1024.
 	 */
 	u32 runnable_avg_sum, runnable_avg_period;
-	u32 remainder;
+#ifdef CONFIG_SCHED_HMP
+	u32 runnable_avg_sum_scaled;
+#endif
 	u64 last_runnable_update;
 	s64 decay_count;
 	unsigned long load_avg_contrib;
-	unsigned long load_avg_ratio;
-#ifdef CONFIG_SCHED_HMP
-	u64 hmp_last_up_migration;
-	u64 hmp_last_down_migration;
-#ifdef CONFIG_HP_EVENT_HMP_SYSTEM_LOAD
-	bool is_big_thread;
-#endif
-#endif
-	u32 usage_avg_sum;
-	struct task_struct *task;
 };
 
 #ifdef CONFIG_SCHEDSTATS
@@ -1190,6 +1147,49 @@ struct sched_statistics {
 	u64			nr_wakeups_idle;
 };
 #endif
+
+#define RAVG_HIST_SIZE_MAX  5
+#define NUM_BUSY_BUCKETS 10
+
+/* ravg represents frequency scaled cpu-demand of tasks */
+struct ravg {
+	/*
+	 * 'mark_start' marks the beginning of an event (task waking up, task
+	 * starting to execute, task being preempted) within a window
+	 *
+	 * 'sum' represents how runnable a task has been within current
+	 * window. It incorporates both running time and wait time and is
+	 * frequency scaled.
+	 *
+	 * 'sum_history' keeps track of history of 'sum' seen over previous
+	 * RAVG_HIST_SIZE windows. Windows where task was entirely sleeping are
+	 * ignored.
+	 *
+	 * 'demand' represents maximum sum seen over previous
+	 * sysctl_sched_ravg_hist_size windows. 'demand' could drive frequency
+	 * demand for tasks.
+	 *
+	 * 'curr_window' represents task's contribution to cpu busy time
+	 * statistics (rq->curr_runnable_sum) in current window
+	 *
+	 * 'prev_window' represents task's contribution to cpu busy time
+	 * statistics (rq->prev_runnable_sum) in previous window
+	 *
+	 * 'pred_demand' represents task's current predicted cpu busy time
+	 *
+	 * 'busy_buckets' groups historical busy time into different buckets
+	 * used for prediction
+	 */
+	u64 mark_start;
+	u32 sum, demand;
+	u32 sum_history[RAVG_HIST_SIZE_MAX];
+#ifdef CONFIG_SCHED_FREQ_INPUT
+	u32 curr_window, prev_window;
+	u16 active_windows;
+	u32 pred_demand;
+	u8 busy_buckets[NUM_BUSY_BUCKETS];
+#endif
+};
 
 struct sched_entity {
 	struct load_weight	load;		/* for load-balancing */
@@ -1327,6 +1327,23 @@ struct task_struct {
 	const struct sched_class *sched_class;
 	struct sched_entity se;
 	struct sched_rt_entity rt;
+#ifdef CONFIG_SCHED_HMP
+	struct ravg ravg;
+	/*
+	 * 'init_load_pct' represents the initial task load assigned to children
+	 * of this task
+	 */
+	u32 init_load_pct;
+	u64 last_wake_ts;
+	u64 last_switch_out_ts;
+	u64 last_cpu_selected_ts;
+#ifdef CONFIG_SCHED_QHMP
+	u64 run_start;
+#endif
+	struct related_thread_group *grp;
+	struct list_head grp_list;
+	u64 cpu_cycles;
+#endif
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group *sched_task_group;
 #endif
@@ -1399,8 +1416,6 @@ struct task_struct {
 
 	unsigned long atomic_flags; /* Flags needing atomic access. */
 
-	struct restart_block restart_block;
-
 	pid_t pid;
 	pid_t tgid;
 
@@ -1435,15 +1450,6 @@ struct task_struct {
 	struct list_head thread_group;
 	struct list_head thread_node;
 
-#ifdef CONFIG_HP_EVENT_THREAD_GROUP
-	unsigned long thread_group_load;
-	int nr_thread_group;
-	raw_spinlock_t thread_group_lock;
-	bool hp_boost_requested;	/* This task requested hotplug boost */
-	bool applied_to_group_load;
-	bool member_of_group;
-	unsigned long group_applied_load;
-#endif
 	struct completion *vfork_done;		/* for vfork() */
 	int __user *set_child_tid;		/* CLONE_CHILD_SETTID */
 	int __user *clear_child_tid;		/* CLONE_CHILD_CLEARTID */
@@ -1566,6 +1572,9 @@ struct task_struct {
 	unsigned int lockdep_recursion;
 	struct held_lock held_locks[MAX_LOCK_DEPTH];
 	gfp_t lockdep_reclaim_gfp;
+#endif
+#ifdef CONFIG_UBSAN
+	unsigned int in_ubsan;
 #endif
 
 /* journalling filesystem info */
@@ -1708,6 +1717,9 @@ struct task_struct {
 	unsigned long timer_slack_ns;
 	unsigned long default_timer_slack_ns;
 
+#ifdef CONFIG_KASAN
+	unsigned int kasan_depth;
+#endif
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	/* Index of current stored address in ret_stack */
 	int curr_ret_stack;
@@ -1852,8 +1864,31 @@ static inline pid_t task_tgid_nr(struct task_struct *tsk)
 	return tsk->tgid;
 }
 
+pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
+
+static inline pid_t task_tgid_vnr(struct task_struct *tsk)
+{
+	return pid_vnr(task_tgid(tsk));
+}
+
 
 static inline int pid_alive(const struct task_struct *p);
+static inline pid_t task_ppid_nr_ns(const struct task_struct *tsk, struct pid_namespace *ns)
+{
+	pid_t pid = 0;
+
+	rcu_read_lock();
+	if (pid_alive(tsk))
+		pid = task_tgid_nr_ns(rcu_dereference(tsk->real_parent), ns);
+	rcu_read_unlock();
+
+	return pid;
+}
+
+static inline pid_t task_ppid_nr(const struct task_struct *tsk)
+{
+	return task_ppid_nr_ns(tsk, &init_pid_ns);
+}
 
 static inline pid_t task_pgrp_nr_ns(struct task_struct *tsk,
 					struct pid_namespace *ns)
@@ -1876,33 +1911,6 @@ static inline pid_t task_session_nr_ns(struct task_struct *tsk,
 static inline pid_t task_session_vnr(struct task_struct *tsk)
 {
 	return __task_pid_nr_ns(tsk, PIDTYPE_SID, NULL);
-}
-
-static inline pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns)
-{
-	return __task_pid_nr_ns(tsk, __PIDTYPE_TGID, ns);
-}
-
-static inline pid_t task_tgid_vnr(struct task_struct *tsk)
-{
-	return __task_pid_nr_ns(tsk, __PIDTYPE_TGID, NULL);
-}
-
-static inline pid_t task_ppid_nr_ns(const struct task_struct *tsk, struct pid_namespace *ns)
-{
-	pid_t pid = 0;
-
-	rcu_read_lock();
-	if (pid_alive(tsk))
-		pid = task_tgid_nr_ns(rcu_dereference(tsk->real_parent), ns);
-	rcu_read_unlock();
-
-	return pid;
-}
-
-static inline pid_t task_ppid_nr(const struct task_struct *tsk)
-{
-	return task_ppid_nr_ns(tsk, &init_pid_ns);
 }
 
 /* obsolete, do not use */
@@ -1989,9 +1997,45 @@ extern void thread_group_cputime_adjusted(struct task_struct *p, cputime_t *ut, 
 extern int task_free_register(struct notifier_block *n);
 extern int task_free_unregister(struct notifier_block *n);
 
+struct sched_load {
+	unsigned long prev_load;
+	unsigned long new_task_load;
+	unsigned long predicted_load;
+};
+
+#if defined(CONFIG_SCHED_QHMP) || !defined(CONFIG_SCHED_HMP)
+static inline int sched_update_freq_max_load(const cpumask_t *cpumask)
+{
+	return 0;
+}
+#else
+int sched_update_freq_max_load(const cpumask_t *cpumask);
+#endif
+
+#if defined(CONFIG_SCHED_FREQ_INPUT)
+extern int sched_set_window(u64 window_start, unsigned int window_size);
+extern unsigned long sched_get_busy(int cpu);
+extern void sched_get_cpus_busy(struct sched_load *busy,
+				const struct cpumask *query_cpus);
+extern void sched_set_io_is_busy(int val);
+#else
+static inline int sched_set_window(u64 window_start, unsigned int window_size)
+{
+	return -EINVAL;
+}
+static inline unsigned long sched_get_busy(int cpu)
+{
+	return 0;
+}
+static inline void sched_get_cpus_busy(struct sched_load *busy,
+				       const struct cpumask *query_cpus) {};
+static inline void sched_set_io_is_busy(int val) {};
+#endif
+
 /*
  * Per process flags
  */
+#define PF_WAKE_UP_IDLE 0x00000002	/* try to wake up on an idle CPU */
 #define PF_EXITING	0x00000004	/* getting shut down */
 #define PF_EXITPIDONE	0x00000008	/* pi exit done on shut down */
 #define PF_VCPU		0x00000010	/* I'm a virtual CPU */
@@ -2166,6 +2210,57 @@ static inline int set_cpus_allowed_ptr(struct task_struct *p,
 }
 #endif
 
+extern int sched_set_wake_up_idle(struct task_struct *p, int wake_up_idle);
+extern u32 sched_get_wake_up_idle(struct task_struct *p);
+extern int sched_set_group_id(struct task_struct *p, unsigned int group_id);
+extern unsigned int sched_get_group_id(struct task_struct *p);
+
+#ifdef CONFIG_SCHED_HMP
+
+extern int sched_set_boost(int enable);
+extern int sched_set_init_task_load(struct task_struct *p, int init_load_pct);
+extern u32 sched_get_init_task_load(struct task_struct *p);
+extern int sched_set_static_cpu_pwr_cost(int cpu, unsigned int cost);
+extern unsigned int sched_get_static_cpu_pwr_cost(int cpu);
+extern int sched_set_static_cluster_pwr_cost(int cpu, unsigned int cost);
+extern unsigned int sched_get_static_cluster_pwr_cost(int cpu);
+extern void sched_set_cpu_cstate(int cpu, int cstate,
+			 int wakeup_energy, int wakeup_latency);
+extern void sched_set_cluster_dstate(const cpumask_t *cluster_cpus, int dstate,
+				int wakeup_energy, int wakeup_latency);
+extern void sched_update_cpu_freq_min_max(const cpumask_t *cpus, u32 fmin, u32
+					  fmax);
+#ifdef CONFIG_SCHED_QHMP
+extern int sched_set_cpu_prefer_idle(int cpu, int prefer_idle);
+extern int sched_get_cpu_prefer_idle(int cpu);
+extern int sched_set_cpu_mostly_idle_load(int cpu, int mostly_idle_pct);
+extern int sched_get_cpu_mostly_idle_load(int cpu);
+extern int sched_set_cpu_mostly_idle_nr_run(int cpu, int nr_run);
+extern int sched_get_cpu_mostly_idle_nr_run(int cpu);
+extern int
+sched_set_cpu_mostly_idle_freq(int cpu, unsigned int mostly_idle_freq);
+extern unsigned int sched_get_cpu_mostly_idle_freq(int cpu);
+#endif
+
+#else
+static inline int sched_set_boost(int enable)
+{
+	return -EINVAL;
+}
+static inline void
+sched_set_cpu_cstate(int cpu, int cstate, int wakeup_energy, int wakeup_latency)
+{
+}
+
+static inline void sched_set_cluster_dstate(const cpumask_t *cluster_cpus,
+			int dstate, int wakeup_energy, int wakeup_latency)
+{
+}
+
+static inline void
+sched_update_cpu_freq_min_max(const cpumask_t *cpus, u32 fmin, u32 fmax) { }
+#endif
+
 #ifdef CONFIG_NO_HZ_COMMON
 void calc_load_enter_idle(void);
 void calc_load_exit_idle(void);
@@ -2173,6 +2268,14 @@ void calc_load_exit_idle(void);
 static inline void calc_load_enter_idle(void) { }
 static inline void calc_load_exit_idle(void) { }
 #endif /* CONFIG_NO_HZ_COMMON */
+
+static inline void set_wake_up_idle(bool enabled)
+{
+	if (enabled)
+		current->flags |= PF_WAKE_UP_IDLE;
+	else
+		current->flags &= ~PF_WAKE_UP_IDLE;
+}
 
 #ifndef CONFIG_CPUMASK_OFFSTACK
 static inline int set_cpus_allowed(struct task_struct *p, cpumask_t new_mask)
@@ -2197,8 +2300,10 @@ extern u64 cpu_clock(int cpu);
 extern u64 local_clock(void);
 extern u64 sched_clock_cpu(int cpu);
 
+extern u64 sched_ktime_clock(void);
 
 extern void sched_clock_init(void);
+extern int sched_clock_initialized(void);
 
 #ifndef CONFIG_HAVE_UNSTABLE_SCHED_CLOCK
 static inline void sched_clock_tick(void)
@@ -2245,7 +2350,7 @@ extern unsigned long long
 task_sched_runtime(struct task_struct *task);
 
 /* sched_exec is called by processes performing an exec */
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP)
 extern void sched_exec(void);
 #else
 #define sched_exec()   {}
@@ -2384,6 +2489,7 @@ extern void xtime_update(unsigned long ticks);
 
 extern int wake_up_state(struct task_struct *tsk, unsigned int state);
 extern int wake_up_process(struct task_struct *tsk);
+extern int wake_up_process_no_notif(struct task_struct *tsk);
 extern void wake_up_new_task(struct task_struct *tsk);
 #ifdef CONFIG_SMP
  extern void kick_process(struct task_struct *tsk);
@@ -2392,6 +2498,11 @@ extern void wake_up_new_task(struct task_struct *tsk);
 #endif
 extern int sched_fork(unsigned long clone_flags, struct task_struct *p);
 extern void sched_dead(struct task_struct *p);
+#ifdef CONFIG_SCHED_HMP
+extern void sched_exit(struct task_struct *p);
+#else
+static inline void sched_exit(struct task_struct *p) { }
+#endif
 
 extern void proc_caches_init(void);
 extern void flush_signals(struct task_struct *);
@@ -2507,12 +2618,7 @@ static inline void mmdrop(struct mm_struct * mm)
 }
 
 /* mmput gets rid of the mappings and all user-space */
-extern void mmput(struct mm_struct *);
-/* same as above but performs the slow path from the async kontext. Can
- * be called from the atomic context as well
- */
-extern void mmput_async(struct mm_struct *);
-
+extern int mmput(struct mm_struct *);
 /* Grab a reference to a task's mm, if it is not already going away */
 extern struct mm_struct *get_task_mm(struct task_struct *task);
 /*
@@ -2865,12 +2971,6 @@ extern int _cond_resched(void);
 
 extern int __cond_resched_lock(spinlock_t *lock);
 
-#ifdef CONFIG_PREEMPT_COUNT
-#define PREEMPT_LOCK_OFFSET	PREEMPT_OFFSET
-#else
-#define PREEMPT_LOCK_OFFSET	0
-#endif
-
 #define cond_resched_lock(lock) ({				\
 	__might_sleep(__FILE__, __LINE__, PREEMPT_LOCK_OFFSET);	\
 	__cond_resched_lock(lock);				\
@@ -3048,6 +3148,15 @@ static inline void set_task_cpu(struct task_struct *p, unsigned int cpu)
 
 #endif /* CONFIG_SMP */
 
+extern struct atomic_notifier_head migration_notifier_head;
+struct migration_notify_data {
+	int src_cpu;
+	int dest_cpu;
+	int load;
+};
+
+extern struct atomic_notifier_head load_alert_notifier_head;
+
 extern long sched_setaffinity(pid_t pid, const struct cpumask *new_mask);
 extern long sched_getaffinity(pid_t pid, struct cpumask *mask);
 
@@ -3078,11 +3187,6 @@ static inline void inc_syscw(struct task_struct *tsk)
 {
 	tsk->ioac.syscw++;
 }
-
-static inline void inc_syscfs(struct task_struct *tsk)
-{
-	tsk->ioac.syscfs++;
-}
 #else
 static inline void add_rchar(struct task_struct *tsk, ssize_t amt)
 {
@@ -3097,9 +3201,6 @@ static inline void inc_syscr(struct task_struct *tsk)
 }
 
 static inline void inc_syscw(struct task_struct *tsk)
-{
-}
-static inline void inc_syscfs(struct task_struct *tsk)
 {
 }
 #endif
@@ -3138,29 +3239,10 @@ static inline unsigned long rlimit_max(unsigned int limit)
 	return task_rlimit_max(current, limit);
 }
 
-#if defined(CONFIG_HP_EVENT_THREAD_GROUP) || defined(CONFIG_HP_EVENT_HMP_SYSTEM_LOAD)
-void hp_event_enqueue_entity(struct sched_entity *se, int flags);
-void hp_event_dequeue_entity(struct sched_entity *se, int flags);
-void hp_event_update_entity_load(struct sched_entity *se);
-void hp_event_switched_from(struct sched_entity *se);
-void hp_event_do_exit(struct task_struct *p);
-void hp_event_update_rq_load(int cpu);
-extern unsigned int *pcpu_efficiency;
-#else
-static inline void hp_event_update_entity_load(struct sched_entity *se) { };
-static inline void hp_event_enqueue_entity(struct sched_entity *se, int flags) { };
-static inline void hp_event_dequeue_entity(struct sched_entity *se, int flags) { };
-static inline void hp_event_switched_from(struct sched_entity *se) { };
-static inline void hp_event_do_exit(struct task_struct *p) { };
-static inline void hp_event_update_rq_load(int cpu) { };
-#endif
-
-#if defined(CONFIG_HP_EVENT_HMP_SYSTEM_LOAD)
-extern int hp_sysload_to_quad_ratio;
-extern int hp_sysload_to_dual_ratio;
-extern int hp_sysload_param_calc(void);
-extern int hp_little_multiplier_ratio;
-#endif
+struct cpu_cycle_counter_cb {
+	u64 (*get_cpu_cycle_counter)(int cpu);
+};
+int register_cpu_cycle_counter_cb(struct cpu_cycle_counter_cb *cb);
 
 extern void save_pcpu_tick(int cpu);
 extern void restore_pcpu_tick(int cpu);

@@ -72,6 +72,13 @@ enum {
 	REG_UIC_COMMAND_ARG_1			= 0x94,
 	REG_UIC_COMMAND_ARG_2			= 0x98,
 	REG_UIC_COMMAND_ARG_3			= 0x9C,
+
+	UFSHCI_REG_SPACE_SIZE			= 0xA0,
+
+	REG_UFS_CCAP				= 0x100,
+	REG_UFS_CRYPTOCAP			= 0x104,
+
+	UFSHCI_CRYPTO_REG_SPACE_SIZE		= 0x400,
 };
 
 /* Controller capability masks */
@@ -81,6 +88,7 @@ enum {
 	MASK_64_ADDRESSING_SUPPORT		= 0x01000000,
 	MASK_OUT_OF_ORDER_DATA_DELIVERY_SUPPORT	= 0x02000000,
 	MASK_UIC_DME_TEST_MODE_SUPPORT		= 0x04000000,
+	MASK_CRYPTO_SUPPORT			= 0x10000000,
 };
 
 /* UFS Version 08h */
@@ -89,8 +97,10 @@ enum {
 
 /* Controller UFSHCI version */
 enum {
-	UFSHCI_VERSION_10 = 0x00010000,
-	UFSHCI_VERSION_11 = 0x00010100,
+	UFSHCI_VERSION_10 = 0x00010000, /* 1.0 */
+	UFSHCI_VERSION_11 = 0x00010100, /* 1.1 */
+	UFSHCI_VERSION_20 = 0x00000200, /* 2.0 */
+	UFSHCI_VERSION_21 = 0x00000210, /* 2.1 */
 };
 
 /*
@@ -107,8 +117,7 @@ enum {
 #define MANUFACTURE_ID_MASK	UFS_MASK(0xFFFF, 0)
 #define PRODUCT_ID_MASK		UFS_MASK(0xFFFF, 16)
 
-#define UFS_BIT(x)	(1L << (x))
-
+/* IS - Interrupt status (20h) / IE - Interrupt enable (24h) */
 #define UTP_TRANSFER_REQ_COMPL			UFS_BIT(0)
 #define UIC_DME_END_PT_RESET			UFS_BIT(1)
 #define UIC_ERROR				UFS_BIT(2)
@@ -123,6 +132,7 @@ enum {
 #define DEVICE_FATAL_ERROR			UFS_BIT(11)
 #define CONTROLLER_FATAL_ERROR			UFS_BIT(16)
 #define SYSTEM_BUS_FATAL_ERROR			UFS_BIT(17)
+#define CRYPTO_ENGINE_FATAL_ERROR		UFS_BIT(18)
 
 #define UFSHCD_UIC_PWR_MASK	(UIC_HIBERNATE_ENTER |\
 				UIC_HIBERNATE_EXIT |\
@@ -134,12 +144,14 @@ enum {
 				DEVICE_FATAL_ERROR |\
 				CONTROLLER_FATAL_ERROR |\
 				SYSTEM_BUS_FATAL_ERROR |\
-				UIC_LINK_LOST)
+				UIC_LINK_LOST |\
+				CRYPTO_ENGINE_FATAL_ERROR)
 
 #define INT_FATAL_ERRORS	(DEVICE_FATAL_ERROR |\
 				CONTROLLER_FATAL_ERROR |\
 				SYSTEM_BUS_FATAL_ERROR |\
-				UIC_LINK_LOST)
+				UIC_LINK_LOST |\
+				CRYPTO_ENGINE_FATAL_ERROR)
 
 /* HCS - Host Controller Status 30h */
 #define DEVICE_PRESENT				UFS_BIT(0)
@@ -161,38 +173,28 @@ enum {
 
 /* HCE - Host Controller Enable 34h */
 #define CONTROLLER_ENABLE	UFS_BIT(0)
+#define CRYPTO_GENERAL_ENABLE	UFS_BIT(1)
 #define CONTROLLER_DISABLE	0x0
 
 /* UECPA - Host UIC Error Code PHY Adapter Layer 38h */
 #define UIC_PHY_ADAPTER_LAYER_ERROR			UFS_BIT(31)
 #define UIC_PHY_ADAPTER_LAYER_ERROR_CODE_MASK		0x1F
+#define UIC_PHY_ADAPTER_LAYER_LANE_ERR_MASK		0xF
 
 /* UECDL - Host UIC Error Code Data Link Layer 3Ch */
 #define UIC_DATA_LINK_LAYER_ERROR		UFS_BIT(31)
 #define UIC_DATA_LINK_LAYER_ERROR_CODE_MASK	0x7FFF
-#define UIC_DATA_LINK_LAYER_ERROR_TCX_REP_TIMER_EXP	UFS_BIT(1)
-#define UIC_DATA_LINK_LAYER_ERROR_AFCX_REQ_TIMER_EXP	UFS_BIT(2)
-#define UIC_DATA_LINK_LAYER_ERROR_FCX_PRO_TIMER_EXP	UFS_BIT(3)
-#define UIC_DATA_LINK_LAYER_ERROR_RX_BUF_OF	UFS_BIT(5)
-#define UIC_DATA_LINK_LAYER_ERROR_PA_INIT	UFS_BIT(13)
+#define UIC_DATA_LINK_LAYER_ERROR_PA_INIT	0x2000
+#define UIC_DATA_LINK_LAYER_ERROR_NAC_RECEIVED	0x0001
+#define UIC_DATA_LINK_LAYER_ERROR_TCx_REPLAY_TIMEOUT 0x0002
 
 /* UECN - Host UIC Error Code Network Layer 40h */
 #define UIC_NETWORK_LAYER_ERROR			UFS_BIT(31)
 #define UIC_NETWORK_LAYER_ERROR_CODE_MASK	0x7
-#define UIC_NETWORK_UNSUPPORTED_HEADER_TYPE	BIT(0)
-#define UIC_NETWORK_BAD_DEVICEID_ENC		BIT(1)
-#define UIC_NETWORK_LHDR_TRAP_PACKET_DROPPING	BIT(2)
 
 /* UECT - Host UIC Error Code Transport Layer 44h */
 #define UIC_TRANSPORT_LAYER_ERROR		UFS_BIT(31)
 #define UIC_TRANSPORT_LAYER_ERROR_CODE_MASK	0x7F
-#define UIC_TRANSPORT_UNSUPPORTED_HEADER_TYPE	BIT(0)
-#define UIC_TRANSPORT_UNKNOWN_CPORTID		BIT(1)
-#define UIC_TRANSPORT_NO_CONNECTION_RX		BIT(2)
-#define UIC_TRANSPORT_CONTROLLED_SEGMENT_DROPPING	BIT(3)
-#define UIC_TRANSPORT_BAD_TC			BIT(4)
-#define UIC_TRANSPORT_E2E_CREDIT_OVERFOW	BIT(5)
-#define UIC_TRANSPORT_SAFETY_VALUE_DROPPING	BIT(6)
 
 /* UECDME - Host UIC Error Code DME 48h */
 #define UIC_DME_ERROR			UFS_BIT(31)
@@ -222,21 +224,15 @@ enum {
 #define CONFIG_RESULT_CODE_MASK		0xFF
 #define GENERIC_ERROR_CODE_MASK		0xFF
 
+/* GenSelectorIndex calculation macros for M-PHY attributes */
+#define UIC_ARG_MPHY_TX_GEN_SEL_INDEX(lane) (lane)
+#define UIC_ARG_MPHY_RX_GEN_SEL_INDEX(lane) (PA_MAXDATALANES + (lane))
+
 #define UIC_ARG_MIB_SEL(attr, sel)	((((attr) & 0xFFFF) << 16) |\
 					 ((sel) & 0xFFFF))
 #define UIC_ARG_MIB(attr)		UIC_ARG_MIB_SEL(attr, 0)
 #define UIC_ARG_ATTR_TYPE(t)		(((t) & 0xFF) << 16)
 #define UIC_GET_ATTR_ID(v)		(((v) >> 16) & 0xFFFF)
-
-/*
- * UFS Protector configuration
- */
-#define UFS_BYPASS_SECTOR_BEGIN			0x0
-#define UFS_ENCRYPTION_SECTOR_BEGIN		0x0000FFFF
-#define UFS_FILE_ENCRYPTION_SECTOR_BEGIN	0xFFFF0000
-
-#define UFSHCI_SECTOR_SIZE			0x1000
-#define MIN_SECTOR_SIZE				0x200
 
 /* UIC Commands */
 enum uic_cmd_dme {
@@ -284,6 +280,9 @@ enum {
 
 	/* Interrupt disable mask for UFSHCI v1.1 */
 	INTERRUPT_MASK_ALL_VER_11	= 0x31FFF,
+
+	/* Interrupt disable mask for UFSHCI v2.1 */
+	INTERRUPT_MASK_ALL_VER_21	= 0x71FFF,
 };
 
 /*
@@ -321,6 +320,9 @@ enum {
 	OCS_PEER_COMM_FAILURE		= 0x5,
 	OCS_ABORTED			= 0x6,
 	OCS_FATAL_ERROR			= 0x7,
+	OCS_DEVICE_FATAL_ERROR		= 0x8,
+	OCS_INVALID_CRYPTO_CONFIG	= 0x9,
+	OCS_GENERAL_CRYPTO_ERROR	= 0xA,
 	OCS_INVALID_COMMAND_STATUS	= 0x0F,
 	MASK_OCS			= 0x0F,
 };
@@ -329,11 +331,6 @@ enum {
 #define PRDT_DATA_BYTE_COUNT_MAX	(256 * 1024)
 /* The granularity of the data byte count field in the PRDT is 32-bit */
 #define PRDT_DATA_BYTE_COUNT_PAD	4
-
-/* FMP bypass/encrypt mode */
-#define CLEAR		0
-#define AES_CBC		1
-#define AES_XTS		2
 
 /**
  * struct ufshcd_sg_entry - UFSHCI PRD Entry
@@ -347,42 +344,6 @@ struct ufshcd_sg_entry {
 	__le32    upper_addr;
 	__le32    reserved;
 	__le32    size;
-#define FKL	BIT(26)
-#define DKL	BIT(27)
-#define SET_FAS(d, v) \
-	((d)->size = ((d)->size & 0xcfffffff) | v << 28)
-#define SET_DAS(d, v) \
-	((d)->size = ((d)->size & 0x3fffffff) | v << 30)
-#if defined(CONFIG_UFS_FMP_DM_CRYPT) || defined(CONFIG_UFS_FMP_ECRYPT_FS)
-	__le32	file_iv0;
-	__le32	file_iv1;
-	__le32	file_iv2;
-	__le32	file_iv3;
-	__le32	file_enckey0;
-	__le32	file_enckey1;
-	__le32	file_enckey2;
-	__le32	file_enckey3;
-	__le32	file_enckey4;
-	__le32	file_enckey5;
-	__le32	file_enckey6;
-	__le32	file_enckey7;
-	__le32	file_twkey0;
-	__le32	file_twkey1;
-	__le32	file_twkey2;
-	__le32	file_twkey3;
-	__le32	file_twkey4;
-	__le32	file_twkey5;
-	__le32	file_twkey6;
-	__le32	file_twkey7;
-	__le32	disk_iv0;
-	__le32	disk_iv1;
-	__le32	disk_iv2;
-	__le32	disk_iv3;
-	__le32	reserved0;
-	__le32	reserved1;
-	__le32	reserved2;
-	__le32	reserved3;
-#endif
 };
 
 /**
@@ -396,6 +357,8 @@ struct utp_transfer_cmd_desc {
 	u8 response_upiu[ALIGNED_UPIU_SIZE];
 	struct ufshcd_sg_entry    prd_table[SG_ALL];
 };
+
+#define UTRD_CRYPTO_ENABLE	UFS_BIT(23)
 
 /**
  * struct request_desc_header - Descriptor Header common to both UTRD and UTMRD

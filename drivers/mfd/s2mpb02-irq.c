@@ -36,11 +36,10 @@ struct s2mpb02_irq_data {
 	enum s2mpb02_irq_source group;
 };
 
+#define DECLARE_IRQ(idx, _group, _mask)		\
+	[(idx)] = { .group = (_group), .mask = (_mask) }
 static const struct s2mpb02_irq_data s2mpb02_irqs[] = {
-	[S2MPB02_LED_IRQ_IRLED_END] = {
-			.group = LED_INT,
-			.mask = 1 << 5
-	},
+	DECLARE_IRQ(S2MPB02_LED_IRQ_IRLED_END,	LED_INT, 1 << 5),
 };
 
 static void s2mpb02_irq_lock(struct irq_data *data)
@@ -127,8 +126,9 @@ static irqreturn_t s2mpb02_irq_thread(int irq, void *data)
 		gpio_get_value(s2mpb02->irq_gpio));
 
 	/* Apply masking */
-	for (i = 0; i < S2MPB02_IRQ_GROUP_NR; i++)
+	for (i = 0; i < S2MPB02_IRQ_GROUP_NR; i++) {
 		irq_reg[i] &= ~s2mpb02->irq_masks_cur[i];
+	}
 
 	/* Report */
 	for (i = 0; i < S2MPB02_IRQ_NR; i++) {
@@ -145,15 +145,13 @@ int s2mpb02_irq_init(struct s2mpb02_dev *s2mpb02)
 	int ret;
 
 	if (!s2mpb02->irq_gpio) {
-		pr_warn("%s:%s No interrupt specified.\n",
-					MFD_DEV_NAME, __func__);
+		pr_warn("%s:%s No interrupt specified.\n", MFD_DEV_NAME, __func__);
 		s2mpb02->irq_base = 0;
 		return 0;
 	}
 
-	if (s2mpb02->irq_base < 0) {
-		pr_err("%s:%s No interrupt base specified.\n",
-					MFD_DEV_NAME, __func__);
+	if (!s2mpb02->irq_base) {
+		pr_err("%s:%s No interrupt base specified.\n", MFD_DEV_NAME, __func__);
 		return 0;
 	}
 
@@ -163,11 +161,11 @@ int s2mpb02_irq_init(struct s2mpb02_dev *s2mpb02)
 	pr_info("%s:%s irq=%d, irq->gpio=%d\n", MFD_DEV_NAME, __func__,
 			s2mpb02->irq, s2mpb02->irq_gpio);
 
-	ret = gpio_request(s2mpb02->irq_gpio, "sub_pmic_irq");
+	ret = gpio_request(s2mpb02->irq_gpio, "if_pmic_irq");
 	if (ret) {
-		pr_err("%s:%s failed requesting gpio %d\n",
-			MFD_DEV_NAME, __func__,	s2mpb02->irq_gpio);
-		goto err;
+		pr_err("%s:%s failed requesting gpio %d\n", MFD_DEV_NAME, __func__,
+			s2mpb02->irq_gpio);
+		return ret;
 	}
 	gpio_direction_input(s2mpb02->irq_gpio);
 	gpio_free(s2mpb02->irq_gpio);
@@ -196,7 +194,7 @@ int s2mpb02_irq_init(struct s2mpb02_dev *s2mpb02)
 			dev_err(s2mpb02->dev,
 				"Failed to irq_set_chip_data %d: %d\n",
 				s2mpb02->irq, ret);
-			goto err;
+			return ret;
 		}
 		irq_set_chip_and_handler(cur_irq, &s2mpb02_irq_chip,
 						 handle_edge_irq);
@@ -209,17 +207,20 @@ int s2mpb02_irq_init(struct s2mpb02_dev *s2mpb02)
 	}
 
 	ret = request_threaded_irq(s2mpb02->irq, NULL, s2mpb02_irq_thread,
-		IRQF_TRIGGER_LOW | IRQF_ONESHOT, "s2mpb02-irq", s2mpb02);
+			IRQF_TRIGGER_LOW | IRQF_ONESHOT, "s2mpb02-irq", s2mpb02);
+	if (ret) {
+		pr_err("%s:%s Err_trigger(IRQF_TRIGGER_LOW | IRQF_ONESHOT)\n",
+			MFD_DEV_NAME, __func__);
+		return -EINVAL;
+	}
+
 	if (ret) {
 		pr_err("%s:%s Failed to request IRQ %d: %d\n", MFD_DEV_NAME,
 			__func__, s2mpb02->irq, ret);
-		goto err;
+		return ret;
 	}
 
 	return 0;
-err:
-	mutex_destroy(&s2mpb02->i2c_lock);
-	return ret;
 }
 
 void s2mpb02_irq_exit(struct s2mpb02_dev *s2mpb02)

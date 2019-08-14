@@ -27,6 +27,7 @@ struct spmi_device;
 struct regmap;
 struct regmap_range_cfg;
 struct regmap_field;
+struct swr_device;
 
 /* An enum of all the supported cache types */
 enum regcache_type {
@@ -47,20 +48,6 @@ enum regcache_type {
 struct reg_default {
 	unsigned int reg;
 	unsigned int def;
-};
-
-/**
- * Register/value pairs for sequences of writes with an optional delay in
- * microseconds to be applied after each write.
- *
- * @reg: Register address.
- * @def: Register value.
- * @delay_us: Delay to be applied after the register write in microseconds
- */
-struct reg_sequence {
-	unsigned int reg;
-	unsigned int def;
-	unsigned int delay_us;
 };
 
 #ifdef CONFIG_REGMAP
@@ -354,6 +341,8 @@ struct regmap *regmap_init_spmi_ext(struct spmi_device *dev,
 struct regmap *regmap_init_mmio_clk(struct device *dev, const char *clk_id,
 				    void __iomem *regs,
 				    const struct regmap_config *config);
+struct regmap *regmap_init_swr(struct swr_device *dev,
+			       const struct regmap_config *config);
 
 struct regmap *devm_regmap_init(struct device *dev,
 				const struct regmap_bus *bus,
@@ -370,6 +359,8 @@ struct regmap *devm_regmap_init_spmi_ext(struct spmi_device *dev,
 struct regmap *devm_regmap_init_mmio_clk(struct device *dev, const char *clk_id,
 					 void __iomem *regs,
 					 const struct regmap_config *config);
+struct regmap *devm_regmap_init_swr(struct swr_device *dev,
+				    const struct regmap_config *config);
 
 /**
  * regmap_init_mmio(): Initialise register map
@@ -417,10 +408,10 @@ int regmap_raw_write(struct regmap *map, unsigned int reg,
 		     const void *val, size_t val_len);
 int regmap_bulk_write(struct regmap *map, unsigned int reg, const void *val,
 			size_t val_count);
-int regmap_multi_reg_write(struct regmap *map, const struct reg_sequence *regs,
+int regmap_multi_reg_write(struct regmap *map, const struct reg_default *regs,
 			int num_regs);
 int regmap_multi_reg_write_bypassed(struct regmap *map,
-				    const struct reg_sequence *regs,
+				    const struct reg_default *regs,
 				    int num_regs);
 int regmap_raw_write_async(struct regmap *map, unsigned int reg,
 			   const void *val, size_t val_len);

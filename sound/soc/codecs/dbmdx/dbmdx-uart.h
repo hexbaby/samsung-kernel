@@ -11,10 +11,6 @@
 #ifndef _DBMDX_UART_COMMON_H
 #define _DBMDX_UART_COMMON_H
 
-#ifdef CONFIG_PM_WAKELOCKS
-#include <linux/wakelock.h>
-#endif
-
 #define RETRY_COUNT				5
 
 struct dbmdx_uart_data {
@@ -30,9 +26,6 @@ struct dbmdx_uart_private {
 	struct dbmdx_uart_data		*pdata;
 	struct device			*dev;
 	struct chip_interface		chip;
-#ifdef CONFIG_PM_WAKELOCKS
-	struct wake_lock		ps_nosuspend_wl;
-#endif
 	struct tty_struct		*tty;
 	struct file			*fp;
 	struct tty_ldisc		*ldisc;
@@ -48,7 +41,6 @@ struct dbmdx_uart_private {
 	struct task_struct		*uart_probe_thread;
 	struct completion		uart_done;
 	u16				post_pll_div;
-	u32				interface_enabled;
 };
 
 
@@ -65,8 +57,6 @@ ssize_t send_uart_cmd_vqe(struct dbmdx_private *p, u32 command,
 ssize_t send_uart_cmd_va(struct dbmdx_private *p, u32 command,
 				   u16 *response);
 int send_uart_cmd_boot(struct dbmdx_private *p, u32 command);
-int uart_verify_boot_checksum(struct dbmdx_private *p,
-	const void *checksum, size_t chksum_len);
 int uart_wait_for_ok(struct dbmdx_private *p);
 int uart_wait_till_alive(struct dbmdx_private *p);
 int uart_set_speed_host_only(struct dbmdx_private *p, int index);
@@ -74,7 +64,5 @@ int uart_set_speed(struct dbmdx_private *p, int index);
 int uart_common_probe(struct platform_device *pdev, const char threadnamefmt[]);
 int uart_common_remove(struct platform_device *pdev);
 void uart_set_private_callbacks(struct dbmdx_uart_private *p);
-void uart_interface_resume(struct dbmdx_uart_private *uart_p);
-void uart_interface_suspend(struct dbmdx_uart_private *uart_p);
 
 #endif

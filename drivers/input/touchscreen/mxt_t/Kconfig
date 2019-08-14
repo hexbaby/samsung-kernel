@@ -1,7 +1,7 @@
 #
 # ATMEL T TOUCH driver configuration
 #
-config TOUCHSCREEN_ATMEL_MXT1664
+config TOUCHSCREEN_ATMEL_MXT1664T
 	tristate "Atmel MXT T serise I2C touchscreen"
 	depends on I2C
 	help
@@ -10,7 +10,7 @@ config TOUCHSCREEN_ATMEL_MXT1664
 
 	  If unsure, say N.
 
-config TOUCHSCREEN_ATMEL_MXT874U
+config TOUCHSCREEN_ATMEL_MXT748U
 	tristate "Atmel MXT T serise I2C touchscreen"
 	depends on I2C
 	help

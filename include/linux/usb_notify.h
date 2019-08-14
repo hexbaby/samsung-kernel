@@ -1,12 +1,12 @@
 /*
  *  usb notify header
  *
- * Copyright (C) 2011-2017 Samsung, Inc.
+ * Copyright (C) 2011-2013 Samsung, Inc.
  * Author: Dongrak Shin <dongrak.shin@samsung.com>
  *
 */
 
- /* usb notify layer v3.0 */
+ /* usb notify layer v2.0 */
 
 #ifndef __LINUX_USB_NOTIFY_H__
 #define __LINUX_USB_NOTIFY_H__
@@ -15,9 +15,6 @@
 #include <linux/host_notify.h>
 #include <linux/external_notify.h>
 #include <linux/usblog_proc_notify.h>
-#if defined(CONFIG_USB_HW_PARAM)
-#include <linux/usb_hw_param.h>
-#endif
 
 enum otg_notify_events {
 	NOTIFY_EVENT_NONE,
@@ -43,7 +40,6 @@ enum otg_notify_events {
 	NOTIFY_EVENT_DEVICE_CONNECT,
 	NOTIFY_EVENT_GAMEPAD_CONNECT,
 	NOTIFY_EVENT_LANHUB_CONNECT,
-	NOTIFY_EVENT_POWER_SOURCE,
 	NOTIFY_EVENT_VBUSPOWER,
 	NOTIFY_EVENT_VIRTUAL,
 };
@@ -96,16 +92,6 @@ enum ovc_check_value {
 	HNOTIFY_INITIAL,
 };
 
-enum otg_notify_power_role {
-	HNOTIFY_SINK,
-	HNOTIFY_SOURCE,
-};
-
-enum otg_notify_data_role {
-	HNOTIFY_UFP,
-	HNOTIFY_DFP,
-};
-
 struct otg_notify {
 	int vbus_detect_gpio;
 	int redriver_en_gpio;
@@ -116,7 +102,6 @@ struct otg_notify {
 	int booting_delay_sec;
 	int disable_control;
 	int device_check_sec;
-	int pre_peri_delay_us;
 	int speed;
 	const char *muic_name;
 	int (*pre_gpio)(int gpio, int use);
@@ -128,8 +113,6 @@ struct otg_notify {
 	int (*post_vbus_detect)(bool);
 	int (*set_lanhubta)(int);
 	int (*set_battcall)(int, int);
-	int (*set_chg_current)(int);
-	void (*set_ldo_onoff)(void *,unsigned int);
 	void *o_data;
 	void *u_notify;
 };
@@ -157,14 +140,6 @@ extern struct otg_notify *get_otg_notify(void);
 extern int set_otg_notify(struct otg_notify *n);
 extern void put_otg_notify(struct otg_notify *n);
 extern bool is_blocked(struct otg_notify *n, int type);
-#if defined(CONFIG_USB_HW_PARAM)
-extern unsigned long long *get_hw_param(struct otg_notify *n,
-					enum usb_hw_param index);
-extern int inc_hw_param(struct otg_notify *n,
-					enum usb_hw_param index);
-extern int inc_hw_param_host(struct host_notify_dev *dev,
-					enum usb_hw_param index);
-#endif
 #else
 static inline const char *event_string(enum otg_notify_events event)
 			{return NULL; }
@@ -187,13 +162,6 @@ static inline struct otg_notify *get_otg_notify(void) {return NULL; }
 static inline int set_otg_notify(struct otg_notify *n) {return 0; }
 static inline void put_otg_notify(struct otg_notify *n) {}
 static inline bool is_blocked(struct otg_notify *n, int type) {return false; }
-#if defined(CONFIG_USB_HW_PARAM)
-static unsigned long long *get_hw_param(struct otg_notify *n,
-			enum usb_hw_param index) {return NULL; }
-static int inc_hw_param(struct otg_notify *n,
-			enum usb_hw_param index) {return 0; }
-static int inc_hw_param_host(struct host_notify_dev *dev,
-			enum usb_hw_param index) {return 0; }
 #endif
-#endif
+
 #endif /* __LINUX_USB_NOTIFY_H__ */

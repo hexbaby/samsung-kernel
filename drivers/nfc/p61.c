@@ -42,14 +42,14 @@
 #include <linux/sched.h>
 #include <linux/poll.h>
 #include <linux/regulator/consumer.h>
-#include <linux/nfc/p61.h>
+#include <linux/p61.h>
 #include <linux/ioctl.h>
 
-#include <linux/platform_data/spi-s3c64xx.h>
-#include <linux/pm_runtime.h>
-#include <linux/spi/spidev.h>
 #include <linux/clk.h>
-
+#include <linux/pm_runtime.h>
+#include <linux/spi/spi.h>
+#include <linux/spi/spidev.h>
+#include <linux/pn547.h>
 #ifdef CONFIG_OF
 #include <linux/of_gpio.h>
 #endif
@@ -76,6 +76,10 @@ static struct regulator *p61_regulator = NULL;
 
 #undef PANIC_DEBUG
 
+extern long  pn547_dev_ioctl(struct file *filp, unsigned int cmd,
+        unsigned long arg);
+
+
 #define P61_IRQ   33 /* this is the same used in omap3beagle.c */
 #define P61_RST  138
 
@@ -92,6 +96,9 @@ static struct regulator *p61_regulator = NULL;
 /* size of maximum read/write buffer supported by driver */
 #define MAX_BUFFER_SIZE   258U
 
+#ifdef CONFIG_SEC_FACTORY
+#undef CONFIG_ESE_SECURE
+#endif
 //static struct class *p61_device_class;
 
 /* Different driver debug lever */
@@ -102,7 +109,7 @@ enum P61_DEBUG_LEVEL {
 
 /* Variable to store current debug level request by ioctl */
 static unsigned char debug_level = P61_FULL_DEBUG; /////
-
+static unsigned char pwr_req_on = 0;
 #define P61_DBG_MSG(msg...)  \
         switch(debug_level)      \
         {                        \
@@ -131,13 +138,8 @@ struct p61_dev {
 	unsigned char enable_poll_mode; /* enable the poll mode */
 	spinlock_t irq_enabled_lock; /*spin lock for read irq */
 
-	//dev_t devt;		/* Device ID */
-	unsigned char *null_buffer;
-	unsigned char *buffer;
-
 	bool tz_mode;
 	spinlock_t ese_spi_lock;
-#if 1//def ENABLE_ESE_SECURE
 	unsigned int mosipin;
 	unsigned int misopin;
 	unsigned int cspin;
@@ -145,7 +147,7 @@ struct p61_dev {
 	bool isGpio_cfgDone;
 	bool enabled_clk;
 	struct wake_lock ese_lock;
-#endif
+	bool device_opened;
 };
 
 /* T==1 protocol specific global data */
@@ -155,40 +157,12 @@ const unsigned char SOF = 0xA5u;
 static int p61_ioctl_config_spi_gpio(
 	struct p61_dev *p61_device)
 {
-	struct spi_device *spidev = NULL;
 	int ret_val = 0;
 
 	if (!p61_device->isGpio_cfgDone) {
 		pr_info("%s SET_SPI_CONFIGURATION\n", __func__);
-		spin_lock_irq(&p61_device->ese_spi_lock);
-		spidev = spi_dev_get(p61_device->spi);
-		spin_unlock_irq(&p61_device->ese_spi_lock);
-#if 0
-		ret_val = ese_spi_request_gpios(spidev);
-		if (ret_val < 0)
-			pr_err("%s: couldn't config spi gpio\n", __func__);
-#endif
+
 		p61_device->isGpio_cfgDone = true;
-
-		p61_device->null_buffer =
-			kmalloc(DEFAULT_BUFFER_SIZE, GFP_KERNEL);
-		if (p61_device->null_buffer == NULL) {
-			ret_val = -ENOMEM;
-			pr_err("%s null_buffer == NULL, -ENOMEM\n",
-				__func__);
-			//goto vfsspi_open_out;
-		}
-		p61_device->buffer =
-			kmalloc(DEFAULT_BUFFER_SIZE, GFP_KERNEL);
-		if (p61_device->buffer == NULL) {
-			ret_val = -ENOMEM;
-			kfree(p61_device->null_buffer);
-			pr_err("%s buffer == NULL, -ENOMEM\n",
-				__func__);
-			//goto vfsspi_open_out;
-		}
-
-		spi_dev_put(spidev);
 		usleep_range(950, 1000);
 	}
 	return ret_val;
@@ -198,7 +172,6 @@ static int p61_set_clk(struct p61_dev *p61_device)
 {
 	int ret_val = 0;
 	struct spi_device *spidev = NULL;
-	struct s3c64xx_spi_driver_data *sdd = NULL;
 
 	spin_lock_irq(&p61_device->ese_spi_lock);
 	spidev = spi_dev_get(p61_device->spi);
@@ -207,28 +180,29 @@ static int p61_set_clk(struct p61_dev *p61_device)
 		pr_err("%s - Failed to get spi dev\n", __func__);
 		return -1;
 	}
-
+#ifndef CONFIG_ESE_SECURE
+	/* Qcom spi active pinctrl */
+	ret_val = ese_spi_request_gpios(spidev);
+	if (ret_val < 0)
+		pr_err("%s: couldn't config spi gpio\n", __func__);
+	usleep_range(200, 230);
+#endif
 	spidev->max_speed_hz = P61_SPI_CLOCK;
-	sdd = spi_master_get_devdata(spidev->master);
-	if (!sdd){
-		pr_err("%s - Failed to get spi dev.\n", __func__);
-		return -1;
+	ret_val = ese_spi_clock_set_rate(spidev);
+	if (ret_val < 0)
+		pr_err("%s: Unable to set spi clk rate\n", __func__);
+	else {
+		ret_val = ese_spi_clock_enable(spidev);
+		if (ret_val < 0)
+			pr_err("%s: Unable to enable spi clk\n", __func__);
 	}
-	pm_runtime_get_sync(&sdd->pdev->dev); /* Enable clk */
-
-	/* set spi clock rate */
-	clk_set_rate(sdd->src_clk, spidev->max_speed_hz * 2);
 
 	p61_device->enabled_clk = true;
 	spi_dev_put(spidev);
 
-	//CS enable
-	gpio_set_value(p61_device->cspin, 0);
+	/* CS enable : kernel should not control spi pins for TZ Qcom */
+	/* gpio_set_value(p61_device->cspin, 0);*/
 	usleep_range(50, 70);
-	if (!wake_lock_active(&p61_device->ese_lock)) {
-		pr_info("%s: [NFC-ESE] wake lock.\n", __func__);
-		wake_lock(&p61_device->ese_lock);
-	}
 	return ret_val;
 }
 
@@ -236,7 +210,6 @@ static int p61_disable_clk(struct p61_dev *p61_device)
 {
 	int ret_val = 0;
 	struct spi_device *spidev = NULL;
-	struct s3c64xx_spi_driver_data *sdd = NULL;
 
 	if (!p61_device->enabled_clk) {
 		pr_err("%s - clock was not enabled!\n", __func__);
@@ -251,23 +224,17 @@ static int p61_disable_clk(struct p61_dev *p61_device)
 		return -1;
 	}
 
-        sdd = spi_master_get_devdata(spidev->master);
-        if (!sdd){
-                pr_err("%s - Failed to get spi dev.\n", __func__);
-                return -1;
-	}
+	ret_val = ese_spi_clock_disable(spidev);
+	if (ret_val < 0)
+		pr_err("%s: couldn't disable spi clks\n", __func__);
 
 	p61_device->enabled_clk = false;
-	pm_runtime_put(&sdd->pdev->dev); /* Disable clock */
+	//pm_runtime_put(&sdd->pdev->dev); /* Disable clock */
 
 	spi_dev_put(spidev);
 
-	//CS disable
-	gpio_set_value(p61_device->cspin, 1);
-	if (wake_lock_active(&p61_device->ese_lock)) {
-		pr_info("%s: [NFC-ESE] wake unlock.\n", __func__);
-		wake_unlock(&p61_device->ese_lock);
-	}
+	/* CS enable : kernel should not control spi pins for TZ Qcom */
+	/* gpio_set_value(p61_device->cspin, 1);*/
 	return ret_val;
 }
 
@@ -277,6 +244,8 @@ static int p61_xfer(struct p61_dev *p61_device,
 	int status = 0;
 	struct spi_message m;
 	struct spi_transfer t;
+	unsigned char txbuf[DEFAULT_BUFFER_SIZE] = {0x0, };
+	unsigned char rxbuf[DEFAULT_BUFFER_SIZE] = {0x0, };
 
 	pr_debug("%s\n", __func__);
 
@@ -287,18 +256,16 @@ static int p61_xfer(struct p61_dev *p61_device,
 		return -EMSGSIZE;
 
 	if (tr->tx_buffer != NULL) {
-		if (copy_from_user(p61_device->null_buffer,
-				tr->tx_buffer, tr->len) != 0)
+		if (copy_from_user(txbuf, tr->tx_buffer, tr->len) != 0)
 			return -EFAULT;
 	}
 
 	spi_message_init(&m);
 	memset(&t, 0, sizeof(t));
 
-	t.tx_buf = p61_device->null_buffer;
-	t.rx_buf = p61_device->buffer;
+	t.tx_buf = txbuf;
+	t.rx_buf = rxbuf;
 	t.len = tr->len;
-	//t.speed_hz = vfsspi_device->current_spi_speed;
 
 	spi_message_add_tail(&t, &m);
 
@@ -308,9 +275,7 @@ static int p61_xfer(struct p61_dev *p61_device,
 		if (tr->rx_buffer != NULL) {
 			unsigned missing = 0;
 
-			missing = copy_to_user(tr->rx_buffer,
-					       p61_device->buffer, tr->len);
-
+			missing = copy_to_user(tr->rx_buffer, rxbuf, tr->len);
 			if (missing != 0)
 				tr->len = tr->len - missing;
 		}
@@ -386,8 +351,18 @@ static int p61_dev_open(struct inode *inode, struct file *filp)
 			struct p61_dev, p61_device);
 
 	filp->private_data = p61_dev;
-	P61_DBG_MSG("%s : Major No: %d, Minor No: %d\n", __func__,
+	if (p61_dev->device_opened) {
+		pr_info("%s - ALREADY opened!\n", __func__);
+		return -EBUSY;
+	}
+	p61_dev->device_opened = true;
+	pr_info("%s: Major No: %d, Minor No: %d\n", __func__,
 			imajor(inode), iminor(inode));
+
+	if (!wake_lock_active(&p61_dev->ese_lock)) {
+		pr_info("%s: [NFC-ESE] wake lock.\n", __func__);
+		wake_lock(&p61_dev->ese_lock);
+	}
 
 	return 0;
 }
@@ -488,7 +463,30 @@ static long p61_dev_ioctl(struct file *filp, unsigned int cmd,
 		break;
 
 	case P61_RW_SPI_DATA:
+#ifdef CONFIG_ESE_SECURE
+		break;
+#endif
 		ret = p61_rw_spi_message(p61_dev, arg);
+		break;
+
+	case P61_SET_SPM_PWR:
+		pr_info(KERN_ALERT " P61_SET_SPM_PWR: enter, arg(%lu)\n", arg);
+		ret = pn547_dev_ioctl(filp, P61_SET_SPI_PWR, arg);
+		if(arg == 0 || arg == 1 || arg == 3)
+			pwr_req_on = arg;
+		pr_info(KERN_ALERT " P61_SET_SPM_PWR: exit\n");
+		break;
+
+	case P61_GET_SPM_STATUS:
+		pr_info(KERN_ALERT " P61_GET_SPM_STATUS: enter\n");
+		ret = pn547_dev_ioctl(filp, P61_GET_PWR_STATUS, arg);
+		pr_info(KERN_ALERT " P61_GET_SPM_STATUS: exit\n");
+		break;
+
+	case P61_GET_ESE_ACCESS:
+		P61_DBG_MSG(KERN_ALERT " P61_GET_ESE_ACCESS: enter\n");
+		ret = pn547_dev_ioctl(filp, P547_GET_ESE_ACCESS, arg);
+		P61_DBG_MSG(KERN_ALERT " P61_GET_ESE_ACCESS ret: %d exit\n",ret);
 		break;
 
 	default:
@@ -516,6 +514,14 @@ static int p61_dev_release(struct inode *inode, struct file *file)
 		pr_info("%s: [NFC-ESE] wake unlock.\n", __func__);
 		wake_unlock(&p61_dev->ese_lock);
 	}
+
+	if (pwr_req_on && (pwr_req_on != 5)) {
+		pr_info("%s: [NFC-ESE] release spi session.\n", __func__);
+		pwr_req_on = 0;
+		pn547_dev_ioctl(file, P61_SET_SPI_PWR, 0);
+		pn547_dev_ioctl(file, P61_SET_SPI_PWR, 5);		
+	}
+	p61_dev->device_opened = false;
 	return 0;
 }
 
@@ -541,6 +547,9 @@ static ssize_t p61_dev_write(struct file *filp, const char *buf, size_t count,
 
 	P61_DBG_MSG(KERN_ALERT "p61_dev_write -Enter count %zu\n", count);
 
+#ifdef CONFIG_ESE_SECURE
+	return 0;
+#endif
 	p61_dev = filp->private_data;
 
 	mutex_lock(&p61_dev->write_mutex);
@@ -649,6 +658,9 @@ static ssize_t p61_dev_read(struct file *filp, char *buf, size_t count,
 
 	P61_DBG_MSG("p61_dev_read count %zu - Enter \n", count);
 
+#ifdef CONFIG_ESE_SECURE
+	return 0;
+#endif
 	if (count < MAX_BUFFER_SIZE)
 	{
 		P61_ERR_MSG(KERN_ALERT "Invalid length (min : 258) [%zu] \n", count);
@@ -1014,20 +1026,6 @@ static int p61_probe(struct spi_device *spi)
 	P61_DBG_MSG("%s chip select : %d , bus number = %d \n",
 		__FUNCTION__, spi->chip_select, spi->master->bus_num);
 
-	//platform_data = spi->dev.platform_data;
-#if 0
-	if (platform_data == NULL)
-	{
-		/* RC : rename the platformdata1 name */
-/* TBD: This is only for Panda as we are passing NULL for platform data */
-		P61_ERR_MSG("%s : p61 probe fail\n", __func__);
-		//platform_data1.irq_gpio = P61_IRQ;
-		//platform_data1.rst_gpio = P61_RST;
-		//platform_data = &platform_data1;
-		P61_ERR_MSG("%s : p61 probe fail1\n", __func__);
-		return  -ENODEV;
-	}
-#endif
 	p61_dev = kzalloc(sizeof(*p61_dev), GFP_KERNEL);
 	if (p61_dev == NULL)
 	{
@@ -1044,27 +1042,25 @@ static int p61_probe(struct spi_device *spi)
 	pr_info("%s: tz_mode=%d, isGpio_cfgDone:%d\n", __func__,
 			p61_dev->tz_mode, p61_dev->isGpio_cfgDone);
 
-#if 0
-	ret = p61_hw_setup (platform_data, p61_dev, spi);
-	if (ret < 0)
-	{
-		P61_ERR_MSG("Failed to p61_enable_P61_IRQ_ENABLE\n");
-		goto err_exit0;
-	}
-#endif
+	p61_dev->enabled_clk = false;
 
 	spi->bits_per_word = 8;
 	spi->mode = SPI_MODE_0;
 	spi->max_speed_hz = P61_SPI_CLOCK;
-	//spi->chip_select = SPI_NO_CS;
+#ifndef CONFIG_ESE_SECURE
 	ret = spi_setup(spi);
 	if (ret < 0)
 	{
 		P61_ERR_MSG("failed to do spi_setup()\n");
 		goto p61_spi_setup_failed;
 	}
-
+#else
+	pr_info("%s: eSE Secured system\n", __func__);
+#endif
 	p61_dev -> spi = spi;
+	/*Qcom workaround code*/
+	/*Qcom thermel engine should be use device node at the first*/
+	/*p61_dev -> p61_device.minor = SAMSUNG_ESE_MINOR;*/
 	p61_dev -> p61_device.minor = MISC_DYNAMIC_MINOR;
 	p61_dev -> p61_device.name = "p61";
 	p61_dev -> p61_device.fops = &p61_dev_fops;
@@ -1087,40 +1083,13 @@ static int p61_probe(struct spi_device *spi)
 #endif
 
 	wake_lock_init(&p61_dev->ese_lock, WAKE_LOCK_SUSPEND, "ese_wake_lock");
+	p61_dev->device_opened = false;
 	ret = misc_register(&p61_dev->p61_device);
 	if (ret < 0)
 	{
 		P61_ERR_MSG("misc_register failed! %d\n", ret);
 		goto err_exit0;
 	}
-
-#if 0 //test
-{
-	struct device *dev;
-
-	p61_device_class = class_create(THIS_MODULE, "ese");
-	if (IS_ERR(p61_device_class)) {
-		pr_err("%s class_create() is failed:%lu\n",
-			__func__,  PTR_ERR(p61_device_class));
-		//status = PTR_ERR(p61_device_class);
-		//goto vfsspi_probe_class_create_failed;
-	}
-	dev = device_create(p61_device_class, NULL,
-			    0, p61_dev, "p61");
-		pr_err("%s device_create() is failed:%lu\n",
-			__func__,  PTR_ERR(dev));
-
-	if ((device_create_file(dev, &dev_attr_test)) < 0)
-		pr_err("%s device_create_file failed !!!\n", __func__);
-	else
-		pr_info("%s device_create_file success.\n", __func__);
-	//ret = sysfs_create_group(&spi->dev.kobj,
-	//		&p61_attribute_group);
-	//if (ret < 0)
-	//	pr_err("%s class_create() is failed - \n",
-	//		__func__,  PTR_ERR(p61_device_class));
-}
-#endif
 
 #ifdef P61_IRQ_ENABLE
 	p61_dev->spi->irq = gpio_to_irq(platform_data->irq_gpio);
@@ -1151,14 +1120,19 @@ static int p61_probe(struct spi_device *spi)
 	P61_DBG_MSG("%s finished...\n", __FUNCTION__);
 	return ret;
 
-	//err_exit1:
+#ifdef P61_IRQ_ENABLE
+	err_exit1:
 	misc_deregister(&p61_dev->p61_device);
+#endif
+
 	err_exit0:
 	mutex_destroy(&p61_dev->read_mutex);
 	mutex_destroy(&p61_dev->write_mutex);
         wake_lock_destroy(&p61_dev->ese_lock);
 
+#ifndef CONFIG_ESE_SECURE
 	p61_spi_setup_failed:
+#endif
 	p61_parse_dt_failed:
 	if(p61_dev != NULL)
 		kfree(p61_dev);
@@ -1204,9 +1178,9 @@ static int p61_remove(struct spi_device *spi)
 
 	mutex_destroy(&p61_dev->read_mutex);
 	misc_deregister(&p61_dev->p61_device);
-        wake_lock_destroy(&p61_dev->ese_lock);
-	if(p61_dev != NULL)
-		kfree(p61_dev);
+	wake_lock_destroy(&p61_dev->ese_lock);
+	kfree(p61_dev);
+
 	P61_DBG_MSG("Exit : %s\n", __FUNCTION__);
 	return 0;
 }

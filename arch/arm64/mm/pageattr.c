@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -50,10 +50,14 @@ static int change_memory_common(unsigned long addr, int numpages,
 		end = start + size;
 		WARN_ON_ONCE(1);
 	}
-#ifndef CONFIG_SENTINEL
-	if (!is_module_address(start) || !is_module_address(end - 1))
-		return -EINVAL;
-#endif
+
+	if (!IS_ENABLED(CONFIG_FORCE_PAGES)) {
+		if (start < MODULES_VADDR || start >= MODULES_END)
+			return -EINVAL;
+
+		if (end < MODULES_VADDR || end >= MODULES_END)
+			return -EINVAL;
+	}
 
 	if (!numpages)
 		return 0;

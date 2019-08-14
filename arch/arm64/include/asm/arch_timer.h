@@ -21,7 +21,6 @@
 
 #include <asm/barrier.h>
 
-#include <linux/bug.h>
 #include <linux/init.h>
 #include <linux/types.h>
 
@@ -105,34 +104,24 @@ static inline void arch_timer_set_cntkctl(u32 cntkctl)
 	asm volatile("msr	cntkctl_el1, %0" : : "r" (cntkctl));
 }
 
-static inline u64 arch_counter_get_cntpct(void)
+static inline u64 arch_counter_get_cntvct_cp15(void)
 {
-	/*
-	 * AArch64 kernel and user space mandate the use of CNTVCT.
-	 */
-	BUG();
-	return 0;
+	u64 cval;
+
+	isb();
+	asm volatile("mrs %0, cntvct_el0" : "=r" (cval));
+
+	return cval;
 }
 
-static inline u64 arch_counter_get_cntvct(void)
+static inline u64 arch_counter_get_cntpct_cp15(void)
 {
-	/* ARM64_ERRATUM_858921 */
-	u64 cval1;
-	u64 cval2;
+	u64 cval;
 
 	isb();
-	asm volatile("mrs %0, cntvct_el0" : "=r" (cval1));
-	isb();
-	asm volatile("mrs %0, cntvct_el0" : "=r" (cval2));
+	asm volatile("mrs %0, cntpct_el0" : "=r" (cval));
 
-	/*
-	 * if bit[32] is different, keep the first value
-	 * if bit[32] is the same, keep the second value.
-	 */
-	if ((cval1 & BIT(32)) != (cval2 & BIT(32)))
-		return cval1;
-	else
-		return cval2;
+	return cval;
 }
 
 static inline int arch_timer_arch_init(void)

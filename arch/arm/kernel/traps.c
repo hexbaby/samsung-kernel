@@ -26,8 +26,10 @@
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/irq.h>
+#include <linux/bug.h>
 
 #include <linux/atomic.h>
+#include <asm/arch_timer.h>
 #include <asm/cacheflush.h>
 #include <asm/exception.h>
 #include <asm/unistd.h>
@@ -38,6 +40,7 @@
 #include <asm/system_misc.h>
 #include <asm/opcodes.h>
 
+#include <trace/events/exception.h>
 
 static const char *handler[]= {
 	"prefetch abort",
@@ -132,26 +135,30 @@ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
 	set_fs(fs);
 }
 
-static void __dump_instr(const char *lvl, struct pt_regs *regs)
+static void dump_instr(const char *lvl, struct pt_regs *regs)
 {
 	unsigned long addr = instruction_pointer(regs);
 	const int thumb = thumb_mode(regs);
 	const int width = thumb ? 4 : 8;
+	mm_segment_t fs;
 	char str[sizeof("00000000 ") * 5 + 2 + 1], *p = str;
 	int i;
 
 	/*
-	 * Note that we now dump the code first, just in case the backtrace
-	 * kills us.
+	 * We need to switch to kernel mode so that we can use __get_user
+	 * to safely read from kernel space.  Note that we now dump the
+	 * code first, just in case the backtrace kills us.
 	 */
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 
 	for (i = -4; i < 1 + !!thumb; i++) {
 		unsigned int val, bad;
 
 		if (thumb)
-			bad = get_user(val, &((u16 *)addr)[i]);
+			bad = __get_user(val, &((u16 *)addr)[i]);
 		else
-			bad = get_user(val, &((u32 *)addr)[i]);
+			bad = __get_user(val, &((u32 *)addr)[i]);
 
 		if (!bad)
 			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
@@ -162,20 +169,8 @@ static void __dump_instr(const char *lvl, struct pt_regs *regs)
 		}
 	}
 	printk("%sCode: %s\n", lvl, str);
-}
 
-static void dump_instr(const char *lvl, struct pt_regs *regs)
-{
-	mm_segment_t fs;
-
-	if (!user_mode(regs)) {
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		__dump_instr(lvl, regs);
-		set_fs(fs);
-	} else {
-		__dump_instr(lvl, regs);
-	}
+	set_fs(fs);
 }
 
 #ifdef CONFIG_ARM_UNWIND
@@ -452,6 +447,8 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 		return;
 
 die_sig:
+	trace_undef_instr(regs, (void *)pc);
+
 #ifdef CONFIG_DEBUG_USER
 	if (user_debug & UDBG_UNDEFINED) {
 		printk(KERN_INFO "%s (%d): undefined instruction: pc=%p\n",
@@ -759,6 +756,42 @@ late_initcall(arm_mrc_hook_init);
 
 #endif
 
+static int get_pct_trap(struct pt_regs *regs, unsigned int instr)
+{
+	u64 cntpct;
+	unsigned int res;
+	int rd = (instr >> 12) & 0xF;
+	int rn =  (instr >> 16) & 0xF;
+
+	res = arm_check_condition(instr, regs->ARM_cpsr);
+	if (res == ARM_OPCODE_CONDTEST_FAIL) {
+		regs->ARM_pc += 4;
+		return 0;
+	}
+
+	if (rd == 15 || rn == 15)
+		return 1;
+	cntpct = arch_counter_get_cntpct();
+	regs->uregs[rd] = cntpct;
+	regs->uregs[rn] = cntpct >> 32;
+	regs->ARM_pc += 4;
+	return 0;
+}
+
+static struct undef_hook get_pct_hook = {
+	.instr_mask	= 0x0ff00fff,
+	.instr_val	= 0x0c500f0e,
+	.cpsr_mask	= MODE_MASK,
+	.cpsr_val	= USR_MODE,
+	.fn		= get_pct_trap,
+};
+
+void get_pct_hook_init(void)
+{
+	register_undef_hook(&get_pct_hook);
+}
+EXPORT_SYMBOL(get_pct_hook_init);
+
 void __bad_xchg(volatile void *ptr, int size)
 {
 	printk("xchg: bad data size: pc 0x%p, ptr 0x%p, size %d\n",
@@ -819,6 +852,7 @@ void __pgd_error(const char *file, int line, pgd_t pgd)
 asmlinkage void __div0(void)
 {
 	printk("Division by zero in kernel.\n");
+	BUG_ON(PANIC_CORRUPTION);
 	dump_stack();
 }
 EXPORT_SYMBOL(__div0);
@@ -888,6 +922,7 @@ void __init early_trap_init(void *vectors_base)
 	kuser_init(vectors_base);
 
 	flush_icache_range(vectors, vectors + PAGE_SIZE * 2);
+	modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
 #else /* ifndef CONFIG_CPU_V7M */
 	/*
 	 * on V7-M there is no need to copy the vector table to a dedicated

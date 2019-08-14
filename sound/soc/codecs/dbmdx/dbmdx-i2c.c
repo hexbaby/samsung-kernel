@@ -37,8 +37,6 @@
 #define DEFAULT_I2C_READ_CHUNK_SIZE	8
 #define MAX_I2C_READ_CHUNK_SIZE		128
 
-static DECLARE_WAIT_QUEUE_HEAD(dbmdx_wq);
-
 ssize_t send_i2c_cmd_vqe(struct dbmdx_private *p,
 	u32 command, u16 *response)
 {
@@ -142,10 +140,6 @@ ssize_t send_i2c_cmd_va(struct dbmdx_private *p, u32 command,
 
 		usleep_range(DBMDX_USLEEP_I2C_VA_CMD_AFTER_SEND,
 			DBMDX_USLEEP_I2C_VA_CMD_AFTER_SEND + 1000);
-
-		if (p->va_debug_mode)
-			msleep(DBMDX_MSLEEP_DBG_MODE_CMD_RX);
-
 		ret = i2c_master_recv(i2c_p->client, recv, 2);
 		if (ret < 0) {
 			dev_err(i2c_p->dev, "%s: i2c_master_recv failed\n",
@@ -172,9 +166,6 @@ ssize_t send_i2c_cmd_va(struct dbmdx_private *p, u32 command,
 
 	usleep_range(DBMDX_USLEEP_I2C_VA_CMD_AFTER_SEND_2,
 		DBMDX_USLEEP_I2C_VA_CMD_AFTER_SEND_2 + 1000);
-
-	if (p->va_debug_mode)
-		msleep(DBMDX_MSLEEP_DBG_MODE_CMD_TX);
 
 	return ret;
 }
@@ -259,10 +250,8 @@ ssize_t write_i2c_data(struct dbmdx_private *p, const void *buf,
 	return len - to_copy;
 }
 
-int send_i2c_cmd_boot(struct dbmdx_private *p, u32 command)
+int send_i2c_cmd_boot(struct dbmdx_i2c_private *i2c_p, u32 command)
 {
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)p->chip->pdata;
 	u8 send[3];
 	int ret = 0;
 
@@ -282,47 +271,6 @@ int send_i2c_cmd_boot(struct dbmdx_private *p, u32 command)
 	   processing is finished, which can take up to 10 ms */
 	usleep_range(DBMDX_USLEEP_I2C_AFTER_BOOT_CMD,
 		DBMDX_USLEEP_I2C_AFTER_BOOT_CMD + 1000);
-
-	return 0;
-}
-
-int i2c_verify_boot_checksum(struct dbmdx_private *p,
-	const void *checksum, size_t chksum_len)
-{
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)p->chip->pdata;
-	int ret;
-	u8 rx_checksum[10];
-
-	if (!checksum)
-		return 0;
-
-	if (chksum_len > 8) {
-		dev_err(i2c_p->dev, "%s: illegal checksum length\n", __func__);
-		return -EINVAL;
-	}
-
-	ret = send_i2c_cmd_boot(p, DBMDX_READ_CHECKSUM);
-
-	if (ret < 0) {
-		dev_err(i2c_p->dev, "%s: could not read checksum\n", __func__);
-		return -EIO;
-	}
-
-	ret = i2c_master_recv(i2c_p->client, (void *)rx_checksum,
-		chksum_len + 2);
-
-	if (ret < 0) {
-		dev_err(i2c_p->dev, "%s: could not read checksum data\n",
-			__func__);
-		return -EIO;
-	}
-
-	ret = p->verify_checksum(p, checksum, &rx_checksum[2], chksum_len);
-	if (ret) {
-		dev_err(i2c_p->dev, "%s: checksum mismatch\n", __func__);
-		return -EILSEQ;
-	}
 
 	return 0;
 }
@@ -371,18 +319,11 @@ static int i2c_dump_state(struct dbmdx_private *p, char *buf)
 
 	dev_dbg(i2c_p->dev, "%s\n", __func__);
 
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\t===I2C Interface  Dump====\n");
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\tI2C Write Chunk Size:\t\t%d\n",
+	off += sprintf(buf + off, "\t===I2C Interface  Dump====\n");
+	off += sprintf(buf + off, "\tI2C Write Chunk Size:\t\t%d\n",
 				i2c_p->pdata->write_chunk_size);
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\tI2C Read Chunk Size:\t\t%d\n",
+	off += sprintf(buf + off, "\tI2C Read Chunk Size:\t\t%d\n",
 				i2c_p->pdata->read_chunk_size);
-	off += snprintf(buf + off, PAGE_SIZE - off,
-					"\tInterface resumed:\t%s\n",
-			i2c_p->interface_enabled ? "ON" : "OFF");
-
 	return off;
 }
 
@@ -409,75 +350,14 @@ static void i2c_transport_enable(struct dbmdx_private *p, bool enable)
 {
 	struct dbmdx_i2c_private *i2c_p =
 				(struct dbmdx_i2c_private *)p->chip->pdata;
-	int ret = 0;
 
 	dev_dbg(i2c_p->dev, "%s (%s)\n", __func__, enable ? "ON" : "OFF");
 
 	if (enable) {
-
-#ifdef CONFIG_PM_WAKELOCKS
-		wake_lock(&i2c_p->ps_nosuspend_wl);
-#endif
-
-		ret = wait_event_interruptible(dbmdx_wq,
-			i2c_p->interface_enabled);
-
-		if (ret)
-			dev_dbg(i2c_p->dev,
-				"%s, waiting for interface was interrupted",
-				__func__);
-		else
-			dev_dbg(i2c_p->dev, "%s, interface is active\n",
-				__func__);
-	}
-
-
-	if (enable) {
 		p->wakeup_set(p);
 		msleep(DBMDX_MSLEEP_I2C_WAKEUP);
-	} else {
-#ifdef CONFIG_PM_WAKELOCKS
-		wake_unlock(&i2c_p->ps_nosuspend_wl);
-#endif
+	} else
 		p->wakeup_release(p);
-	}
-}
-
-static void i2c_resume(struct dbmdx_private *p)
-{
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)p->chip->pdata;
-
-	dev_dbg(i2c_p->dev, "%s\n", __func__);
-
-	i2c_interface_resume(i2c_p);
-}
-
-
-void i2c_interface_resume(struct dbmdx_i2c_private *i2c_p)
-{
-	dev_dbg(i2c_p->dev, "%s\n", __func__);
-
-	i2c_p->interface_enabled = 1;
-	wake_up_interruptible(&dbmdx_wq);
-}
-
-static void i2c_suspend(struct dbmdx_private *p)
-{
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)p->chip->pdata;
-
-	dev_dbg(i2c_p->dev, "%s\n", __func__);
-
-	i2c_interface_suspend(i2c_p);
-}
-
-
-void i2c_interface_suspend(struct dbmdx_i2c_private *i2c_p)
-{
-	dev_dbg(i2c_p->dev, "%s\n", __func__);
-
-	i2c_p->interface_enabled = 0;
 }
 
 
@@ -566,6 +446,181 @@ static int i2c_prepare_amodel_loading(struct dbmdx_private *p)
 	return 0;
 }
 
+static int i2c_load_amodel(struct dbmdx_private *p,  const void *data,
+			   size_t size, size_t gram_size, size_t net_size,
+			   const void *checksum, size_t chksum_len,
+			   enum dbmdx_load_amodel_mode load_amodel_mode)
+{
+	int retry = RETRY_COUNT;
+	int ret;
+	ssize_t send_bytes;
+	size_t cur_pos;
+	size_t cur_size;
+	size_t model_size;
+	int model_size_fw;
+	struct dbmdx_i2c_private *i2c_p =
+				(struct dbmdx_i2c_private *)p->chip->pdata;
+	u8 rx_checksum[6];
+
+	dev_dbg(i2c_p->dev, "%s\n", __func__);
+
+	model_size = gram_size + net_size + DBMDX_AMODEL_HEADER_SIZE*2;
+	model_size_fw = (int)(model_size / 16) + 1;
+
+	while (retry--) {
+
+		if (load_amodel_mode == LOAD_AMODEL_PRIMARY) {
+			ret = send_i2c_cmd_va(
+					p,
+					DBMDX_VA_PRIMARY_AMODEL_SIZE |
+					model_size_fw,
+					NULL);
+
+			if (ret < 0) {
+				dev_err(p->dev,
+					"%s: failed to set prim. amodel size\n",
+					__func__);
+				continue;
+			}
+		} else if (load_amodel_mode == LOAD_AMODEL_2NDARY) {
+			ret = send_i2c_cmd_va(
+					p,
+					DBMDX_VA_SECONDARY_AMODEL_SIZE |
+					model_size_fw,
+					NULL);
+
+			if (ret < 0) {
+				dev_err(p->dev,
+					"%s: failed to set prim. amodel size\n",
+					__func__);
+				continue;
+			}
+		}
+
+		ret = send_i2c_cmd_va(
+				p,
+				DBMDX_VA_LOAD_NEW_ACUSTIC_MODEL |
+				load_amodel_mode,
+				NULL);
+
+		if (ret < 0) {
+			dev_err(p->dev,
+				"%s: failed to set fw to receive new amodel\n",
+				__func__);
+			continue;
+		}
+
+		dev_info(p->dev,
+			"%s: ---------> acoustic model download start\n",
+			__func__);
+
+		cur_size = DBMDX_AMODEL_HEADER_SIZE;
+		cur_pos = 0;
+		/* Send Gram Header */
+		send_bytes = write_i2c_data(p, data, cur_size);
+
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* wait for FW to process the header */
+		usleep_range(DBMDX_USLEEP_AMODEL_HEADER,
+			DBMDX_USLEEP_AMODEL_HEADER + 1000);
+
+		cur_pos += DBMDX_AMODEL_HEADER_SIZE;
+		cur_size = gram_size;
+
+		/* Send Gram Data */
+		send_bytes = write_i2c_data(p, data + cur_pos, cur_size);
+
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		cur_pos += gram_size;
+		cur_size = DBMDX_AMODEL_HEADER_SIZE;
+
+		/* Send Net Header */
+		send_bytes = write_i2c_data(p, data + cur_pos, cur_size);
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* wait for FW to process the header */
+		usleep_range(DBMDX_USLEEP_AMODEL_HEADER,
+			DBMDX_USLEEP_AMODEL_HEADER + 1000);
+
+		cur_pos += DBMDX_AMODEL_HEADER_SIZE;
+		cur_size = net_size;
+
+		/* Send Net Data */
+		send_bytes = write_i2c_data(p, data + cur_pos, cur_size);
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* verify checksum */
+		if (checksum) {
+			ret = send_i2c_cmd_boot(i2c_p, DBMDX_READ_CHECKSUM);
+			if (ret < 0) {
+				dev_err(i2c_p->dev,
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = i2c_master_recv(i2c_p->client, rx_checksum, 6);
+			if (ret < 0) {
+				dev_err(i2c_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(p, checksum, &rx_checksum[2],
+						 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
+					__func__);
+				continue;
+			}
+		}
+		break;
+	}
+
+	/* no retries left, failed to load acoustic */
+	if (retry < 0) {
+		dev_err(p->dev, "%s: failed to load acoustic model\n",
+			__func__);
+		return -1;
+	}
+
+	/* send boot command */
+	ret = send_i2c_cmd_boot(i2c_p, DBMDX_FIRMWARE_BOOT);
+	if (ret < 0) {
+		dev_err(p->dev, "%s: booting the firmware failed\n", __func__);
+		return -1;
+	}
+
+	/* wait some time */
+	usleep_range(DBMDX_USLEEP_I2C_AFTER_LOAD_AMODEL,
+		DBMDX_USLEEP_I2C_AFTER_LOAD_AMODEL + 1000);
+
+	return 0;
+}
+
 static int i2c_finish_amodel_loading(struct dbmdx_private *p)
 {
 	struct dbmdx_i2c_private *i2c_p =
@@ -607,12 +662,12 @@ static int i2c_set_read_chunk_size(struct dbmdx_private *p, u32 size)
 		dev_err(i2c_p->dev,
 			"%s Error setting I2C read chunk. Max chunk size: %u\n",
 		__func__, MAX_I2C_READ_CHUNK_SIZE);
-		return -EINVAL;
+		return -1;
 	} else if ((size % 2) != 0) {
 		dev_err(i2c_p->dev,
 			"%s Error setting I2C read chunk. Uneven size\n",
 		__func__);
-		return -EINVAL;
+		return -2;
 	} else if (size == 0)
 		i2c_p->pdata->read_chunk_size = DEFAULT_I2C_READ_CHUNK_SIZE;
 	else
@@ -633,12 +688,12 @@ static int i2c_set_write_chunk_size(struct dbmdx_private *p, u32 size)
 		dev_err(i2c_p->dev,
 			"%s Error setting I2C write chunk. Max chunk size: %u\n",
 		__func__, MAX_I2C_WRITE_CHUNK_SIZE);
-		return -EINVAL;
+		return -1;
 	} else if ((size % 2) != 0) {
 		dev_err(i2c_p->dev,
 			"%s Error setting I2C write chunk. Uneven size\n",
 		__func__);
-		return -EINVAL;
+		return -2;
 	} else if (size == 0)
 		i2c_p->pdata->write_chunk_size = DEFAULT_I2C_WRITE_CHUNK_SIZE;
 	else
@@ -754,11 +809,6 @@ int i2c_common_probe(struct i2c_client *client,
 
 	p->pdata = pdata;
 
-#ifdef CONFIG_PM_WAKELOCKS
-	wake_lock_init(&p->ps_nosuspend_wl, WAKE_LOCK_SUSPEND,
-		"dbmdx_nosuspend_wakelock_i2c");
-#endif
-
 	/* fill in chip interface functions */
 	p->chip.can_boot = i2c_can_boot;
 	p->chip.prepare_boot = i2c_prepare_boot;
@@ -771,21 +821,16 @@ int i2c_common_probe(struct i2c_client *client,
 	p->chip.write = write_i2c_data;
 	p->chip.send_cmd_va = send_i2c_cmd_va;
 	p->chip.send_cmd_vqe = send_i2c_cmd_vqe;
-	p->chip.send_cmd_boot = send_i2c_cmd_boot;
-	p->chip.verify_boot_checksum = i2c_verify_boot_checksum;
 	p->chip.prepare_buffering = i2c_prepare_buffering;
 	p->chip.read_audio_data = i2c_read_audio_data;
 	p->chip.finish_buffering = i2c_finish_buffering;
 	p->chip.prepare_amodel_loading = i2c_prepare_amodel_loading;
+	p->chip.load_amodel = i2c_load_amodel;
 	p->chip.finish_amodel_loading = i2c_finish_amodel_loading;
 	p->chip.get_write_chunk_size = i2c_get_write_chunk_size;
 	p->chip.get_read_chunk_size = i2c_get_read_chunk_size;
 	p->chip.set_write_chunk_size = i2c_set_write_chunk_size;
 	p->chip.set_read_chunk_size = i2c_set_read_chunk_size;
-	p->chip.resume = i2c_resume;
-	p->chip.suspend = i2c_suspend;
-
-	p->interface_enabled = 1;
 
 	i2c_set_clientdata(client, &p->chip);
 
@@ -804,10 +849,6 @@ int i2c_common_remove(struct i2c_client *client)
 {
 	struct chip_interface *ci = i2c_get_clientdata(client);
 	struct dbmdx_i2c_private *p = (struct dbmdx_i2c_private *)ci->pdata;
-
-#ifdef CONFIG_PM_WAKELOCKS
-	wake_lock_destroy(&p->ps_nosuspend_wl);
-#endif
 
 	kfree(p);
 

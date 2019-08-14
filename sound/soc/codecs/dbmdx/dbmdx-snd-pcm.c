@@ -20,6 +20,7 @@
  */
 
 #define DEBUG
+
 #include <linux/workqueue.h>
 #include <linux/clk.h>
 #include <linux/interrupt.h>
@@ -53,11 +54,7 @@
 #define USE_RATE_MIN		16000
 #define USE_RATE_MAX		48000
 #define USE_CHANNELS_MIN	1
-#ifdef DBMDX_4CHANNELS_SUPPORT
-#define USE_CHANNELS_MAX	4
-#else
 #define USE_CHANNELS_MAX	2
-#endif
 #define USE_PERIODS_MIN		1
 #define USE_PERIODS_MAX		1024
 /* 3 seconds + 4 bytes for position */
@@ -108,13 +105,13 @@ int pcm_command_in_progress(struct snd_dbmdx_runtime_data *prtd,
 	if (is_command_in_progress) {
 		if (!atomic_add_unless(&prtd->command_in_progress, 1, 1))
 			return -EBUSY;
-	} else {
-		atomic_set(&prtd->command_in_progress, 0);
-		atomic_dec(&prtd->number_of_cmds_in_progress);
-		wake_up_interruptible(&dbmdx_wq);
-	}
+		} else {
+			atomic_set(&prtd->command_in_progress, 0);
+			atomic_dec(&prtd->number_of_cmds_in_progress);
+			wake_up_interruptible(&dbmdx_wq);
+		}
 
-	return 0;
+		return 0;
 }
 
 void wait_for_pcm_commands(struct snd_dbmdx_runtime_data *prtd)
@@ -167,9 +164,6 @@ static void dbmdx_pcm_timer(unsigned long _substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_dbmdx_runtime_data *prtd = runtime->private_data;
 	struct timer_list *timer = prtd->timer;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec_dai->codec;
-
 	unsigned int size = snd_pcm_lib_buffer_bytes(substream);
 	u32 pos;
 	unsigned long msecs;
@@ -183,7 +177,7 @@ static void dbmdx_pcm_timer(unsigned long _substream)
 	pos = stream_get_position(substream);
 	to_copy = frames_to_bytes(runtime, runtime->period_size);
 
-	if (dbmdx_get_samples(codec, runtime->dma_area + pos,
+	if (dbmdx_get_samples(runtime->dma_area + pos,
 		runtime->channels * runtime->period_size)) {
 		memset(runtime->dma_area + pos, 0, to_copy);
 		pr_debug("%s Inserting %d bytes of silence\n",
@@ -346,9 +340,6 @@ static void  dbmdx_pcm_start_capture_work(struct work_struct *work)
 			work, struct snd_dbmdx_runtime_data,
 			pcm_start_capture_work.work);
 	struct snd_pcm_substream *substream = prtd->substream;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec_dai->codec;
-
 
 	pr_debug("%s:\n", __func__);
 
@@ -361,7 +352,7 @@ static void  dbmdx_pcm_start_capture_work(struct work_struct *work)
 
 	prtd->capture_in_progress = 1;
 
-	ret = dbmdx_start_pcm_streaming(codec, substream);
+	ret = dbmdx_start_pcm_streaming(substream);
 	if (ret < 0) {
 		prtd->capture_in_progress = 0;
 		pr_err("%s: failed to start capture device\n", __func__);
@@ -391,8 +382,6 @@ static void dbmdx_pcm_stop_capture_work(struct work_struct *work)
 			work, struct snd_dbmdx_runtime_data,
 			pcm_stop_capture_work.work);
 	struct snd_pcm_substream *substream = prtd->substream;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec_dai->codec;
 
 	pr_debug("%s:\n", __func__);
 
@@ -403,7 +392,7 @@ static void dbmdx_pcm_stop_capture_work(struct work_struct *work)
 		return;
 	}
 
-	ret = dbmdx_stop_pcm_streaming(codec);
+	ret = dbmdx_stop_pcm_streaming();
 	if (ret < 0)
 		pr_err("%s: failed to stop pcm streaming\n", __func__);
 
@@ -424,15 +413,13 @@ static void dbmdx_pcm_stop_capture_work(struct work_struct *work)
 static int dbmdx_pcm_open(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec_dai->codec;
 	struct snd_dbmdx_runtime_data *prtd;
 	struct timer_list *timer;
 	int ret;
 
 	pr_debug("%s\n", __func__);
 
-	if (dbmdx_codec_lock(codec)) {
+	if (dbmdx_codec_lock()) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -455,6 +442,7 @@ static int dbmdx_pcm_open(struct snd_pcm_substream *substream)
 
 	prtd->timer = timer;
 	prtd->substream = substream;
+
 	atomic_set(&prtd->command_in_progress, 0);
 	atomic_set(&prtd->number_of_cmds_in_progress, 0);
 
@@ -479,12 +467,13 @@ static int dbmdx_pcm_open(struct snd_pcm_substream *substream)
 		pr_debug("%s Error setting pcm constraint int\n", __func__);
 
 	return 0;
+
 out_free_timer:
 	kfree(timer);
 out_free_prtd:
 	kfree(prtd);
 out_unlock:
-	dbmdx_codec_unlock(codec);
+	dbmdx_codec_unlock();
 out:
 	return ret;
 }
@@ -552,8 +541,6 @@ static int dbmdx_pcm_close(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_dbmdx_runtime_data *prtd = runtime->private_data;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec_dai->codec;
 	struct timer_list *timer = prtd->timer;
 
 	pr_debug("%s\n", __func__);
@@ -570,7 +557,7 @@ static int dbmdx_pcm_close(struct snd_pcm_substream *substream)
 	timer = NULL;
 	prtd = NULL;
 
-	dbmdx_codec_unlock(codec);
+	dbmdx_codec_unlock();
 
 	return 0;
 }

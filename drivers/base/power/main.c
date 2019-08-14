@@ -37,10 +37,6 @@
 #include "../base.h"
 #include "power.h"
 
-#ifdef CONFIG_SEC_DEBUG
-#include <linux/sec_debug.h>
-#endif
-
 typedef int (*pm_callback_t)(struct device *);
 
 /*
@@ -62,6 +58,16 @@ static LIST_HEAD(dpm_noirq_list);
 struct suspend_stats suspend_stats;
 static DEFINE_MUTEX(dpm_list_mtx);
 static pm_message_t pm_transition;
+
+static void dpm_drv_timeout(unsigned long data);
+struct dpm_drv_wd_data {
+	struct device *dev;
+	struct task_struct *tsk;
+};
+
+#ifdef CONFIG_SEC_PM
+extern int wakeup_gpio_irq_flag;
+#endif
 
 static int async_error;
 
@@ -163,6 +169,12 @@ void device_pm_move_before(struct device *deva, struct device *devb)
 	pr_debug("PM: Moving %s:%s before %s:%s\n",
 		 deva->bus ? deva->bus->name : "No Bus", dev_name(deva),
 		 devb->bus ? devb->bus->name : "No Bus", dev_name(devb));
+	if (!((devb->pm_domain) || (devb->type && devb->type->pm)
+		|| (devb->class && (devb->class->pm || devb->class->resume))
+		|| (devb->bus && (devb->bus->pm || devb->bus->resume)) ||
+		(devb->driver && devb->driver->pm))) {
+		device_pm_add(devb);
+	}
 	/* Delete deva from dpm_list and reinsert before devb. */
 	list_move_tail(&deva->power.entry, &devb->power.entry);
 }
@@ -177,6 +189,12 @@ void device_pm_move_after(struct device *deva, struct device *devb)
 	pr_debug("PM: Moving %s:%s after %s:%s\n",
 		 deva->bus ? deva->bus->name : "No Bus", dev_name(deva),
 		 devb->bus ? devb->bus->name : "No Bus", dev_name(devb));
+	if (!((devb->pm_domain) || (devb->type && devb->type->pm)
+		|| (devb->class && (devb->class->pm || devb->class->resume))
+		|| (devb->bus && (devb->bus->pm || devb->bus->resume)) ||
+		(devb->driver && devb->driver->pm))) {
+		device_pm_add(devb);
+	}
 	/* Delete deva from dpm_list and reinsert after devb. */
 	list_move(&deva->power.entry, &devb->power.entry);
 }
@@ -190,17 +208,6 @@ void device_pm_move_last(struct device *dev)
 	pr_debug("PM: Moving %s:%s to end of list\n",
 		 dev->bus ? dev->bus->name : "No Bus", dev_name(dev));
 	list_move_tail(&dev->power.entry, &dpm_list);
-}
-
-/**
- * device_pm_move_first - Move device to first of the PM core's list of devices.
- * @dev: Device to move in dpm_list.
- */
-void device_pm_move_first(struct device *dev)
-{
-	pr_debug("PM: Moving %s:%s to first of list\n",
-		 dev->bus ? dev->bus->name : "No Bus", dev_name(dev));
-	list_move(&dev->power.entry, &dpm_list);
 }
 
 static ktime_t initcall_debug_start(struct device *dev)
@@ -383,7 +390,6 @@ static void dpm_show_time(ktime_t starttime, pm_message_t state, char *info)
 	usecs = usecs64;
 	if (usecs == 0)
 		usecs = 1;
-
 	pr_info("PM: %s%s%s of devices complete after %ld.%03ld msecs\n",
 		info ?: "", info ? " " : "", pm_verb(state.event),
 		usecs / USEC_PER_MSEC, usecs % USEC_PER_MSEC);
@@ -402,9 +408,7 @@ static int dpm_run_callback(pm_callback_t cb, struct device *dev,
 
 	pm_dev_dbg(dev, state, info);
 	trace_device_pm_callback_start(dev, info, state.event);
-	exynos_ss_suspend(cb, dev, ESS_FLAG_IN);
 	error = cb(dev);
-	exynos_ss_suspend(cb, dev, ESS_FLAG_OUT);
 	trace_device_pm_callback_end(dev, error);
 	suspend_report_result(cb, error);
 
@@ -436,9 +440,6 @@ static void dpm_watchdog_handler(unsigned long data)
 	struct dpm_watchdog *wd = (void *)data;
 
 	dev_emerg(wd->dev, "**** DPM device timeout ****\n");
-#ifdef CONFIG_SEC_DEBUG_EXTRA_INFO
-	sec_debug_set_extra_info_dpm_timeout(dev_name(wd->dev));
-#endif
 	show_stack(wd->tsk, NULL);
 	panic("%s %s: unrecoverable failure\n",
 		dev_driver_string(wd->dev), dev_name(wd->dev));
@@ -629,6 +630,10 @@ static int device_resume_early(struct device *dev, pm_message_t state, bool asyn
 
 	TRACE_DEVICE(dev);
 	TRACE_RESUME(0);
+
+#ifdef CONFIG_SEC_PM
+	wakeup_gpio_irq_flag = 0;
+#endif
 
 	if (dev->power.syscore || dev->power.direct_complete)
 		goto Out;
@@ -847,6 +852,30 @@ static void async_resume(void *data, async_cookie_t cookie)
 	if (error)
 		pm_dev_err(dev, pm_transition, " async", error);
 	put_device(dev);
+}
+
+/**
+ *	dpm_drv_timeout - Driver suspend / resume watchdog handler
+ *	@data: struct device which timed out
+ *
+ * 	Called when a driver has timed out suspending or resuming.
+ * 	There's not much we can do here to recover so
+ * 	BUG() out for a crash-dump
+ *
+ */
+static void dpm_drv_timeout(unsigned long data)
+{
+	struct dpm_drv_wd_data *wd_data = (void *)data;
+	struct device *dev = wd_data->dev;
+	struct task_struct *tsk = wd_data->tsk;
+
+	printk(KERN_EMERG "**** DPM device timeout: %s (%s)\n", dev_name(dev),
+	       (dev->driver ? dev->driver->name : "no driver"));
+
+	printk(KERN_EMERG "dpm suspend stack:\n");
+	show_stack(tsk, NULL);
+
+	BUG();
 }
 
 /**
@@ -1273,15 +1302,14 @@ int dpm_suspend_late(pm_message_t state)
 		error = device_suspend_late(dev);
 
 		mutex_lock(&dpm_list_mtx);
-		if (!list_empty(&dev->power.entry))
-			list_move(&dev->power.entry, &dpm_late_early_list);
-
 		if (error) {
 			pm_dev_err(dev, state, " late", error);
 			dpm_save_failed_dev(dev_name(dev));
 			put_device(dev);
 			break;
 		}
+		if (!list_empty(&dev->power.entry))
+			list_move(&dev->power.entry, &dpm_late_early_list);
 		put_device(dev);
 
 		if (async_error)
@@ -1359,6 +1387,8 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	pm_callback_t callback = NULL;
 	char *info = NULL;
 	int error = 0;
+	struct timer_list timer;
+	struct dpm_drv_wd_data data;
 	char suspend_abort[MAX_SUSPEND_ABORT_LEN];
 	DECLARE_DPM_WATCHDOG_ON_STACK(wd);
 
@@ -1386,6 +1416,14 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 
 	if (dev->power.syscore)
 		goto Complete;
+	
+	data.dev = dev;
+	data.tsk = get_current();
+	init_timer_on_stack(&timer);
+	timer.expires = jiffies + HZ * 12;
+	timer.function = dpm_drv_timeout;
+	timer.data = (unsigned long)&data;
+	add_timer(&timer);
 
 	if (dev->power.direct_complete) {
 		if (pm_runtime_status_suspended(dev)) {
@@ -1465,6 +1503,9 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 
 	device_unlock(dev);
 	dpm_watchdog_clear(&wd);
+
+	del_timer_sync(&timer);
+	destroy_timer_on_stack(&timer);
 
  Complete:
 	complete_all(&dev->power.completion);

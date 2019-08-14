@@ -29,16 +29,6 @@ unsigned long customer_dbmdx_clk_get_rate(
 }
 EXPORT_SYMBOL(customer_dbmdx_clk_get_rate);
 
-long customer_dbmdx_clk_set_rate(
-		struct dbmdx_private *p, enum dbmdx_clocks clk)
-{
-	dev_dbg(p->dev, "%s: %s\n",
-		__func__,
-		clk == DBMDX_CLK_CONSTANT ? "constant" : "master");
-	return 0;
-}
-EXPORT_SYMBOL(customer_dbmdx_clk_set_rate);
-
 int customer_dbmdx_clk_enable(struct dbmdx_private *p, enum dbmdx_clocks clk)
 {
 	dev_dbg(p->dev, "%s: %s\n",

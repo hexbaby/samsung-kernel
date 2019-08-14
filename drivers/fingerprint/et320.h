@@ -19,14 +19,8 @@
 #ifndef _ET320_LINUX_DIRVER_H_
 #define _ET320_LINUX_DIRVER_H_
 
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-#define FEATURE_SPI_WAKELOCK
-#endif /* CONFIG_SEC_FACTORY */
-
 #include <linux/module.h>
 #include <linux/spi/spi.h>
-
-#include <linux/platform_data/spi-s3c64xx.h>
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 #include <linux/wakelock.h>
 #include <linux/clk.h>
@@ -37,18 +31,7 @@
 #include <linux/of_dma.h>
 #include <linux/amba/bus.h>
 #include <linux/amba/pl330.h>
-#if defined(CONFIG_SECURE_OS_BOOSTER_API)
-#if defined(CONFIG_SOC_EXYNOS8890)
-#include <soc/samsung/secos_booster.h>
-#else
-#include <mach/secos_booster.h>
-#endif
-#endif
-
-struct sec_spi_info {
-	int		port;
-	unsigned long	speed;
-};
+#include <linux/cpufreq.h>
 #endif
 
 /*#define ET320_SPI_DEBUG*/
@@ -104,6 +87,9 @@ struct sec_spi_info {
 #define FP_SET_WAKE_UP_SIGNAL				0x17
 #endif
 
+#define FP_POWER_CONTROL_ET510				0x18
+#define FP_IOCTL_RESERVED_01				0x19
+
 #define FP_EEPROM_WREN					0x90
 #define FP_EEPROM_WRDI					0x91
 #define FP_EEPROM_RDSR					0x92
@@ -127,40 +113,20 @@ struct sec_spi_info {
 /* Detect Define */
 #define FRAME_READY_MASK				0x01
 
-#define SHIFT_BYTE_OF_IMAGE 3
-#define DIVISION_OF_IMAGE 4
-
 struct egis_ioc_transfer {
 	u8 *tx_buf;
 	u8 *rx_buf;
-	u32 len;
-	u32 speed_hz;
-	u16 delay_usecs;
-	u8 bits_per_word;
-	u8 cs_change;
-	u8 opcode;
-	u8 pad[3];
-};
 
-/*
- *	If platform is 32bit and kernel is 64bit
- *	We will alloc egis_ioc_transfer for 64bit and 32bit
- *	We use ioc_32(32bit) to get data from user mode.
- *	Then copy the ioc_32 to ioc(64bit).
- */
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-struct egis_ioc_transfer_32 {
-	u32 tx_buf;
-	u32 rx_buf;
-	u32 len;
-	u32 speed_hz;
-	u16 delay_usecs;
-	u8 bits_per_word;
-	u8 cs_change;
-	u8 opcode;
-	u8 pad[3];
+	__u32 len;
+	__u32 speed_hz;
+
+	__u16 delay_usecs;
+	__u8 bits_per_word;
+	__u8 cs_change;
+	__u8 opcode;
+	__u8 pad[3];
+
 };
-#endif
 
 #define EGIS_IOC_MAGIC			'k'
 #define EGIS_MSGSIZE(N) \
@@ -183,13 +149,8 @@ struct etspi_data {
 	unsigned int sleepPin;	/* Sleep GPIO pin number */
 	unsigned int ldo_pin;	/* Ldo GPIO pin number */
 	unsigned int ldo_pin2;	/* Ldo2 GPIO pin number */
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-	/* set cs pin in fp driver, use only Exynos8890 */
-	/* for use auto cs mode with dualization fp sensor */
-	unsigned int cs_gpio;
-#endif
-#endif
+	unsigned int min_cpufreq_limit;
+
 	unsigned int spi_cs;	/* spi cs pin <temporary gpio setting> */
 
 	unsigned int drdy_irq_flag;	/* irq flag */
@@ -207,6 +168,7 @@ struct etspi_data {
 #endif
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 	bool enabled_clk;
+	bool isGpio_cfgDone;
 #ifdef FEATURE_SPI_WAKELOCK
 	struct wake_lock fp_spi_lock;
 #endif

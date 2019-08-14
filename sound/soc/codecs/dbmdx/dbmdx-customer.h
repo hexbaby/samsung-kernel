@@ -13,10 +13,8 @@
 
 #include "dbmdx-interface.h"
 
-unsigned long customer_dbmdx_clk_get_rate(struct dbmdx_private *p,
-					enum dbmdx_clocks clk);
-long customer_dbmdx_clk_set_rate(struct dbmdx_private *p,
-				enum dbmdx_clocks clk);
+unsigned long customer_dbmdx_clk_get_rate(
+				struct dbmdx_private *p, enum dbmdx_clocks clk);
 int customer_dbmdx_clk_enable(struct dbmdx_private *p, enum dbmdx_clocks clk);
 void customer_dbmdx_clk_disable(struct dbmdx_private *p, enum dbmdx_clocks clk);
 void dbmdx_uart_clk_enable(struct dbmdx_private *p, bool enable);

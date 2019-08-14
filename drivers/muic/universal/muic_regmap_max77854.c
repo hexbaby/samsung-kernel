@@ -283,6 +283,14 @@ static int max77854_muic_ioctl(struct regmap_desc *pdesc,
 		*arg3 = STATUS2_ChgTyp;
 		break;
 
+	case GET_COMP2:
+		*arg3 = CONTROL1_COMP2Sw;
+		break;
+
+	case GET_COMN1:
+		*arg3 = CONTROL1_COMN1Sw;
+		break;
+
 	default:
 		ret = -1;
 		break;
@@ -309,12 +317,34 @@ static int max77854_attach_ta(struct regmap_desc *pdesc)
 	pr_info("%s\n", __func__);
 
 	attr = REG_CONTROL1;
+#if defined(CONFIG_SUPPORT_QC30)
+	value = _COM_USB_CP;
+#else
 	value = _COM_OPEN;
+#endif
 	ret = regmap_write_value(pdesc, attr, value);
 	if (ret < 0)
 		pr_err("%s CNTR1 reg write fail.\n", __func__);
 	else
 		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
+
+#if defined(CONFIG_SUPPORT_QC30)
+{
+	muic_data_t *muic = pdesc->muic;
+	int val;
+
+	val = i2c_smbus_read_byte_data(muic->i2c, REG_CONTROL1);
+	pr_info("%s: check control1 reg - value(0x%x)\n", __func__, val);
+
+	if (_COM_USB_CP != val) {
+		pr_info("%s: failed to write control1 reg\n", __func__);
+
+		i2c_smbus_write_byte_data(muic->i2c, REG_CONTROL1, _COM_USB_CP);
+		val = i2c_smbus_read_byte_data(muic->i2c, REG_CONTROL1);
+		pr_info("%s: re-check control1 reg - value(0x%x)\n", __func__, val);
+	}
+}
+#endif
 
 	return ret;
 }
@@ -394,10 +424,10 @@ static int max77854_enable_accdet(struct regmap_desc *pdesc, int enable)
 {
 	int attr, value, ret;
 
-	pr_info("%s: %s\n", __func__, enable ? "Enable": "Disable");
+	pr_info("%s:%s\n", __func__, enable ? "Enable" : "Disable");
 
 	attr = CONTROL2_AccDet;
-	value = enable ? 1: 0; /* 1: enable, 0: disable */
+	value = enable ? 1 : 0; /* 1: enable, 0: disable */
 	ret = regmap_write_value(pdesc, attr, value);
 	if (ret < 0)
 		pr_err("%s CNTR1 reg write fail.\n", __func__);
@@ -440,7 +470,6 @@ static int max77854_run_chgdet(struct regmap_desc *pdesc, bool started)
 
 	return ret;
 }
-
 
 static int max77854_start_otg_test(struct regmap_desc *pdesc, int started)
 {
@@ -525,6 +554,51 @@ static void max77854_set_switching_mode(struct regmap_desc *pdesc, int mode)
 		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
 }
 
+#if defined(CONFIG_SEC_DEBUG)
+static int max77854_usb_to_ta(struct regmap_desc *pdesc, int mode)
+{
+	int ret = -1;
+	muic_data_t *pmuic = pdesc->muic;
+	vps_data_t *pmsr = &pmuic->vps;
+
+	pr_info("%s\n",__func__);
+
+	if (mode == 0) {
+		pr_info("%s, Disable USB to TA\n",__func__);
+		if (pmuic->attached_dev == ATTACHED_DEV_TA_MUIC && pmuic->usb_to_ta_state) {
+			switch (pmsr->t.chgtyp) {
+			case 1:
+				pmuic->attached_dev = ATTACHED_DEV_USB_MUIC;
+				break;
+			case 2:
+				pmuic->attached_dev =ATTACHED_DEV_CDP_MUIC;
+				break;
+			}
+			muic_notifier_detach_attached_dev(ATTACHED_DEV_TA_MUIC);
+			muic_notifier_attach_attached_dev(pmuic->attached_dev);
+			pmuic->usb_to_ta_state = false;
+		}
+	} else if (mode == 1) {
+		pr_info("%s, Enable USB to TA\n",__func__);
+		if ((pdesc->muic->attached_dev == ATTACHED_DEV_CDP_MUIC ||
+				pdesc->muic->attached_dev == ATTACHED_DEV_USB_MUIC)
+				&& !pmuic->usb_to_ta_state) {
+			muic_notifier_detach_attached_dev(pdesc->muic->attached_dev);
+			muic_notifier_attach_attached_dev(ATTACHED_DEV_TA_MUIC);
+			pmuic->attached_dev = ATTACHED_DEV_TA_MUIC;
+			pmuic->usb_to_ta_state = true;
+		}
+	} else if (mode == 2) {
+		pr_info("%s, USB to TA %s\n",__func__,
+				pmuic->usb_to_ta_state?"Enabled":"Disabled");
+		ret = pmuic->usb_to_ta_state;
+	} else {
+		pr_info("%s, Unknown CMD\n",__func__);
+	}
+	return ret;
+}
+#endif
+
 static int max77854_get_vbus_value(struct regmap_desc *pdesc, int type)
 {
 	muic_data_t *muic = pdesc->muic;
@@ -533,9 +607,9 @@ static int max77854_get_vbus_value(struct regmap_desc *pdesc, int type)
 
 	/* type 0 : afc charger , type 1 : PD charger */
 	pr_info("%s, type %d\n", __func__, type);
-
-	/* for PD charger */
+	
 	if (type == 1) {
+		/* for PD charger */
 		adcmode = i2c_smbus_read_byte_data(muic->i2c, REG_CONTROL4);
 		adcen = i2c_smbus_read_byte_data(muic->i2c, REG_HVCONTROL1);
 		i2c_smbus_write_byte_data(muic->i2c, REG_CONTROL4, adcmode & 0x3F);
@@ -548,34 +622,54 @@ static int max77854_get_vbus_value(struct regmap_desc *pdesc, int type)
 		vbadc = regmap_read_value(pdesc, STATUS3_VbADC);
 	}
 
-	switch (vbadc) {
-	case 0:
-		result = 0;
-		break;
-	case 1:
-	case 2:
-		result = 5;
-		break;
-	case 3:
-	case 4:
-		result = vbadc+3;
-		break;
-	case 5:
-	case 6:
-		result = 9;
-		break;
-	case 7:
-	case 8:
-		result = 12;
-		break;
-	case (9)...(15):
-		result = vbadc+4;
-		break;
-	default:
-		break;
-	}
+	if(muic->vps.t.vbvolt == 1) {
+		switch (vbadc) {
+		case 0:
+		case 1:
+		case 2:
+			result = 5;
+			break;
+		case 3:
+		case 4:
+			result = vbadc+3;
+			break;
+		case 5:
+		case 6:
+			result = 9;
+			break;
+		case 7:
+		case 8:
+			result = 12;
+			break;
+		case (9)...(15):
+			result = vbadc+4;
+			break;
+		default:
+			break;
+		}
+	} 
 
 	return result;
+}
+
+static int max77854_get_vbus_rawdata(struct regmap_desc *pdesc)
+{
+	muic_data_t *muic = pdesc->muic;
+	int vbadc;
+	int adcmode, adcen;
+	pr_info("%s\n",__func__);
+
+	adcmode = i2c_smbus_read_byte_data(muic->i2c, REG_CONTROL4);
+	adcen = i2c_smbus_read_byte_data(muic->i2c, REG_HVCONTROL1);
+	i2c_smbus_write_byte_data(muic->i2c, REG_CONTROL4, adcmode & 0x3F);
+	i2c_smbus_write_byte_data(muic->i2c, REG_HVCONTROL1, adcen | 0x20);
+	msleep(100);
+	vbadc = regmap_read_value(pdesc, STATUS3_VbADC);
+
+	i2c_smbus_write_byte_data(muic->i2c, REG_CONTROL4, adcmode);
+	i2c_smbus_write_byte_data(muic->i2c, REG_HVCONTROL1, adcen);
+
+	return vbadc;
 }
 
 static void max77854_get_fromatted_dump(struct regmap_desc *pdesc, char *mesg)
@@ -663,6 +757,10 @@ static struct vendor_ops max77854_muic_vendor_ops = {
 	.start_otg_test = max77854_start_otg_test,
 	.get_vps_data = max77854_get_vps_data,
 	.get_vbus_value = max77854_get_vbus_value,
+#if defined(CONFIG_SEC_DEBUG)
+	.usb_to_ta = max77854_usb_to_ta,
+#endif
+	.get_vbus_rawdata = max77854_get_vbus_rawdata,
 };
 
 static struct regmap_desc max77854_muic_regmap_desc = {

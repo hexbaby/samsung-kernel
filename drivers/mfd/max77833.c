@@ -38,6 +38,7 @@
 #if defined (CONFIG_OF)
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
+#include <linux/pinctrl/consumer.h>
 #endif /* CONFIG_OF */
 
 #define I2C_ADDR_PMIC	(0x92 >> 1)	/* Top sys, Haptic */
@@ -68,11 +69,20 @@ static struct mfd_cell max77833_devs[] = {
 #endif
 };
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+extern int p9220_otp_update;
+#endif
 int max77833_read_reg(struct i2c_client *i2c, u8 reg, u8 *dest)
 {
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_read_byte_data(i2c, reg);
 	mutex_unlock(&max77833->i2c_lock);
@@ -92,6 +102,12 @@ int max77833_bulk_read(struct i2c_client *i2c, u8 reg, int count, u8 *buf)
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_read_i2c_block_data(i2c, reg, count, buf);
 	mutex_unlock(&max77833->i2c_lock);
@@ -107,6 +123,12 @@ int max77833_read_word(struct i2c_client *i2c, u8 reg)
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_read_word_data(i2c, reg);
 	mutex_unlock(&max77833->i2c_lock);
@@ -122,6 +144,12 @@ int max77833_write_reg(struct i2c_client *i2c, u8 reg, u8 value)
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_write_byte_data(i2c, reg, value);
 	mutex_unlock(&max77833->i2c_lock);
@@ -138,6 +166,12 @@ int max77833_bulk_write(struct i2c_client *i2c, u8 reg, int count, u8 *buf)
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_write_i2c_block_data(i2c, reg, count, buf);
 	mutex_unlock(&max77833->i2c_lock);
@@ -153,6 +187,12 @@ int max77833_write_word(struct i2c_client *i2c, u8 reg, u16 value)
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_write_word_data(i2c, reg, value);
 	mutex_unlock(&max77833->i2c_lock);
@@ -167,6 +207,12 @@ int max77833_update_reg(struct i2c_client *i2c, u8 reg, u8 val, u8 mask)
 	struct max77833_dev *max77833 = i2c_get_clientdata(i2c);
 	int ret;
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	mutex_lock(&max77833->i2c_lock);
 	ret = i2c_smbus_read_byte_data(i2c, reg);
 	if (ret >= 0) {
@@ -224,6 +270,12 @@ int max77833_write_fg(struct i2c_client *i2c, u16 reg, u16 val)
 		return -ENODEV;
 	}
 
+#if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
+	if(p9220_otp_update) {
+		pr_info("%s:%s i2c fail dueto opt update\n", MFD_DEV_NAME, __func__);
+		return -1;
+	}
+#endif
 	msg->addr = i2c->addr;
 	msg->flags = 0;
 	msg->len = 4;
@@ -244,17 +296,72 @@ EXPORT_SYMBOL_GPL(max77833_write_fg);
 #if defined(CONFIG_OF)
 static int of_max77833_dt(struct device *dev, struct max77833_platform_data *pdata)
 {
-	struct device_node *np_max77833 = dev->of_node;
-
-	if(!np_max77833)
+	struct device_node *np = dev->of_node;
+	if(!np)
 		return -EINVAL;
 
-	pdata->irq_gpio = of_get_named_gpio(np_max77833, "max77833,irq-gpio", 0);
-	pdata->wakeup = of_property_read_bool(np_max77833, "max77833,wakeup");
-
+	pdata->irq_gpio = of_get_named_gpio(np, "max77833,irq-gpio", 0);
+	pdata->wakeup = of_property_read_bool(np, "max77833,wakeup");
 	pr_info("%s: irq-gpio: %u \n", __func__, pdata->irq_gpio);
+	
+	return 0;
+}
+
+static int max77833_pinctrl_select(struct max77833_dev *max77833, bool on) {
+	struct pinctrl_state *pins_i2c_state;
+	int ret;
+
+	pins_i2c_state = on ? max77833->i2c_gpio_state_active
+			    : max77833->i2c_gpio_state_suspend;
+
+	if (!IS_ERR_OR_NULL(pins_i2c_state)) {
+		ret = pinctrl_select_state(max77833->i2c_pinctrl, pins_i2c_state);
+		if(ret) {
+			dev_err(max77833->dev, "%s: Failed to set max77833 i2c pin state.\n", __func__);
+			return ret;
+		}
+	}
 
 	return 0;
+}
+
+static int max77833_i2c_pinctrl_init(struct max77833_dev *max77833) {
+	int ret;
+	struct pinctrl *i2c_pinctrl;
+
+	max77833->i2c_pinctrl = devm_pinctrl_get(&max77833->i2c->dev);
+	if (IS_ERR_OR_NULL(max77833->i2c_pinctrl)) {
+		dev_err(max77833->dev, "%s: Failed to alloc mem for max77833 i2c pinctrl.\n", __func__);
+		ret = PTR_ERR(max77833->i2c_pinctrl);
+		return -ENOMEM;
+	}
+	
+	i2c_pinctrl = max77833->i2c_pinctrl;
+	
+	max77833->i2c_gpio_state_active = pinctrl_lookup_state(i2c_pinctrl, "max77833_active");
+	if (IS_ERR_OR_NULL(max77833->i2c_gpio_state_active)) {
+		dev_err(max77833->dev, "%s: Failed to set active state for max77833 i2c\n", __func__);
+		ret = PTR_ERR(max77833->i2c_gpio_state_active);
+		goto err_i2c_active_state;
+	}
+
+	max77833->i2c_gpio_state_suspend = pinctrl_lookup_state(i2c_pinctrl, "max77833_suspend");
+	if (IS_ERR_OR_NULL(max77833->i2c_gpio_state_suspend)) {
+		dev_err(max77833->dev, "%s: Failed to set suspend state for max77833 i2c\n", __func__);
+		ret = PTR_ERR(max77833->i2c_gpio_state_suspend);
+		goto err_i2c_suspend_state;
+	}
+
+#if defined(CONFIG_OF)
+	max77833_pinctrl_select(max77833, true);
+#endif
+	return ret;
+
+err_i2c_suspend_state:
+	max77833->i2c_gpio_state_suspend = 0;
+err_i2c_active_state:
+	max77833->i2c_gpio_state_active = 0;
+	return ret;
 }
 #else
 static int of_max77833_dt(struct device *dev, struct max77833_platform_data *pdata)
@@ -298,7 +405,7 @@ static int max77833_i2c_probe(struct i2c_client *i2c,
 		i2c->dev.platform_data = pdata;
 	} else
 		pdata = i2c->dev.platform_data;
-
+	
 	max77833->dev = &i2c->dev;
 	max77833->i2c = i2c;
 	max77833->irq = i2c->irq;
@@ -337,6 +444,20 @@ static int max77833_i2c_probe(struct i2c_client *i2c,
 				MFD_DEV_NAME, __func__,
 				max77833->pmic_rev, max77833->pmic_ver);
 	}
+
+#if defined(CONFIG_OF)
+	/* Initialize pinctrl for i2c & irq */
+	ret = max77833_i2c_pinctrl_init(max77833);
+	if(ret) {
+		dev_err(max77833->dev,
+			"device not found on this channel (this is not an error)\n");
+		/* if pnictrl is not supported, -EINVAL is returned*/
+		if(ret == -EINVAL)
+			ret = 0;
+	} else {
+		pr_info("%s:%s max77833 pinctrl is succeed.\n",	MFD_DEV_NAME, __func__);
+	}
+#endif
 
 	/* No active discharge on safeout ldo 1,2 */
 	max77833_update_reg(i2c, MAX77833_PMIC_REG_SAFEOUT_CTRL, 0x00, 0x30);
@@ -406,6 +527,9 @@ static int max77833_suspend(struct device *dev)
 	if (device_may_wakeup(dev))
 		enable_irq_wake(max77833->irq);
 
+#if defined(CONFIG_OF)
+	max77833_pinctrl_select(max77833, false);
+#endif
 	disable_irq(max77833->irq);
 
 	return 0;
@@ -422,6 +546,10 @@ static int max77833_resume(struct device *dev)
 
 	if (device_may_wakeup(dev))
 		disable_irq_wake(max77833->irq);
+
+#if defined(CONFIG_OF)
+	max77833_pinctrl_select(max77833, true);
+#endif
 
 	enable_irq(max77833->irq);
 

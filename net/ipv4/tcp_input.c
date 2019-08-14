@@ -1232,14 +1232,13 @@ static int tcp_match_skb_to_sack(struct sock *sk, struct sk_buff *skb,
 		 */
 		if (pkt_len > mss) {
 			unsigned int new_len = (pkt_len / mss) * mss;
-			if (!in_sack && new_len < pkt_len)
+			if (!in_sack && new_len < pkt_len) {
 				new_len += mss;
+				if (new_len >= skb->len)
+					return 0;
+			}
 			pkt_len = new_len;
 		}
-
-		if (pkt_len >= skb->len && !in_sack)
-			return 0;
-
 		err = tcp_fragment(sk, skb, pkt_len, mss, GFP_ATOMIC);
 		if (err < 0)
 			return err;
@@ -2430,9 +2429,10 @@ static void DBGUNDO(struct sock *sk, const char *msg)
 	}
 #if IS_ENABLED(CONFIG_IPV6)
 	else if (sk->sk_family == AF_INET6) {
+		struct ipv6_pinfo *np = inet6_sk(sk);
 		pr_debug("Undo %s %pI6/%u c%u l%u ss%u/%u p%u\n",
 			 msg,
-			 &sk->sk_v6_daddr, ntohs(inet->inet_dport),
+			 &np->daddr, ntohs(inet->inet_dport),
 			 tp->snd_cwnd, tcp_left_out(tp),
 			 tp->snd_ssthresh, tp->prior_ssthresh,
 			 tp->packets_out);
@@ -2584,7 +2584,7 @@ static void tcp_cwnd_reduction(struct sock *sk, const int prior_unsacked,
 	int newly_acked_sacked = prior_unsacked -
 				 (tp->packets_out - tp->sacked_out);
 
-	if (newly_acked_sacked <= 0 || WARN_ON_ONCE(!tp->prior_cwnd)) 
+	if (newly_acked_sacked <= 0 || WARN_ON_ONCE(!tp->prior_cwnd))
 		return;
 
 	tp->prr_delivered += newly_acked_sacked;
@@ -2607,8 +2607,8 @@ static inline void tcp_end_cwnd_reduction(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* Reset cwnd to ssthresh in CWR or Recovery (unless it's undone) */
-	if (tp->snd_ssthresh < TCP_INFINITE_SSTHRESH &&
-	    (inet_csk(sk)->icsk_ca_state == TCP_CA_CWR || tp->undo_marker)) {
+	if (inet_csk(sk)->icsk_ca_state == TCP_CA_CWR ||
+	    (tp->undo_marker && tp->snd_ssthresh < TCP_INFINITE_SSTHRESH)) {
 		tp->snd_cwnd = tp->snd_ssthresh;
 		tp->snd_cwnd_stamp = tcp_time_stamp;
 	}
@@ -3061,7 +3061,8 @@ void tcp_rearm_rto(struct sock *sk)
 			/* delta may not be positive if the socket is locked
 			 * when the retrans timer fires and is rescheduled.
 			 */
-			rto = max(delta, 1);
+			if (delta > 0)
+				rto = delta;
 		}
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS, rto,
 					  TCP_RTO_MAX);
@@ -3255,7 +3256,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 			int delta;
 
 			/* Non-retransmitted hole got filled? That's reordering */
-			if (reord < prior_fackets && reord <= tp->fackets_out)
+			if (reord < prior_fackets)
 				tcp_update_reordering(sk, tp->fackets_out - reord, 0);
 
 			delta = tcp_is_fack(tp) ? pkts_acked :
@@ -3421,12 +3422,12 @@ static void tcp_send_challenge_ack(struct sock *sk)
 		u32 half = (sysctl_tcp_challenge_ack_limit + 1) >> 1;
 
 		challenge_timestamp = now;
-		WRITE_ONCE(challenge_count, half +
-			   prandom_u32_max(sysctl_tcp_challenge_ack_limit));
+		challenge_count = half +
+				  prandom_u32_max(sysctl_tcp_challenge_ack_limit);
 	}
-	count = READ_ONCE(challenge_count);
+	count = challenge_count;
 	if (count > 0) {
-		WRITE_ONCE(challenge_count, count - 1);
+		challenge_count = count - 1;
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPCHALLENGEACK);
 		tcp_send_ack(sk);
 	}
@@ -4848,7 +4849,6 @@ restart:
 static void tcp_collapse_ofo_queue(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	u32 range_truesize, sum_tiny = 0;
 	struct sk_buff *skb = skb_peek(&tp->out_of_order_queue);
 	struct sk_buff *head;
 	u32 start, end;
@@ -4858,7 +4858,6 @@ static void tcp_collapse_ofo_queue(struct sock *sk)
 
 	start = TCP_SKB_CB(skb)->seq;
 	end = TCP_SKB_CB(skb)->end_seq;
-	range_truesize = skb->truesize;
 	head = skb;
 
 	for (;;) {
@@ -4873,24 +4872,14 @@ static void tcp_collapse_ofo_queue(struct sock *sk)
 		if (!skb ||
 		    after(TCP_SKB_CB(skb)->seq, end) ||
 		    before(TCP_SKB_CB(skb)->end_seq, start)) {
-			/* Do not attempt collapsing tiny skbs */
-			if (range_truesize != head->truesize ||
-			    end - start >= SKB_WITH_OVERHEAD(SK_MEM_QUANTUM)) {
-				tcp_collapse(sk, &tp->out_of_order_queue,
-					     head, skb, start, end);
-			} else {
-				sum_tiny += range_truesize;
-				if (sum_tiny > sk->sk_rcvbuf >> 3)
-					return;
-			}
-
+			tcp_collapse(sk, &tp->out_of_order_queue,
+				     head, skb, start, end);
 			head = skb;
 			if (!skb)
 				break;
 			/* Start new segment */
 			start = TCP_SKB_CB(skb)->seq;
 			end = TCP_SKB_CB(skb)->end_seq;
-			range_truesize = skb->truesize;
 		} else {
 			if (before(TCP_SKB_CB(skb)->seq, start))
 				start = TCP_SKB_CB(skb)->seq;
@@ -4948,9 +4937,6 @@ static int tcp_prune_queue(struct sock *sk)
 		tcp_clamp_window(sk);
 	else if (sk_under_memory_pressure(sk))
 		tp->rcv_ssthresh = min(tp->rcv_ssthresh, 4U * tp->advmss);
-
-	if (atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf)
-		return 0;
 
 	tcp_collapse_ofo_queue(sk);
 	if (!skb_queue_empty(&sk->sk_receive_queue))
@@ -5089,7 +5075,8 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	    /* More than one full frame received... */
-	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss &&
+	if (((tp->rcv_nxt - tp->rcv_wup) > (inet_csk(sk)->icsk_ack.rcv_mss) *
+					sysctl_tcp_delack_seg &&
 	     /* ... and right edge of window advances far enough.
 	      * (tcp_recvmsg() will send ACK otherwise). Or...
 	      */
@@ -5582,7 +5569,6 @@ void tcp_finish_connect(struct sock *sk, struct sk_buff *skb)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	tcp_set_state(sk, TCP_ESTABLISHED);
-	icsk->icsk_ack.lrcvtime = tcp_time_stamp;
 
 	if (skb != NULL) {
 		icsk->icsk_af_ops->sk_rx_dst_set(sk, skb);
@@ -5853,6 +5839,7 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 			 * to stand against the temptation 8)     --ANK
 			 */
 			inet_csk_schedule_ack(sk);
+			icsk->icsk_ack.lrcvtime = tcp_time_stamp;
 			tcp_enter_quickack_mode(sk);
 			inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
 						  TCP_DELACK_MAX, TCP_RTO_MAX);
@@ -5883,7 +5870,6 @@ discard:
 	    tcp_paws_reject(&tp->rx_opt, 0))
 		goto discard_and_undo;
 
-	/* TODO - check this here for MPTCP */
 	if (th->syn) {
 		/* We see SYN without ACK. It is attempt of
 		 * simultaneous connect with crossed SYNs.

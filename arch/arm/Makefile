@@ -271,7 +271,6 @@ core-$(CONFIG_FPE_FASTFPE)	+= $(FASTFPE_OBJ)
 core-$(CONFIG_VFP)		+= arch/arm/vfp/
 core-$(CONFIG_XEN)		+= arch/arm/xen/
 core-$(CONFIG_KVM_ARM_HOST) 	+= arch/arm/kvm/
-core-$(CONFIG_VDSO)		+= arch/arm/vdso/
 
 # If we have a machine-specific directory, then include it in the build.
 core-y				+= arch/arm/kernel/ arch/arm/mm/ arch/arm/common/
@@ -298,6 +297,8 @@ ifeq ($(CONFIG_USE_OF),y)
 KBUILD_DTBS := dtbs
 endif
 
+DTSSUBDIR := qcom
+
 all:	$(KBUILD_IMAGE) $(KBUILD_DTBS)
 
 boot := arch/arm/boot
@@ -322,18 +323,12 @@ $(INSTALL_TARGETS):
 %.dtb: | scripts
 	$(Q)$(MAKE) $(build)=$(boot)/dts MACHINE=$(MACHINE) $(boot)/dts/$@
 
-PHONY += dtbs dtbs_install
-dtbs dtbs_install: prepare scripts
-	$(Q)$(MAKE) $(build)=$(boot)/dts MACHINE=$(MACHINE) $@
+dtbs: scripts
+	$(Q)$(MAKE) $(build)=$(boot)/dts MACHINE=$(MACHINE) dtbs
+	$(foreach DIR, $(DTSSUBDIR), $(Q)$(MAKE) $(build)=$(boot)/dts/$(DIR) MACHINE=$(MACHINE) dtbs)
 
 zImage-dtb: vmlinux scripts dtbs
-	$(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
-
-PHONY += vdso_install
-vdso_install:
-ifeq ($(CONFIG_VDSO),y)
-	$(Q)$(MAKE) $(build)=arch/arm/vdso $@
-endif
+	$(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) DTSSUBDIR=$(DTSSUBDIR) $(boot)/$@
 
 # We use MRPROPER_FILES and CLEAN_FILES now
 archclean:
@@ -359,5 +354,4 @@ define archhelp
   echo  '                  Install using (your) ~/bin/$(INSTALLKERNEL) or'
   echo  '                  (distribution) /sbin/$(INSTALLKERNEL) or'
   echo  '                  install to $$(INSTALL_PATH) and run lilo'
-  echo  '  vdso_install  - Install unstripped vdso.so to $$(INSTALL_MOD_PATH)/vdso'
 endef

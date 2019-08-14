@@ -527,8 +527,6 @@ out:
 	release_firmware(fw);
 	kfree(fw_data);
 
-	mxt_print_ic_version(data);
-
 	if (ret) {
 		snprintf(buff, sizeof(buff), "FAIL");
 		set_cmd_result(fdata, buff, strnlen(buff, sizeof(buff)));
@@ -862,56 +860,6 @@ static void module_on_master(void *device_data)
 
 	input_info(true, &client->dev, "%s: %s\n", __func__, buff);
 
-}
-
-static void dead_zone_enable(void *device_data)
-{
-	struct mxt_data *data = (struct mxt_data *)device_data;
-	struct i2c_client *client = data->client;
-	struct mxt_fac_data *fdata = data->fdata;
-
-	char buff[16] = {0};
-	int ret = 1;
-	set_default_result(fdata);
-
-	if (fdata->cmd_param[0] < 0 || fdata->cmd_param[0] > 2) {
-		snprintf(buff, sizeof(buff), "NG");
-		fdata->cmd_state = CMD_STATUS_FAIL;
-		goto out;
-	}
-
-	input_info(true, &client->dev, "%s: Set dead_zone[%d]",
-										__func__, fdata->cmd_param[0]);
-
-	/* 0 : Disable dead Zone for factory app : mxt_patch_test_event(data, 4)
-	 * 1 : Enable dead Zone (default)           : mxt_patch_test_event(data, 3) */
-	if (fdata->cmd_param[0] == 0) {
-		ret = mxt_patch_test_event(data, 4);
-
-	} else if (fdata->cmd_param[0] == 1) {
-		ret = mxt_patch_test_event(data, 3);
-	}
-	if (ret){
-		input_err(true, &client->dev, "%s: fail to set dead_zone[%d]",
-											__func__, fdata->cmd_param[0]);
-		snprintf(buff, sizeof(buff), "NG");
-		fdata->cmd_state = CMD_STATUS_FAIL;
-		goto out;
-	}
-
-	snprintf(buff, sizeof(buff), "OK");
-	fdata->cmd_state = CMD_STATUS_OK;
-
-out:
-	set_cmd_result(fdata, buff, strnlen(buff, sizeof(buff)));
-
-	mutex_lock(&fdata->cmd_lock);
-	fdata->cmd_is_running = false;
-	mutex_unlock(&fdata->cmd_lock);
-
-	fdata->cmd_state = CMD_STATUS_WAITING;
-	input_info(true, &client->dev, "%s: %s(%d)\n",
-		__func__, buff, (int)strnlen(buff, sizeof(buff)));
 }
 
 static void get_chip_vendor(void *device_data)
@@ -1488,7 +1436,6 @@ static struct tsp_cmd tsp_cmds[] = {
 	{TSP_CMD("module_off_slave", not_support_cmd),},
 	{TSP_CMD("module_on_slave", not_support_cmd),},
 	{TSP_CMD("get_chip_vendor", get_chip_vendor),},
-	{TSP_CMD("dead_zone_enable", dead_zone_enable),},
 	{TSP_CMD("get_chip_name", get_chip_name),},
 	{TSP_CMD("get_x_num", get_x_num),},
 	{TSP_CMD("get_y_num", get_y_num),},
@@ -1530,9 +1477,8 @@ static ssize_t store_cmd(struct device *dev, struct device_attribute
 	int ret;
 	long ll;
 
-	if (count >= TSP_CMD_STR_LEN) {
-		printk(KERN_ERR "%s: overflow command length\n",
-				__func__);
+	if (strlen(buf) >= TSP_CMD_STR_LEN) {		
+		input_err(true, &client->dev, "%s: cmd length is over (%s,%d)!!\n", __func__, buf, (int)strlen(buf));
 		return -EINVAL;
 	}
 
@@ -1648,88 +1594,18 @@ static ssize_t show_cmd_result(struct device *dev, struct device_attribute
 	struct mxt_data *data = dev_get_drvdata(dev);
 	struct mxt_fac_data *fdata = data->fdata;
 
-	int i=0;
-	char buff[32] = { 0 };
-	char all_strbuff[TSP_CMD_RESULT_STR_LEN] = { 0 };
+	input_info(true, &data->client->dev, "tsp cmd: result: %s\n",
+		fdata->cmd_result);
 
-	/* Support long return val  command */
-	if (fdata->long_cmd_ret_val) {
-		set_default_result(fdata);
+	mutex_lock(&fdata->cmd_lock);
+	fdata->cmd_is_running = false;
+	mutex_unlock(&fdata->cmd_lock);
 
-		for (i=0 ; i < LONG_CMD_RETURN_CNT ; i++) {
-			if (i+fdata->long_cmd_ret_point >= fdata->num_xnode * fdata->num_ynode) {
-				input_info(true, &data->client->dev, "tsp cmd: reach end of data[%d].\n", i+fdata->long_cmd_ret_point);
-				fdata->long_cmd_ret_val	= false;
-				fdata->long_cmd_ret_point = 0;
-				fdata->long_cmd_type = LONG_CMD_NOT_DEFINED;
-				break;
+	fdata->cmd_state = CMD_STATUS_WAITING;
 
-			} else {
-				if (fdata->long_cmd_type == LONG_CMD_REFERENCE) {
-					input_dbg(true, &data->client->dev, "tsp refer cmd: set result data[%d][%d].\n",
-								i+fdata->long_cmd_ret_point, fdata->reference[i+fdata->long_cmd_ret_point]);
-
-					sprintf(buff, "%d,", fdata->reference[i+fdata->long_cmd_ret_point]);
-					strcat(all_strbuff, buff);
-				} else if (fdata->long_cmd_type == LONG_CMD_DELTA) {
-					input_dbg(true, &data->client->dev, "tsp delta cmd: set result data[%d][%d].\n",
-								i+fdata->long_cmd_ret_point, fdata->delta[i+fdata->long_cmd_ret_point]);
-
-					sprintf(buff, "%d,", fdata->delta[i+fdata->long_cmd_ret_point]);
-					strcat(all_strbuff, buff);
-				} else {
-					input_err(true, &data->client->dev, "tsp cmd: Not defined cmd[%s].\n", fdata->cmd);
-				}
-			}
-		}
-
-		if (fdata->long_cmd_ret_val) {
-			fdata->long_cmd_ret_point += LONG_CMD_RETURN_CNT;
-			strcat(all_strbuff, "cont");
-
-		} else {
-			mutex_lock(&fdata->cmd_lock);
-			fdata->cmd_is_running = false;
-			mutex_unlock(&fdata->cmd_lock);
-			fdata->cmd_state = CMD_STATUS_WAITING;
-		}
-
-		set_cmd_result(fdata, all_strbuff, strnlen(all_strbuff, sizeof(all_strbuff)));
-
-		return snprintf(buf, TSP_CMD_RESULT_STR_LEN, "%s\n", fdata->cmd_result);
-	} else {
-		input_info(true, &data->client->dev, "tsp cmd: result: %s\n",
-			fdata->cmd_result);
-
-		mutex_lock(&fdata->cmd_lock);
-		fdata->cmd_is_running = false;
-		mutex_unlock(&fdata->cmd_lock);
-
-		fdata->cmd_state = CMD_STATUS_WAITING;
-
-		return snprintf(buf, TSP_CMD_RESULT_STR_LEN, "%s\n", fdata->cmd_result);
-	}
+	return snprintf(buf, TSP_BUF_SIZE, "%s\n", fdata->cmd_result);
 }
-static ssize_t cmd_list_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	int ii = 0;
-	char buffer_name[TSP_CMD_STR_LEN] = {0,};
-	char debug_buffer[TSP_CMD_RESULT_STR_LEN];
 
-	memset(debug_buffer, 0, TSP_CMD_RESULT_STR_LEN);
-
-	snprintf(buffer_name, TSP_CMD_RESULT_STR_LEN, "++factory command list++\n");
-	strcat(debug_buffer, buffer_name);
-
-	while (strncmp(tsp_cmds[ii].cmd_name, "not_support_cmd", 16) != 0) {
-		snprintf(buffer_name, TSP_CMD_RESULT_STR_LEN, "%s\n", tsp_cmds[ii].cmd_name);
-		strcat(debug_buffer, buffer_name);
-		ii++;
-	}
-
-	return snprintf(buf, TSP_CMD_RESULT_STR_LEN, "%s\n", debug_buffer);
-}
 
 #if FOR_BRINGUP
 #if TSP_CHANGE_CONFIG_FOR_INPUT
@@ -1789,7 +1665,6 @@ static ssize_t set_tsp_for_inputmethod_store(struct device *dev,
 static DEVICE_ATTR(cmd, S_IWUSR | S_IWGRP, NULL, store_cmd);
 static DEVICE_ATTR(cmd_status, S_IRUGO, show_cmd_status, NULL);
 static DEVICE_ATTR(cmd_result, S_IRUGO, show_cmd_result, NULL);
-static DEVICE_ATTR(cmd_list, S_IRUGO, cmd_list_show, NULL);
 #if FOR_BRINGUP
 static DEVICE_ATTR(set_tsp_for_inputmethod, S_IRUGO | S_IWUSR | S_IWGRP,
 	set_tsp_for_inputmethod_show, set_tsp_for_inputmethod_store);
@@ -1798,7 +1673,6 @@ static struct attribute *touchscreen_factory_attributes[] = {
 	&dev_attr_cmd.attr,
 	&dev_attr_cmd_status.attr,
 	&dev_attr_cmd_result.attr,
-	&dev_attr_cmd_list.attr,
 	NULL,
 };
 
@@ -2493,7 +2367,7 @@ static int mxt_init_factory(struct mxt_data *data)
 	if (error)
 		return -ENOMEM;
 
-	data->fdata->fac_dev_ts = sec_device_create(data, "tsp");
+	data->fdata->fac_dev_ts = device_create(sec_class, NULL, 0, data, "tsp");
 
 	if (IS_ERR(data->fdata->fac_dev_ts)) {
 		input_err(true, dev, "Failed to create device for the sysfs\n");

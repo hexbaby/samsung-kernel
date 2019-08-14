@@ -1,7 +1,7 @@
 /*
  * Customer HW 4 dependant file
  *
- * Copyright (C) 1999-2017, Broadcom Corporation
+ * Copyright (C) 1999-2016, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -184,11 +184,11 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{"MH", "XZ", 11},	/* Universal if Country code is MARSHALL ISLANDS */
 	{"GL", "GP", 2},
 	{"AL", "AL", 2},
+	{"DZ", "GB", 6},
 	{"AS", "AS", 12},
 	{"AI", "AI", 1},
 	{"AF", "AD", 0},
 	{"AG", "AG", 2},
-	{"AM", "AM", 1},
 	{"AR", "AU", 6},
 	{"AW", "AW", 2},
 	{"AU", "AU", 6},
@@ -246,9 +246,7 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{"MO", "SG", 0},
 	{"MK", "MK", 2},
 	{"MW", "MW", 1},
-	{"MY", "MY", 19},
-	{"DZ", "DZ", 2},
-	{"TW", "TW", 65},
+	{"MY", "MY", 3},
 	{"MV", "MV", 3},
 	{"MT", "MT", 4},
 	{"MQ", "MQ", 2},
@@ -283,6 +281,7 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{"LK", "LK", 1},
 	{"SE", "SE", 4},
 	{"CH", "CH", 4},
+	{"TW", "TW", 1},
 	{"TH", "TH", 5},
 	{"TT", "TT", 3},
 	{"TR", "TR", 7},
@@ -296,14 +295,18 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{"ZM", "LA", 2},
 	{"EC", "EC", 21},
 	{"SV", "SV", 25},
+#ifdef BCM4358_CHIP
 	{"KR", "KR", 70},
+#else
+	{"KR", "KR", 48},
+#endif
 	{"RU", "RU", 986},
 	{"UA", "UA", 16},
 	{"GT", "GT", 1},
 	{"MN", "MN", 1},
 	{"NI", "NI", 2},
 	{"UZ", "MA", 2},
-	{"ZA", "ZA", 19},
+	{"ZA", "ZA", 6},
 	{"EG", "EG", 13},
 	{"TN", "TN", 1},
 	{"AO", "AD", 0},
@@ -348,21 +351,27 @@ void get_customized_country_code(void *adapter, char *country_iso_code, wl_count
 }
 
 #ifdef PLATFORM_SLP
+#define CIDINFO "/opt/etc/.cid.info"
+#define PSMINFO "/opt/etc/.psm.info"
+#define MACINFO "/opt/etc/.mac.info"
 #define MACINFO_EFS NULL
+#define REVINFO "/opt/etc/.rev"
+#define WIFIVERINFO "/opt/etc/.wifiver.info"
+#define ANTINFO "/opt/etc/.ant.info"
+#define MEMDUMPINFO "/opt/etc/.memdump.info"
 #define WRMAC_BUF_SIZE 19
 #else
+#define MACINFO "/data/.mac.info"
 #define MACINFO_EFS "/efs/wifi/.mac.info"
+#define NVMACINFO "/data/.nvmac.info"
+#define	REVINFO "/data/.rev"
+#define CIDINFO "/data/.cid.info"
+#define PSMINFO "/data/.psm.info"
+#define WIFIVERINFO "/data/.wifiver.info"
+#define ANTINFO "/data/.ant.info"
+#define MEMDUMPINFO "/data/.memdump.info"
 #define WRMAC_BUF_SIZE 18
 #endif /* PLATFORM_SLP */
-
-#define MACINFO	PLATFORM_PATH".mac.info"
-#define REVINFO	PLATFORM_PATH".rev"
-#define CIDINFO	PLATFORM_PATH".cid.info"
-#define PSMINFO PLATFORM_PATH".psm.info"
-#define ANTINFO	PLATFORM_PATH".ant.info"
-#define WIFIVERINFO	PLATFORM_PATH".wifiver.info"
-#define MEMDUMPINFO	PLATFORM_PATH".memdump.info"
-#define NVMACINFO	PLATFORM_PAHT".nvmac.info"
 
 #ifdef BCM4330_CHIP
 #define CIS_BUF_SIZE            128
@@ -470,8 +479,7 @@ static int dhd_write_cid_file(const char *filepath_cid, const char *buf, int buf
 	/* File is always created. */
 	fp = filp_open(filepath_cid, O_RDWR | O_CREAT, 0666);
 	if (IS_ERR(fp)) {
-		DHD_ERROR(("[WIFI_SEC] %s: File open err %ld\n",
-			filepath_cid, PTR_ERR(fp)));
+		DHD_ERROR(("[WIFI_SEC] %s: File open error\n", filepath_cid));
 		return -1;
 	} else {
 		oldfs = get_fs();
@@ -838,7 +846,7 @@ startwrite:
 		mac->octet[0], mac->octet[1], mac->octet[2],
 		mac->octet[3], mac->octet[4], mac->octet[5]);
 
-	/* File will be created .mac.info. */
+	/* File will be created /data/.mac.info. */
 	fp_mac = filp_open(filepath_data, O_RDWR | O_CREAT, 0666);
 
 	if (IS_ERR(fp_mac)) {
@@ -871,7 +879,7 @@ startwrite:
 	}
 
 	filp_close(fp_mac, NULL);
-	/* end of .mac.info */
+	/* end of /data/.mac.info */
 
 	if (filepath_efs == NULL) {
 		DHD_ERROR(("[WIFI_SEC] %s : no efs filepath", __func__));
@@ -924,6 +932,7 @@ void sec_control_pm(dhd_pub_t *dhd, uint *power_mode)
 	struct file *fp = NULL;
 	char *filepath = PSMINFO;
 	char power_val = 0;
+	char iovbuf[WL_EVENTING_MASK_LEN + 12];
 #ifdef DHD_ENABLE_LPC
 	int ret = 0;
 	uint32 lpc = 0;
@@ -936,9 +945,9 @@ void sec_control_pm(dhd_pub_t *dhd, uint *power_mode)
 		/* Enable PowerSave Mode */
 		dhd_wl_ioctl_cmd(dhd, WLC_SET_PM, (char *)power_mode,
 			sizeof(uint), TRUE, 0);
-		DHD_ERROR(("[WIFI_SEC] %s: %s doesn't exist"
+		DHD_ERROR(("[WIFI_SEC] %s: /data/.psm.info doesn't exist"
 			" so set PM to %d\n",
-			__FUNCTION__, filepath, *power_mode));
+			__FUNCTION__, *power_mode));
 		return;
 	} else {
 		kernel_read(fp, fp->f_pos, &power_val, 1);
@@ -953,18 +962,23 @@ void sec_control_pm(dhd_pub_t *dhd, uint *power_mode)
 			dhd_wl_ioctl_cmd(dhd, WLC_SET_PM, (char *)power_mode,
 				sizeof(uint), TRUE, 0);
 			/* Turn off MPC in AP mode */
-			dhd_iovar(dhd, 0, "mpc", (char *)power_mode, sizeof(*power_mode), NULL, 0,
-					TRUE);
+			bcm_mkiovar("mpc", (char *)power_mode, 4,
+				iovbuf, sizeof(iovbuf));
+			dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf,
+				sizeof(iovbuf), TRUE, 0);
 			g_pm_control = TRUE;
 #ifdef ROAM_ENABLE
 			/* Roaming off of dongle */
-			dhd_iovar(dhd, 0, "roam_off", (char *)&roamvar, sizeof(roamvar), NULL, 0,
-					TRUE);
+			bcm_mkiovar("roam_off", (char *)&roamvar, 4,
+				iovbuf, sizeof(iovbuf));
+			dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf,
+				sizeof(iovbuf), TRUE, 0);
 #endif
 #ifdef DHD_ENABLE_LPC
 			/* Set lpc 0 */
-			ret = dhd_iovar(dhd, 0, "lpc", (char *)&lpc, sizeof(lpc), NULL, 0, TRUE);
-			if (ret < 0) {
+			bcm_mkiovar("lpc", (char *)&lpc, 4, iovbuf, sizeof(iovbuf));
+			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf,
+				sizeof(iovbuf), TRUE, 0)) < 0) {
 				DHD_ERROR(("[WIFI_SEC] %s: Set lpc failed  %d\n",
 				__FUNCTION__, ret));
 			}
@@ -988,6 +1002,7 @@ int dhd_sel_ant_from_file(dhd_pub_t *dhd)
 	uint32 ant_val = 0;
 	uint32 btc_mode = 0;
 	char *filepath = ANTINFO;
+	char iovbuf[WLC_IOCTL_SMLEN];
 	uint chip_id = dhd_bus_chip_id(dhd);
 
 	/* Check if this chip can support MIMO */
@@ -1030,8 +1045,8 @@ int dhd_sel_ant_from_file(dhd_pub_t *dhd)
 
 	/* bt coex mode off */
 	if (dhd_get_fw_mode(dhd->info) == DHD_FLAG_MFG_MODE) {
-		ret = dhd_iovar(dhd, 0, "btc_mode", (char *)&btc_mode, sizeof(btc_mode), NULL, 0,
-				TRUE);
+		bcm_mkiovar("btc_mode", (char *)&btc_mode, 4, iovbuf, sizeof(iovbuf));
+		ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0);
 		if (ret) {
 			DHD_ERROR(("[WIFI_SEC] %s: Fail to execute dhd_wl_ioctl_cmd(): "
 				"btc_mode, ret=%d\n",
@@ -1041,14 +1056,16 @@ int dhd_sel_ant_from_file(dhd_pub_t *dhd)
 	}
 
 	/* Select Antenna */
-	ret = dhd_iovar(dhd, 0, "txchain", (char *)&ant_val, sizeof(ant_val), NULL, 0, TRUE);
+	bcm_mkiovar("txchain", (char *)&ant_val, 4, iovbuf, sizeof(iovbuf));
+	ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0);
 	if (ret) {
 		DHD_ERROR(("[WIFI_SEC] %s: Fail to execute dhd_wl_ioctl_cmd(): txchain, ret=%d\n",
 			__FUNCTION__, ret));
 		return ret;
 	}
 
-	ret = dhd_iovar(dhd, 0, "rxchain", (char *)&ant_val, sizeof(ant_val), NULL, 0, TRUE);
+	bcm_mkiovar("rxchain", (char *)&ant_val, 4, iovbuf, sizeof(iovbuf));
+	ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0);
 	if (ret) {
 		DHD_ERROR(("[WIFI_SEC] %s: Fail to execute dhd_wl_ioctl_cmd(): rxchain, ret=%d\n",
 			__FUNCTION__, ret));
@@ -1074,24 +1091,24 @@ int sec_get_param_wfa_cert(dhd_pub_t *dhd, int mode, uint* read_val)
 
 	switch (mode) {
 		case SET_PARAM_BUS_TXGLOM_MODE:
-			filepath = PLATFORM_PATH".bustxglom.info";
+			filepath = "/data/.bustxglom.info";
 			break;
 		case SET_PARAM_ROAMOFF:
-			filepath = PLATFORM_PATH".roamoff.info";
+			filepath = "/data/.roamoff.info";
 			break;
 #ifdef USE_WL_FRAMEBURST
 		case SET_PARAM_FRAMEBURST:
-			filepath = PLATFORM_PATH".frameburst.info";
+			filepath = "/data/.frameburst.info";
 			break;
 #endif /* USE_WL_FRAMEBURST */
 #ifdef USE_WL_TXBF
 		case SET_PARAM_TXBF:
-			filepath = PLATFORM_PATH".txbf.info";
+			filepath = "/data/.txbf.info";
 			break;
 #endif /* USE_WL_TXBF */
 #ifdef PROP_TXSTATUS
 		case SET_PARAM_PROPTX:
-			filepath = PLATFORM_PATH".proptx.info";
+			filepath = "/data/.proptx.info";
 			break;
 #endif /* PROP_TXSTATUS */
 		default:
@@ -1146,7 +1163,6 @@ int sec_get_param_wfa_cert(dhd_pub_t *dhd, int mode, uint* read_val)
 #define FIRM_PREFIX "Firm_ver:"
 #define DHD_PREFIX "DHD_ver:"
 #define NV_PREFIX "Nv_info:"
-#define CLM_PREFIX "CLM_ver:"
 #define max_len(a, b) ((sizeof(a)/(2)) - (strlen(b)) - (3))
 #define tstr_len(a, b) ((strlen(a)) + (strlen(b)) + (3))
 
@@ -1168,7 +1184,7 @@ int write_filesystem(struct file *file, unsigned long long offset,
 	return ret;
 }
 
-uint32 sec_save_wlinfo(char *firm_ver, char *dhd_ver, char *nvram_p, char *clm_ver)
+uint32 sec_save_wlinfo(char *firm_ver, char *dhd_ver, char *nvram_p)
 {
 	struct file *fp = NULL;
 	struct file *nvfp = NULL;
@@ -1183,7 +1199,6 @@ uint32 sec_save_wlinfo(char *firm_ver, char *dhd_ver, char *nvram_p, char *clm_v
 	DHD_INFO(("[WIFI_SEC] firmware version   : %s\n", firm_ver));
 	DHD_INFO(("[WIFI_SEC] dhd driver version : %s\n", dhd_ver));
 	DHD_INFO(("[WIFI_SEC] nvram path : %s\n", nvram_p));
-	DHD_INFO(("[WIFI_SEC] clm version : %s\n", clm_ver));
 
 	memset(version_info, 0, sizeof(version_info));
 
@@ -1240,19 +1255,6 @@ uint32 sec_save_wlinfo(char *firm_ver, char *dhd_ver, char *nvram_p, char *clm_v
 		}
 	} else {
 		DHD_ERROR(("[WIFI_SEC] Not exist nvram path\n"));
-	}
-
-	if (strlen(clm_ver)) {
-		min_len = min(strlen(clm_ver), max_len(temp_buf, CLM_PREFIX));
-		min_len += strlen(CLM_PREFIX) + 3;
-		DHD_INFO(("[WIFI_SEC] clm ver length : %d\n", min_len));
-		snprintf(version_info+str_len, min_len, CLM_PREFIX " %s\n", clm_ver);
-		str_len = strlen(version_info);
-
-		DHD_INFO(("[WIFI_SEC] CLM version_info len : %d\n", str_len));
-		DHD_INFO(("[WIFI_SEC] CLM version_info : %s\n", version_info));
-	} else {
-		DHD_ERROR(("[WIFI_SEC] CLM version is missing.\n"));
 	}
 
 	DHD_INFO(("[WIFI_SEC] version_info : %s, strlen : %zu\n",
@@ -1436,7 +1438,7 @@ int dhd_write_otp(dhd_pub_t *dhd)
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
-	fp = filp_open(PLATFORM_PATH".otp.info", O_RDONLY, 0);
+	fp = filp_open("/data/.otp.info", O_RDONLY, 0);
 	if (IS_ERR(fp)) {
 
 		/* prepare .otp.info data through reading OTP from chip  */
@@ -1446,15 +1448,13 @@ int dhd_write_otp(dhd_pub_t *dhd)
 		if (ret < 0) {
 			DHD_ERROR(("[WIFI_SEC] %s: CIS reading failed After writing ret=%d\n",
 				__FUNCTION__, ret));
-			set_fs(old_fs);
 			goto exit;
 		}
 
 		/* create .otp.info */
-		fp = filp_open(PLATFORM_PATH".otp.info", O_RDWR|O_CREAT, 0666);
+		fp = filp_open("/data/.otp.info", O_RDWR|O_CREAT, 0666);
 	        if (IS_ERR(fp)) {
 			DHD_ERROR(("%s:(MFG mode) file create error\n", __FUNCTION__));
-			set_fs(old_fs);
 			return BCME_ERROR;
 		}
 
@@ -1470,7 +1470,7 @@ int dhd_write_otp(dhd_pub_t *dhd)
 
 exit:
 	if (sta_mode == TRUE) {
-		fp = filp_open(PLATFORM_PATH".otp.info", O_RDONLY, 0);
+		fp = filp_open("/data/.otp.info", O_RDONLY, 0);
 		if (IS_ERR(fp)) {
 			DHD_ERROR(("%s: file open error.\n", __FUNCTION__));
 			return BCME_ERROR;

@@ -310,7 +310,7 @@ static bool flash_end_w9018(struct wacom_i2c *wac_i2c)
 static int check_progress(u8 *data, size_t size, u8 cmd, u8 ech)
 {
 	if (data[0] != cmd || data[1] != ech) {
-		pr_err("sec_epen: [sec_input] %s failed to erase \n", __func__);
+		pr_err("%s sec_epen: %s failed to erase \n", SECLOG, __func__);
 		return -EXIT_FAIL;
 	}
 
@@ -318,7 +318,7 @@ static int check_progress(u8 *data, size_t size, u8 cmd, u8 ech)
 	case PROCESS_CHKSUM1_ERR:
 	case PROCESS_CHKSUM2_ERR:
 	case PROCESS_TIMEOUT_ERR:
-		pr_err("sec_epen: [sec_input] %s error: %x \n", __func__, data[2]);
+		pr_err("%s sec_epen: %s error: %x \n", SECLOG, __func__, data[2]);
 		return -EXIT_FAIL;
 	}
 

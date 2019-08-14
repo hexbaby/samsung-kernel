@@ -1,8 +1,7 @@
 /*
- * TZ ICCC Support
+ * TIMA Uevent Support
  *
  */
- 
 #include <asm/uaccess.h>
 #include <linux/list.h>
 #include <linux/device.h>
@@ -12,244 +11,286 @@
 #include <linux/miscdevice.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
+#include "tz_iccc.h"
+#include <linux/security/iccc_interface.h>
+#include <linux/qseecom.h>
+
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/proc_fs.h>
-#include <linux/delay.h>
-#include "tz_iccc.h"
+
+#if defined(CONFIG_SECURITY_SELINUX)
+#include <linux/selinux.h>
+#endif
 
 /* ICCC implementation for kernel */
+
 int is_iccc_ready;
 #define DRIVER_DESC "A kernel module to read boot_completed status"
 
-uint8_t *iccc_tci = NULL;
-struct mc_session_handle iccc_mchandle;
+int tima_iccc_load(char* appname,struct qseecom_handle** handle)
+{
+	int ret=ICCC_SUCCESS;
+	int qsee_ret = 0;
+	struct qseecom_handle* q_iccc_handle = NULL;
+
+	*handle = NULL;
+	/* start the iccc tzapp only when it is not loaded. */
+	qsee_ret = qseecom_start_app(&q_iccc_handle, appname, ICCC_QSEE_BUFFER_LENGTH);
+
+	if ( NULL == q_iccc_handle ) {
+		/* q_iccc_handle is still NULL. It seems we couldn't start iccc tzapp. */
+		pr_err("TIMA: iccc--cannot get tzapp handle from kernel.\n");
+		ret = ICCC_FAILURE; /* iccc authentication failed. */
+	}
+
+	if (qsee_ret) {
+		/* Another way for iccc tzapp loading to fail. */
+		pr_err("TIMA: iccc--cannot load tzapp from kernel; qsee_ret =  %d.\n", qsee_ret);
+		ret = ICCC_FAILURE;
+	}
+
+	if(ret == ICCC_SUCCESS)
+	{
+		*handle = q_iccc_handle;
+	}
+	return ret;
+}
+
+int tima_iccc_terminate(struct qseecom_handle** q_iccc_handle)
+{
+	int qsee_ret = 0;
+	qsee_ret = qseecom_shutdown_app(q_iccc_handle);
+
+	if ( qsee_ret ) {
+		pr_err("TIMA: iccc--failed to shut down the tzapp.\n");
+	}
+	else
+		*q_iccc_handle = NULL;
+
+	return qsee_ret;
+}
 
 uint32_t Iccc_SaveData_Kernel(uint32_t type, uint32_t value)
 {
-	enum mc_result mc_ret;
-	struct mc_uuid_t uuid = TL_TZ_ICCC_UUID;
-	int ret = 0;
+	char app_name[MAX_APP_NAME_SIZE]={0};
+	int ret=0;
+        tciMessage_t * iccc_req = NULL;
+        tciMessage_t * iccc_rsp = NULL;
+	int req_len = 0, rsp_len = 0;
 	tciMessage_t *msg;
+	int qsee_ret = 0; /* value used to capture qsee return state */
+	struct qseecom_handle *q_iccc_handle = NULL;
 
-	printk(KERN_ERR "ICCC : Iccc_SaveData_Kernel \n");
+	printk(KERN_ERR "inside Iccc_SaveData_Kernel \n");
 
 	if (!is_iccc_ready) {
-		ret = RET_ICCC_FAIL;
+		ret = ICCC_PERMISSION_DENIED;
 		pr_err("%s: Not ready! type:%#x, ret:%d\n", __func__, type, ret);
-		goto iccc_ret;
+		goto iccc_err_ret;
 	}
 
-	if(ICCC_SECTION_TYPE(type) != KERN_ICCC_TYPE_START) {
-		if (type != SELINUX_STATUS) {
-			ret = RET_ICCC_FAIL;
-			pr_err("iccc permission denied! ret = 0x%x", ret);
-			ret = RET_ICCC_FAIL;
-			goto iccc_ret;
-		}
+	if (ICCC_SECTION_TYPE(type) == BL_ICCC_TYPE_START ||
+		ICCC_SECTION_TYPE(type) == SYS_ICCC_TYPE_START)
+	{
+		ret=ICCC_PERMISSION_DENIED;
+		pr_err("iccc--Write permission is denied on type %x, ret = %d.\n", type, ret);
+		goto iccc_err_ret;
 	}
 
-	/* open device for iccc trustlet */
-	mc_ret = mc_open_device(MC_DEVICE_ID_DEFAULT);
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC --cannot get mobicore handle from kernel. %d\n",mc_ret);
-		ret = RET_ICCC_FAIL;
-		goto iccc_ret;
+	/**
+	 * selinux param is updated by both TZ(by PKM) as well as kernel so that
+	 * that even if PKM is disabled, selinux will still be updated by kernel.
+	 */
+	if (ICCC_SECTION_TYPE(type) == TA_ICCC_TYPE_START && type != SELINUX_STATUS)
+	{
+		ret=ICCC_PERMISSION_DENIED;
+		pr_err("iccc--Write permission is denied on type %x, ret = %d.\n", type, ret);
+		goto iccc_err_ret;
 	}
 
-	/* alloc world shared memory for iccc trustlet */
-	mc_ret = mc_malloc_wsm(MC_DEVICE_ID_DEFAULT, 0, sizeof(tciMessage_t),&iccc_tci, 0);
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC --cannot alloc world shared memory.%d\n",mc_ret);
-		ret = RET_ICCC_FAIL;
-		goto iccc_close_device;
+	snprintf(app_name, MAX_APP_NAME_SIZE, "%s", ICCC_TZAPP_NAME);
+
+	if (tima_iccc_load(app_name,&q_iccc_handle)) {
+		pr_err("%s: tima_iccc_load() error!\n", __func__);
+		/* Another way for iccc tzapp loading to fail. */
+		q_iccc_handle = NULL; /* Do we have a memory leak this way? */
+		ret = ICCC_FAILURE; /* iccc authentication failed. */
+		goto iccc_err_ret; /* leave the function now. */
 	}
 
-	memset(&iccc_mchandle, 0, sizeof(struct mc_session_handle));
-	iccc_mchandle.device_id = MC_DEVICE_ID_DEFAULT;
+	iccc_req = (tciMessage_t *) q_iccc_handle->sbuf;
+	req_len = sizeof(tciMessage_t);
+	if (req_len & QSEECOM_ALIGN_MASK)
+		req_len = QSEECOM_ALIGN(req_len);
 
-	/* open session for iccc trustlet */
-	mc_ret = mc_open_session(&iccc_mchandle, &uuid, iccc_tci,sizeof(tciMessage_t));
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC : --cannot open mobicore session from kernel. %d\n",mc_ret);
-		ret = RET_ICCC_FAIL;
-		goto iccc_free_wsm;
+	/* prepare the response buffer */
+	iccc_rsp =(tciMessage_t *)(q_iccc_handle->sbuf + req_len);
+
+	rsp_len = sizeof(tciMessage_t);
+	if (rsp_len & QSEECOM_ALIGN_MASK)
+		rsp_len = QSEECOM_ALIGN(rsp_len);
+
+	if ((rsp_len + req_len) > ICCC_QSEE_BUFFER_LENGTH) {
+		pr_err("TIMA: iccc--in suffcient buffer length: %d\n", rsp_len + req_len);
+		ret = ICCC_FAILURE;
+		goto iccc_err_ret;
 	}
 
-	msg = (tciMessage_t *)iccc_tci;
-
-	msg->header.id = CMD_ICCC_SAVEDATA;
-	msg->payload.generic.content.iccc_req.cmd_id = CMD_ICCC_SAVEDATA;
+	msg = (tciMessage_t *)iccc_req;
+	msg->header.id = CMD_ICCC_SAVEDATA_KERN;
+	msg->payload.generic.content.iccc_req.cmd_id = CMD_ICCC_SAVEDATA_KERN;
 	msg->payload.generic.content.iccc_req.type = type;
 	msg->payload.generic.content.iccc_req.value = value;
 
-	/* Send the command to the tl. */
-	mc_ret = mc_notify(&iccc_mchandle);
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC--mc_notify failed.\n");
-		ret = RET_ICCC_FAIL;
-		goto iccc_close_session;
+#ifdef CONFIG_64BIT
+	pr_warn("TIMA: iccc--send cmd (%s) cmdlen(%lx:%d), rsplen(%lx:%d) id 0x%08X, \
+                type 0x%08X, value %08d, req (0x%16lX), rsp(0x%16lX)\n", \
+		app_name, sizeof(tciMessage_t), req_len, sizeof(tciMessage_t), rsp_len, \
+		msg->header.id,type,value, (unsigned long)iccc_req, (unsigned long)iccc_rsp);
+#else
+	pr_warn("TIMA: iccc--send cmd (%s) cmdlen(%d:%d), rsplen(%d:%d) id 0x%08X, \
+                type 0x%08X, value %08d, req (0x%08X), rsp(0x%08X)\n", \
+		app_name, sizeof(tciMessage_t), req_len, sizeof(tciMessage_t), rsp_len, \
+		msg->header.id,type,value, (int)iccc_req, (int)iccc_rsp);
+#endif
+
+	qseecom_set_bandwidth(q_iccc_handle, true);
+	qsee_ret = qseecom_send_command(q_iccc_handle, iccc_req, req_len, iccc_rsp, rsp_len);
+	qseecom_set_bandwidth(q_iccc_handle, false);
+
+	if (qsee_ret) {
+		pr_err("TIMA: iccc--failed to send cmd to qseecom; qsee_ret = %d.\n", qsee_ret);
+		pr_warn("TIMA: iccc--shutting down the tzapp.\n");
+		ret = ICCC_FAILURE;
+		goto iccc_err_ret;
 	}
 
-retry1:
-	mc_ret = mc_wait_notification(&iccc_mchandle, -1);
-	if (MC_DRV_ERR_INTERRUPTED_BY_SIGNAL == mc_ret) {
-		usleep_range(1000, 5000);
-		goto retry1;
+	if (iccc_rsp->payload.generic.content.iccc_rsp.ret == ICCC_SUCCESS) {
+		pr_info("TIMA: iccc--Iccc_SaveData_Kernel sucessfully\n");
+		ret = ICCC_SUCCESS;
+	}
+	else
+	{
+		ret = ICCC_FAILURE;
+		pr_err("TIMA: iccc-- Iccc_SaveData_Kernel failed (%d)\n",msg->payload.generic.content.iccc_rsp.ret);
+		goto iccc_err_ret;
 	}
 
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC--wait_notify failed.\n");
-		ret = RET_ICCC_FAIL;
-		goto iccc_close_session;
-	}
-
-	pr_warn("ICCC--wait_notify completed.\n");
-
-	if (msg->payload.generic.content.iccc_rsp.ret == RET_ICCC_SUCCESS) {
-		pr_info("ICCC : Successfully write\n");
-		ret = RET_ICCC_SUCCESS;
-	}
-	else {
-		pr_err("ICCC : write failed with error (%d)\n",msg->payload.generic.content.iccc_rsp.ret);
-		ret = RET_ICCC_FAIL;
-	}
-
-iccc_close_session:
-	if (mc_close_session(&iccc_mchandle) != MC_DRV_OK) {
-		pr_err("ICCC--failed to close mobicore session.\n");
-	}
-
-iccc_free_wsm:
-	if (mc_free_wsm(MC_DEVICE_ID_DEFAULT, iccc_tci) != MC_DRV_OK) {
-		pr_err("ICCC--failed to free wsm.\n");
-	}
-
-iccc_close_device:
-	if (mc_close_device(MC_DEVICE_ID_DEFAULT) != MC_DRV_OK) {
-		pr_err("ICCC--failed to shutdown mobicore instance.\n");
-	}
-
-iccc_ret:
+iccc_err_ret:
+	if(q_iccc_handle)
+		tima_iccc_terminate(&q_iccc_handle);
 	return ret;
 }
 
 uint32_t Iccc_ReadData_Kernel(uint32_t type, uint32_t *value)
 {
-	enum mc_result mc_ret;
-	struct mc_uuid_t uuid = TL_TZ_ICCC_UUID;
-	int ret = 0;
+	char app_name[MAX_APP_NAME_SIZE]={0};
+	int ret=0;
+        tciMessage_t * iccc_req = NULL;
+        tciMessage_t * iccc_rsp = NULL;
+	int req_len = 0, rsp_len = 0;
 	tciMessage_t *msg;
+	int qsee_ret = 0; /* value used to capture qsee return state */
+	struct qseecom_handle *q_iccc_handle = NULL;
 
-	printk(KERN_ERR "ICCC Iccc_ReadData_Kernel \n");
+	printk(KERN_ERR "inside Iccc_ReadData_Kernel \n");
 
 	if (!is_iccc_ready) {
-		ret = RET_ICCC_FAIL;
+		ret = ICCC_PERMISSION_DENIED;
 		pr_err("%s: Not ready! type:%#x, ret:%d\n", __func__, type, ret);
-		goto iccc_ret;
+		goto iccc_err_ret;
 	}
 
-	/* open device for iccc trustlet */
-	mc_ret = mc_open_device(MC_DEVICE_ID_DEFAULT);
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC --cannot get mobicore handle from kernel. %d\n",mc_ret);
-		ret = RET_ICCC_FAIL;
-		goto iccc_ret;
+	snprintf(app_name, MAX_APP_NAME_SIZE, "%s", ICCC_TZAPP_NAME);
+	if (tima_iccc_load(app_name,&q_iccc_handle)) {
+		/* Another way for iccc tzapp loading to fail. */
+		q_iccc_handle = NULL; /* Do we have a memory leak this way? */
+		ret = -1; /* iccc authentication failed. */
+		goto iccc_err_ret; /* leave the function now. */
 	}
 
-	/* alloc world shared memory for iccc trustlet */
-	mc_ret = mc_malloc_wsm(MC_DEVICE_ID_DEFAULT, 0, sizeof(tciMessage_t),&iccc_tci, 0);
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC--cannot alloc world shared memory.%d\n",mc_ret);
-		ret = RET_ICCC_FAIL;
-		goto iccc_close_device;
-	}
-	memset(&iccc_mchandle, 0, sizeof(struct mc_session_handle));
-	iccc_mchandle.device_id = MC_DEVICE_ID_DEFAULT;
+	iccc_req = (tciMessage_t *) q_iccc_handle->sbuf;
+	req_len = sizeof(tciMessage_t);
+	if (req_len & QSEECOM_ALIGN_MASK)
+		req_len = QSEECOM_ALIGN(req_len);
 
-	/* open session for iccc trustlet */
-	mc_ret = mc_open_session(&iccc_mchandle, &uuid, iccc_tci,sizeof(tciMessage_t));
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC--cannot open mobicore session from kernel. %d\n",mc_ret);
-		ret = RET_ICCC_FAIL;
-		goto iccc_free_wsm;
+	/* prepare the response buffer */
+	iccc_rsp =(tciMessage_t *)(q_iccc_handle->sbuf + req_len);
+
+	rsp_len = sizeof(tciMessage_t);
+	if (rsp_len & QSEECOM_ALIGN_MASK)
+		rsp_len = QSEECOM_ALIGN(rsp_len);
+
+	if ((rsp_len + req_len) > ICCC_QSEE_BUFFER_LENGTH) {
+		pr_err("TIMA: iccc--in suffcient buffer length: %d\n", rsp_len + req_len);
+		ret = ICCC_FAILURE;
+		goto iccc_err_ret;
 	}
 
-	/* Load message */
-	msg = (tciMessage_t *)iccc_tci;
-	msg->header.id = CMD_ICCC_READDATA;
-	msg->payload.generic.content.iccc_req.cmd_id = CMD_ICCC_READDATA;
+	msg = (tciMessage_t *)iccc_req;
+	msg->header.id = CMD_ICCC_READDATA_KERN;
+	msg->payload.generic.content.iccc_req.cmd_id = CMD_ICCC_READDATA_KERN;
 	msg->payload.generic.content.iccc_req.type = type;
+	msg->payload.generic.content.iccc_req.value = *value;
 
-	/* Send the command to the tl. */
-	mc_ret = mc_notify(&iccc_mchandle);
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC mc_notify failed.\n");
-		ret = RET_ICCC_FAIL;
-		goto iccc_close_session;
+#ifdef CONFIG_64BIT
+	pr_warn("TIMA: iccc--send cmd (%s) cmdlen(%lx:%d), rsplen(%lx:%d) id 0x%08X, \
+                type 0x%08X, value %08d, req (0x%16lX), rsp(0x%16lX)\n", \
+		app_name, sizeof(tciMessage_t), req_len, sizeof(tciMessage_t), rsp_len, \
+		msg->header.id,type,*value, (unsigned long)iccc_req, (unsigned long)iccc_rsp);
+#else
+	pr_warn("TIMA: iccc--send cmd (%s) cmdlen(%d:%d), rsplen(%d:%d) id 0x%08X, \
+                type 0x%08X, value %08d, req (0x%08X), rsp(0x%08X)\n", \
+		app_name, sizeof(tciMessage_t), req_len, sizeof(tciMessage_t), rsp_len, \
+		msg->header.id,type,*value, (int)iccc_req, (int)iccc_rsp);
+#endif
+
+	qseecom_set_bandwidth(q_iccc_handle, true);
+	qsee_ret = qseecom_send_command(q_iccc_handle, iccc_req, req_len, iccc_rsp, rsp_len);
+	qseecom_set_bandwidth(q_iccc_handle, false);
+
+	if (qsee_ret) {
+		pr_err("TIMA: iccc--failed to send cmd to qseecom; qsee_ret = %d.\n", qsee_ret);
+		pr_warn("TIMA: iccc--shutting down the tzapp.\n");
+		ret = ICCC_FAILURE;
+		goto iccc_err_ret;
 	}
 
-retry2:
-	mc_ret = mc_wait_notification(&iccc_mchandle, -1);
-	if (MC_DRV_ERR_INTERRUPTED_BY_SIGNAL == mc_ret) {
-		usleep_range(1000, 5000);
-		goto retry2;
+	if (iccc_rsp->payload.generic.content.iccc_rsp.ret == ICCC_SUCCESS) {
+		pr_info("TIMA: iccc--Iccc_ReadData_Kernel sucessfully\n");
+		ret = ICCC_SUCCESS;
 	}
-	if (mc_ret != MC_DRV_OK) {
-		pr_err("ICCC--wait_notify failed.\n");
-		ret = RET_ICCC_FAIL;
-		goto iccc_close_session;
-	}
-
-	pr_warn("ICCC--wait_notify completed.\n");
-
-	if (msg->payload.generic.content.iccc_rsp.ret == RET_ICCC_SUCCESS) {
-		pr_info("ICCC : Iccc_ReadData_Kernel successful\n");
-		ret = RET_ICCC_SUCCESS;
-		*value = msg->payload.generic.content.iccc_rsp.value;
-	}
-	else {
-		pr_err("ICCC : Iccc_ReadData_Kernel failed with error (%d)\n",msg->payload.generic.content.iccc_rsp.ret);
-		ret = RET_ICCC_FAIL;
+	else
+	{
+		ret = ICCC_FAILURE;
+		pr_err("TIMA: iccc-- Iccc_ReadData_Kernel failed (%d)\n",iccc_rsp->payload.generic.content.iccc_rsp.ret);
+		goto iccc_err_ret;
 	}
 
-iccc_close_session:
-	if (mc_close_session(&iccc_mchandle) != MC_DRV_OK) {
-		pr_err("ICCC--failed to close mobicore session.\n");
-	}
+	pr_err("ICCC Info type:0x%08x value:%d",type,iccc_rsp->payload.generic.content.iccc_rsp.value);
+	*value = iccc_rsp->payload.generic.content.iccc_rsp.value;
+	ret = ICCC_SUCCESS;
 
-iccc_free_wsm:
-	if (mc_free_wsm(MC_DEVICE_ID_DEFAULT, iccc_tci) != MC_DRV_OK) {
-		pr_err("ICCC--failed to free wsm.\n");
-	}
-
-iccc_close_device:
-	if (mc_close_device(MC_DEVICE_ID_DEFAULT) != MC_DRV_OK) {
-		pr_err("ICCC--failed to shutdown mobicore instance.\n");
-	}
-
-iccc_ret:
+iccc_err_ret:
+	if(q_iccc_handle)
+		tima_iccc_terminate(&q_iccc_handle);
 	return ret;
 }
 
 static ssize_t iccc_write(struct file *fp, const char __user *buf, size_t len, loff_t *off)
 {
-	uint32_t ret;
-	printk(KERN_ERR "%s:\n", __func__);
+	printk(KERN_INFO "%s:\n", __func__);
+
 	is_iccc_ready = 1;
 
 #if defined(CONFIG_SECURITY_SELINUX)
-	printk(KERN_INFO "%s: selinux_enabled:%d, selinux_enforcing:%d\n",__func__, selinux_is_enabled(), selinux_is_enforcing());
-	if (selinux_is_enabled() && selinux_is_enforcing()) {
-		if (0 != (ret = Iccc_SaveData_Kernel(SELINUX_STATUS,0x0))) {
-			printk(KERN_ERR "%s: Iccc_SaveData_Kernel failed, type = %x, value =%x\n", __func__,SELINUX_STATUS,0x0);
-		}
-	}
-	else {
-		if (0 != (ret = Iccc_SaveData_Kernel(SELINUX_STATUS,0x1))) {
-			printk(KERN_ERR "%s: Iccc_SaveData_Kernel failed, type = %x, value =%x\n", __func__,SELINUX_STATUS,0x1);
-		}
-	}
+	printk(KERN_INFO "%s: selinux_enabled:%d, selinux_enforcing:%d\n",
+		__func__, selinux_is_enabled(), selinux_is_enforcing());
+	if (selinux_is_enabled() && selinux_is_enforcing())
+		Iccc_SaveData_Kernel(SELINUX_STATUS, 0x0);
+	else
+		Iccc_SaveData_Kernel(SELINUX_STATUS, 0x1);
 #endif
 
 	// len bytes successfully written 
@@ -265,10 +306,12 @@ static int __init iccc_init(void)
 	printk(KERN_INFO"%s:\n", __func__);
 
 	if (proc_create("iccc_ready", 0644, NULL, &iccc_proc_fops) == NULL) {
-		printk(KERN_ERR "%s: proc_create() failed\n",__func__);
+		printk(KERN_ERR"%s: proc_create() failed\n", __func__);
 		return -1;
 	}
-	printk(KERN_INFO"%s: registered /proc/iccc_boot_completed interface\n", __func__);
+
+	printk(KERN_INFO"%s: registered /proc/iccc_ready interface\n", __func__);
+
 	return 0;
 }
 
@@ -282,4 +325,3 @@ module_init(iccc_init);
 module_exit(iccc_exit);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
-/* END ICCC implementation for kernel */

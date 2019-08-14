@@ -127,7 +127,7 @@ static void *alloc_insn_page(void)
 
 static void free_insn_page(void *page)
 {
-	module_free(NULL, page);
+	module_memfree(page);
 }
 
 struct kprobe_insn_cache kprobe_insn_slots = {
@@ -563,7 +563,7 @@ static void kprobe_optimizer(struct work_struct *work)
 }
 
 /* Wait for completing optimization and unoptimization */
-void wait_for_kprobe_optimizer(void)
+static void wait_for_kprobe_optimizer(void)
 {
 	mutex_lock(&kprobe_mutex);
 

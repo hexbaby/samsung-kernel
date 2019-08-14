@@ -1033,29 +1033,6 @@ config RTC_DRV_S3C
 	  This driver can also be build as a module. If so, the module
 	  will be called rtc-s3c.
 
-config EXYNOS_PERSISTENT_CLOCK
-	bool "Samsung Exynos Persistent-clock-only driver"
-	depends on !RTC_DRV_S3C
-	default n
-	help
-	  Persistent-clock-only driver for EXYNOS RTC.
-
-config RTC_DRV_SEC
-	tristate "Samsung PMIC series RTC"
-	depends on MFD_SEC_CORE
-	help
-	  If you say yes here you will get support for the
-	  RTC of Samsung PMIC series.
-	  This driver can also be built as a module. If so, the module
-	  will be called rtc-sec.
-
-config RTC_RESET_COUNT
-	bool "Samsung RTC Reset Count"
-	depends on RTC_DRV_SEC
-	default y
-	help
-	  If you say yes here you will get counts for RTC reset.
-
 config RTC_DRV_EP93XX
 	tristate "Cirrus Logic EP93XX"
 	depends on ARCH_EP93XX
@@ -1424,6 +1401,15 @@ config RTC_DRV_MOXART
 
 	   This driver can also be built as a module. If so, the module
 	   will be called rtc-moxart
+
+config RTC_DRV_QPNP
+	tristate "Qualcomm QPNP PMIC RTC"
+	depends on (SPMI || MSM_SPMI) && OF_SPMI && MSM_QPNP_INT
+	help
+	  Say Y here if you want to support the Qualcomm QPNP PMIC RTC.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called qpnp-rtc.
 
 config RTC_DRV_XGENE
 	tristate "APM X-Gene RTC"

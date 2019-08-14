@@ -29,30 +29,23 @@
 #include "dbmdx-vqe-regmap.h"
 #include "dbmdx-spi.h"
 
-#define DBMD2_MAX_SPI_BOOT_SPEED 8000000
-#define DBMD2_VERIFY_BOOT_CHECKSUM 1
-
 static const u8 clr_crc[] = {0x5A, 0x03, 0x52, 0x0a, 0x00,
 			     0x00, 0x00, 0x00, 0x00, 0x00};
-static const u8 chng_pll_cmd[] = {0x5A, 0x13,
-				0x3D, 0x10, 0x00, 0x00,
-				0x00, 0x16, 0x00, 0x10,
-				0xFF, 0xF1, 0x3F, 0x00};
 
-static int dbmd2_spi_boot(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw)
+static int dbmd2_spi_boot(const struct firmware *fw, struct dbmdx_private *p,
+		    const void *checksum, size_t chksum_len, int load_fw)
 {
 	int retry = RETRY_COUNT;
 	int ret = 0;
 	ssize_t send_bytes;
 	struct dbmdx_spi_private *spi_p =
 				(struct dbmdx_spi_private *)p->chip->pdata;
-	struct spi_device *spi = spi_p->client;
+	u8 sync_spi[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 	u8 sbl_spi[] = {
 		0x5A, 0x04, 0x4c, 0x00, 0x00,
 		0x03, 0x11, 0x55, 0x05, 0x00};
 
+	u8 rx_checksum[7];
 
 	dev_dbg(spi_p->dev, "%s\n", __func__);
 
@@ -70,39 +63,14 @@ static int dbmd2_spi_boot(const void *fw_data, size_t fw_size,
 				usleep_range(DBMDX_USLEEP_SPI_D2_AFTER_RESET,
 					DBMDX_USLEEP_SPI_D2_AFTER_RESET + 5000);
 
-			ret = spi_set_speed(p, DBMDX_VA_SPEED_MAX);
-			if (ret < 0) {
-				dev_err(spi_p->dev, "%s:failed %x\n",
-					__func__, ret);
+			/* send sync */
+			send_bytes = send_spi_data(p, sync_spi,
+				sizeof(sync_spi));
+			if (send_bytes != sizeof(sync_spi)) {
+				dev_err(p->dev,
+					"%s: -----------> Sync spi error\n",
+					__func__);
 				continue;
-			}
-
-			if (spi->max_speed_hz > DBMD2_MAX_SPI_BOOT_SPEED) {
-
-				ret = spi_set_speed(p, DBMDX_VA_SPEED_NORMAL);
-				if (ret < 0) {
-					dev_err(spi_p->dev, "%s:failed %x\n",
-						__func__, ret);
-					continue;
-				}
-
-				/* send Change PLL clear command */
-				ret = send_spi_data(p, chng_pll_cmd,
-					sizeof(chng_pll_cmd));
-				if (ret != sizeof(chng_pll_cmd)) {
-					dev_err(p->dev,
-						"%s: failed to change PLL\n",
-						__func__);
-					continue;
-				}
-				msleep(DBMDX_MSLEEP_SPI_D2_AFTER_PLL_CHANGE);
-
-				ret = spi_set_speed(p, DBMDX_VA_SPEED_MAX);
-				if (ret < 0) {
-					dev_err(spi_p->dev, "%s:failed %x\n",
-						__func__, ret);
-					continue;
-				}
 			}
 
 			/* send SBL */
@@ -150,8 +118,8 @@ static int dbmd2_spi_boot(const void *fw_data, size_t fw_size,
 #endif
 
 		/* send firmware */
-		send_bytes = send_spi_data(p, fw_data, fw_size - 4);
-		if (send_bytes != fw_size - 4) {
+		send_bytes = send_spi_data(p, fw->data, fw->size - 4);
+		if (send_bytes != fw->size - 4) {
 			dev_err(p->dev,
 				"%s: -----------> load firmware error\n",
 				__func__);
@@ -160,20 +128,34 @@ static int dbmd2_spi_boot(const void *fw_data, size_t fw_size,
 #if 0
 		msleep(DBMDX_MSLEEP_SPI_D2_BEFORE_FW_CHECKSUM);
 #endif
-
-#if DBMD2_VERIFY_BOOT_CHECKSUM
 		/* verify checksum */
 		if (checksum) {
-			ret = spi_verify_boot_checksum(p, checksum, chksum_len);
+			ret = send_spi_cmd_boot(spi_p, DBMDX_READ_CHECKSUM);
 			if (ret < 0) {
 				dev_err(spi_p->dev,
-					"%s: could not verify checksum\n",
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = spi_read(spi_p->client, (void *)rx_checksum, 7);
+			if (ret < 0) {
+				dev_err(spi_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(
+				p, checksum, (void *)(&rx_checksum[3]), 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
 					__func__);
 				continue;
 			}
 		}
-#endif
-		dev_dbg(p->dev, "%s: ---------> firmware loaded\n",
+
+		dev_info(p->dev, "%s: ---------> firmware loaded\n",
 			__func__);
 		break;
 	}
@@ -185,15 +167,11 @@ static int dbmd2_spi_boot(const void *fw_data, size_t fw_size,
 	}
 
 	/* send boot command */
-	ret = send_spi_cmd_boot(p, DBMDX_FIRMWARE_BOOT);
+	ret = send_spi_cmd_boot(spi_p, DBMDX_FIRMWARE_BOOT);
 	if (ret < 0) {
 		dev_err(p->dev, "%s: booting the firmware failed\n", __func__);
 		return -1;
 	}
-
-	ret = spi_set_speed(p, DBMDX_VA_SPEED_NORMAL);
-	if (ret < 0)
-		dev_err(spi_p->dev, "%s:failed %x\n", __func__, ret);
 
 	/* wait some time */
 	usleep_range(DBMDX_USLEEP_SPI_D2_AFTER_BOOT,

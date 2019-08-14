@@ -919,12 +919,9 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	}
 
 	/*
-	 * special case: failed zero length commands always need to
-	 * drop down into the retry code. Otherwise, if we finished
-	 * all bytes in the request we are done now.
+	 * If we finished all bytes in the request we are done now.
 	 */
-	if (!(blk_rq_bytes(req) == 0 && error) &&
-	    !scsi_end_request(req, error, good_bytes, 0))
+	if (!scsi_end_request(req, error, good_bytes, 0))
 		return;
 
 	/*
@@ -1603,7 +1600,7 @@ static void scsi_kill_request(struct request *req, struct request_queue *q)
 	blk_complete_request(req);
 }
 
-void scsi_softirq_done(struct request *rq)
+static void scsi_softirq_done(struct request *rq)
 {
 	struct scsi_cmnd *cmd = rq->special;
 	unsigned long wait_for = (cmd->allowed + 1) * rq->timeout;
@@ -1736,20 +1733,15 @@ static void scsi_request_fn(struct request_queue *q)
 			if (list_empty(&sdev->starved_entry))
 				list_add_tail(&sdev->starved_entry,
 					      &shost->starved_list);
-			preempt_enable_no_resched();
 			spin_unlock_irq(shost->host_lock);
 			goto not_ready;
 		}
 
-		if (!scsi_target_queue_ready(shost, sdev)) {
-			preempt_enable_no_resched();
+		if (!scsi_target_queue_ready(shost, sdev))
 			goto not_ready;
-		}
 
-		if (!scsi_host_queue_ready(q, shost, sdev)) {
-			preempt_enable_no_resched();
+		if (!scsi_host_queue_ready(q, shost, sdev))
 			goto host_not_ready;
-		}
 
 		/*
 		 * Finally, initialize any error handling parameters, and set up
@@ -1777,6 +1769,7 @@ static void scsi_request_fn(struct request_queue *q)
 	if (scsi_target(sdev)->can_queue > 0)
 		atomic_dec(&scsi_target(sdev)->target_busy);
  not_ready:
+	preempt_enable_no_resched();
 	/*
 	 * lock q, handle tag, requeue req, and decrement device_busy. We
 	 * must return with queue_lock held.

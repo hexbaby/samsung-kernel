@@ -15,28 +15,22 @@
 #include <linux/radix-tree.h>
 #include <linux/bitmap.h>
 #include <linux/irqdomain.h>
-#include <linux/exynos-ss.h>
-#include <linux/mcu_ipc.h>
 
 #include "internals.h"
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
 
 /*
  * lockdep: we want to handle all irq_desc locks as a single lock-class:
  */
 static struct lock_class_key irq_desc_lock_class;
 
-#ifdef CONFIG_SCHED_HMP
-extern struct cpumask hmp_slow_cpu_mask;
-#endif
 #if defined(CONFIG_SMP)
 static void __init init_irq_default_affinity(void)
 {
 	alloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
-#ifdef CONFIG_SCHED_HMP
-	cpumask_copy(irq_default_affinity, &hmp_slow_cpu_mask);
-#else
 	cpumask_setall(irq_default_affinity);
-#endif
 }
 #else
 static void __init init_irq_default_affinity(void)
@@ -357,6 +351,16 @@ int generic_handle_irq(unsigned int irq)
 
 	if (!desc)
 		return -EINVAL;
+
+#ifdef CONFIG_SEC_DEBUG
+	if (desc->action)
+		sec_debug_irq_sched_log(irq, (void *)desc->action->handler,
+			irqs_disabled());
+	else
+		sec_debug_irq_sched_log(irq, (void *)desc->handle_irq,
+			irqs_disabled());
+#endif
+
 	generic_handle_irq_desc(irq, desc);
 	return 0;
 }
@@ -376,20 +380,19 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 			bool lookup, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
-	unsigned long long start_time;
 	unsigned int irq = hwirq;
 	int ret = 0;
-
-	exynos_ss_irq_exit_var(start_time);
+#ifdef CONFIG_SEC_DEBUG
+	int cpu = smp_processor_id();
+	u64 start_time = cpu_clock(cpu);
+#endif
 	irq_enter();
 
 #ifdef CONFIG_IRQ_DOMAIN
 	if (lookup)
 		irq = irq_find_mapping(domain, hwirq);
 #endif
-#ifdef CONFIG_MCU_IPC_LOG
-	mbox_check_mcu_irq(irq);
-#endif
+
 	/*
 	 * Some hardware gives randomly wrong interrupts.  Rather
 	 * than crashing, do something sensible.
@@ -402,7 +405,9 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	}
 
 	irq_exit();
-	exynos_ss_irq_exit(irq, start_time);
+#ifdef CONFIG_SEC_DEBUG
+	sec_debug_irq_enterexit_log(irq, start_time);
+#endif
 	set_irq_regs(old_regs);
 	return ret;
 }

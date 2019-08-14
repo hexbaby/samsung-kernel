@@ -226,8 +226,6 @@ struct da9155_charger_data {
 	struct da9155_charger_platform_data *pdata;
 
 	struct power_supply	psy_chg;
-	struct workqueue_struct *wqueue;
-	struct delayed_work	isr_work;
 
 	unsigned int siop_level;
 	unsigned int chg_irq;

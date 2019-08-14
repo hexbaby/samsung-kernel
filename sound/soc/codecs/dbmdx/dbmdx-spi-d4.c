@@ -1,5 +1,5 @@
 /*
- * DSPG DBMD4/DBMD6 SPI interface driver
+ * DSPG DBMD4 SPI interface driver
  *
  * Copyright (C) 2014 DSP Group
  *
@@ -29,16 +29,37 @@
 #include "dbmdx-vqe-regmap.h"
 #include "dbmdx-spi.h"
 
-#define DBMD4_MAX_SPI_BOOT_SPEED 4000000
+#define DBMD4_MAX_SPI_BOOT_SPEED 9000000
 
 static const u8 clr_crc_cmd[] = {0x5A, 0x0F};
 static const u8 chng_pll_cmd[] = {0x5A, 0x10, 0, 0xEC, 0x0B, 00};
 
 
+int spi_set_speed(struct dbmdx_private *p, int index)
+{
+	struct dbmdx_spi_private *spi_p =
+				(struct dbmdx_spi_private *)p->chip->pdata;
+	struct spi_device *spi = spi_p->client;
+	int ret = 0;
+	if (spi->max_speed_hz != p->pdata->va_speed_cfg[index].spi_rate) {
 
-static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw)
+		spi->max_speed_hz = p->pdata->va_speed_cfg[index].spi_rate;
+
+		dev_dbg(spi_p->dev,
+			"%s Update SPI Max Speed to %d hz\n",
+			__func__, spi->max_speed_hz);
+
+		ret = spi_setup(spi);
+		if (ret < 0)
+			dev_err(spi_p->dev, "%s:failed %x\n", __func__, ret);
+	}
+
+	return ret;
+}
+
+
+static int dbmd4_spi_boot(const struct firmware *fw, struct dbmdx_private *p,
+		    const void *checksum, size_t chksum_len, int load_fw)
 {
 	int retry = RETRY_COUNT;
 	int ret = 0;
@@ -47,6 +68,7 @@ static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
 				(struct dbmdx_spi_private *)p->chip->pdata;
 
 	struct spi_device *spi = spi_p->client;
+	u8 rx_checksum[7];
 
 	dev_dbg(spi_p->dev, "%s\n", __func__);
 
@@ -71,8 +93,7 @@ static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
 				continue;
 			}
 
-			if ((spi->max_speed_hz > DBMD4_MAX_SPI_BOOT_SPEED) &&
-			(p->pdata->firmware_id == DBMDX_FIRMWARE_ID_DBMD4)) {
+			if (spi->max_speed_hz > DBMD4_MAX_SPI_BOOT_SPEED) {
 
 				ret = spi_set_speed(p, DBMDX_VA_SPEED_NORMAL);
 				if (ret < 0) {
@@ -123,8 +144,8 @@ static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
 			break;
 
 		/* send firmware */
-		send_bytes = send_spi_data(p, fw_data, fw_size - 4);
-		if (send_bytes != fw_size - 4) {
+		send_bytes = send_spi_data(p, fw->data, fw->size - 4);
+		if (send_bytes != fw->size - 4) {
 			dev_err(p->dev,
 				"%s: -----------> load firmware error\n",
 				__func__);
@@ -133,10 +154,26 @@ static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
 
 		/* verify checksum */
 		if (checksum) {
-			ret = spi_verify_boot_checksum(p, checksum, chksum_len);
+			ret = send_spi_cmd_boot(spi_p, DBMDX_READ_CHECKSUM);
 			if (ret < 0) {
 				dev_err(spi_p->dev,
-					"%s: could not verify checksum\n",
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = spi_read(spi_p->client, rx_checksum, 7);
+			if (ret < 0) {
+				dev_err(spi_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(
+				p, checksum, (void *)(&rx_checksum[3]), 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
 					__func__);
 				continue;
 			}
@@ -155,7 +192,7 @@ static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
 	}
 
 	/* send boot command */
-	ret = send_spi_cmd_boot(p, DBMDX_FIRMWARE_BOOT);
+	ret = send_spi_cmd_boot(spi_p, DBMDX_FIRMWARE_BOOT);
 	if (ret < 0) {
 		dev_err(p->dev, "%s: booting the firmware failed\n", __func__);
 		return -1;
@@ -165,10 +202,6 @@ static int dbmd4_spi_boot(const void *fw_data, size_t fw_size,
 	ret = spi_set_speed(p, DBMDX_VA_SPEED_NORMAL);
 	if (ret < 0)
 		dev_err(spi_p->dev, "%s:failed %x\n", __func__, ret);
-
-	/* wait some time */
-	usleep_range(DBMDX_USLEEP_SPI_D4_AFTER_BOOT,
-		DBMDX_USLEEP_SPI_D4_AFTER_BOOT + 1000);
 
 	return ret;
 }
@@ -586,46 +619,44 @@ static int dbmd4_spi_probe(struct spi_device *client)
 }
 
 
-static const struct of_device_id dbmd_4_6_spi_of_match[] = {
+static const struct of_device_id dbmd4_spi_of_match[] = {
 	{ .compatible = "dspg,dbmd4-spi", },
-	{ .compatible = "dspg,dbmd6-spi", },
 	{},
 };
-MODULE_DEVICE_TABLE(of, dbmd_4_6_spi_of_match);
+MODULE_DEVICE_TABLE(of, dbmd4_spi_of_match);
 
-static const struct spi_device_id dbmd_4_6_spi_id[] = {
+static const struct spi_device_id dbmd4_spi_id[] = {
 	{ "dbmdx-spi", 0 },
 	{ "dbmd4-spi", 0 },
-	{ "dbmd6-spi", 0 },
 	{ }
 };
-MODULE_DEVICE_TABLE(spi, dbmd_4_6_spi_id);
+MODULE_DEVICE_TABLE(spi, dbmd4_spi_id);
 
-static struct spi_driver dbmd_4_6_spi_driver = {
+static struct spi_driver dbmd4_spi_driver = {
 	.driver = {
-		.name = "dbmd_4_6-spi",
+		.name = "dbmd4-spi",
 		.bus	= &spi_bus_type,
 		.owner = THIS_MODULE,
-		.of_match_table = dbmd_4_6_spi_of_match,
+		.of_match_table = dbmd4_spi_of_match,
 		.pm = &dbmdx_spi_pm,
 	},
 	.probe =    dbmd4_spi_probe,
 	.remove =   spi_common_remove,
-	.id_table = dbmd_4_6_spi_id,
+	.id_table = dbmd4_spi_id,
 };
 
-static int __init dbmd_4_6_modinit(void)
+static int __init dbmd4_modinit(void)
 {
-	return spi_register_driver(&dbmd_4_6_spi_driver);
+	return spi_register_driver(&dbmd4_spi_driver);
 }
 
-module_init(dbmd_4_6_modinit);
+module_init(dbmd4_modinit);
 
-static void __exit dbmd_4_6_exit(void)
+static void __exit dbmd4_exit(void)
 {
-	spi_unregister_driver(&dbmd_4_6_spi_driver);
+	spi_unregister_driver(&dbmd4_spi_driver);
 }
-module_exit(dbmd_4_6_exit);
+module_exit(dbmd4_exit);
 
-MODULE_DESCRIPTION("DSPG DBMD4/DBMD6 spi interface driver");
+MODULE_DESCRIPTION("DSPG DBMD4 spi interface driver");
 MODULE_LICENSE("GPL");

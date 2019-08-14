@@ -166,16 +166,14 @@ static int receive_room(struct tty_struct *tty)
 {
 	struct n_tty_data *ldata = tty->disc_data;
 	int left;
-	size_t tail = smp_load_acquire(&ldata->read_tail);
-	size_t head = ldata->read_head;
 
 	if (I_PARMRK(tty)) {
 		/* Multiply read_cnt by 3, since each byte might take up to
 		 * three times as many spaces when PARMRK is set (depending on
 		 * its flags, e.g. parity error). */
-		left = N_TTY_BUF_SIZE - (head - tail) * 3 - 1;
+		left = N_TTY_BUF_SIZE - read_cnt(ldata) * 3 - 1;
 	} else
-		left = N_TTY_BUF_SIZE - (head - tail) - 1;
+		left = N_TTY_BUF_SIZE - read_cnt(ldata) - 1;
 
 	/*
 	 * If we are doing input canonicalization, and there are no
@@ -184,7 +182,7 @@ static int receive_room(struct tty_struct *tty)
 	 * characters will be beeped.
 	 */
 	if (left <= 0)
-		left = ldata->icanon && ldata->canon_head == tail;
+		left = ldata->icanon && ldata->canon_head == ldata->read_tail;
 
 	return left;
 }
@@ -1657,7 +1655,7 @@ static void __receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	if (ldata->icanon && !L_EXTPROC(tty))
 		return;
 
-	/* publish read head to consumer */
+	/* publish read_head to consumer */
 	smp_store_release(&ldata->commit_head, ldata->read_head);
 
 	if ((read_cnt(ldata) >= ldata->minimum_to_wake) || L_EXTPROC(tty)) {
@@ -1697,6 +1695,7 @@ static void __receive_buf(struct tty_struct *tty, const unsigned char *cp,
  *
  *	n_tty_receive_buf()/producer path:
  *		claims non-exclusive termios_rwsem
+ *		publishes commit_head or canon_head
  */
 static int
 n_tty_receive_buf_common(struct tty_struct *tty, const unsigned char *cp,
@@ -1804,7 +1803,7 @@ static void n_tty_set_termios(struct tty_struct *tty, struct ktermios *old)
 {
 	struct n_tty_data *ldata = tty->disc_data;
 
-	if (!old || (old->c_lflag ^ tty->termios.c_lflag) & (ICANON | EXTPROC)) {
+	if (!old || (old->c_lflag ^ tty->termios.c_lflag) & ICANON) {
 		bitmap_zero(ldata->read_flags, N_TTY_BUF_SIZE);
 		ldata->line_start = ldata->read_tail;
 		if (!L_ICANON(tty) || !read_cnt(ldata)) {
@@ -2003,8 +2002,8 @@ static int copy_from_read_buf(struct tty_struct *tty,
 		smp_store_release(&ldata->read_tail, ldata->read_tail + n);
 		/* Turn single EOF into zero-length read */
 		if (L_EXTPROC(tty) && ldata->icanon && is_eof &&
-			(head == ldata->read_tail))
-				n = 0;
+		    (head == ldata->read_tail))
+			n = 0;
 		*b += n;
 		*nr -= n;
 	}
@@ -2522,7 +2521,7 @@ static int n_tty_ioctl(struct tty_struct *tty, struct file *file,
 		return put_user(tty_chars_in_buffer(tty), (int __user *) arg);
 	case TIOCINQ:
 		down_write(&tty->termios_rwsem);
-		if (L_ICANON(tty) && !L_EXTPROC(tty))
+		if (L_ICANON(tty))
 			retval = inq_canon(ldata);
 		else
 			retval = read_cnt(ldata);

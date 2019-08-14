@@ -95,5 +95,6 @@ skip_br=set([
 skip_blr=set([
     'secondary_startup', 
     'el0_svc_naked',
-    '__sys_trace'
+    '__sys_trace',
+    'do_one_initcall'
     ])

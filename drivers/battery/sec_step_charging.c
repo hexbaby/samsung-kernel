@@ -45,6 +45,8 @@ bool sec_bat_check_step_charging(struct sec_battery_info *battery)
 			break;
 		}
 		i++;
+		if(battery->step_charging_status != -1)
+			break;
 	}
 
 	if (i != battery->step_charging_status) {

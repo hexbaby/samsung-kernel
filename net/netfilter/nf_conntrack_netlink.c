@@ -45,8 +45,6 @@
 #include <net/netfilter/nf_conntrack_zones.h>
 #include <net/netfilter/nf_conntrack_timestamp.h>
 #include <net/netfilter/nf_conntrack_labels.h>
-#include <net/netfilter/nf_conntrack_seqadj.h>
-#include <net/netfilter/nf_conntrack_synproxy.h>
 #ifdef CONFIG_NF_NAT_NEEDED
 #include <net/netfilter/nf_nat_core.h>
 #include <net/netfilter/nf_nat_l4proto.h>
@@ -1430,6 +1428,11 @@ ctnetlink_change_timeout(struct nf_conn *ct, const struct nlattr * const cda[])
 	ct->timeout.expires = jiffies + timeout * HZ;
 	add_timer(&ct->timeout);
 
+/* Refresh the NAT type entry. */
+#if defined(CONFIG_IP_NF_TARGET_NATTYPE_MODULE)
+	(void)nattype_refresh_timer(ct->nattype_entry, ct->timeout.expires);
+#endif
+
 	return 0;
 }
 
@@ -1690,8 +1693,6 @@ ctnetlink_create_conntrack(struct net *net, u16 zone,
 	nf_ct_tstamp_ext_add(ct, GFP_ATOMIC);
 	nf_ct_ecache_ext_add(ct, 0, 0, GFP_ATOMIC);
 	nf_ct_labels_ext_add(ct);
-	nfct_seqadj_ext_add(ct);
-	nfct_synproxy_ext_add(ct);
 
 	/* we must add conntrack extensions before confirmation. */
 	ct->status |= IPS_CONFIRMED;
@@ -3242,7 +3243,6 @@ static void __exit ctnetlink_exit(void)
 #ifdef CONFIG_NETFILTER_NETLINK_QUEUE_CT
 	RCU_INIT_POINTER(nfq_ct_hook, NULL);
 #endif
-	synchronize_rcu();
 }
 
 module_init(ctnetlink_init);

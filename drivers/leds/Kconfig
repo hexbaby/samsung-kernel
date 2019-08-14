@@ -487,6 +487,50 @@ config LEDS_BLINKM
 	  This option enables support for the BlinkM RGB LED connected
 	  through I2C. Say Y to enable support for the BlinkM LED.
 
+config LEDS_MAX77833_RGB
+	tristate "Led max77833 rgb"
+	depends on MFD_MAX77833 && LEDS_CLASS && I2C
+	help
+	  If you say yes here you will get support for
+	  for the MAX77833 RGB led chip.
+
+config LEDS_MAX77854_RGB
+	tristate "Led max77854 rgb"
+	depends on MFD_MAX77854 && LEDS_CLASS && I2C
+	help
+	  If you say yes here you will get support for
+	  for the MAX77854 RGB led chip.
+
+config LEDS_QPNP
+	tristate "Support for QPNP LEDs"
+	depends on LEDS_CLASS && MSM_SPMI && OF_SPMI
+	help
+	  This driver supports the leds functionality of Qualcomm PNP PMIC.  It
+	  includes RGB Leds, WLED and Flash Led.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called leds-qpnp.
+
+config LEDS_QPNP_FLASH
+	tristate "Support for QPNP Flash LEDs"
+	depends on LEDS_CLASS && MSM_SPMI && OF_SPMI
+	help
+	  This driver supports the leds functionality of Qualcomm Technologies
+	  PNP PMIC.  It includes Flash Led.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called leds-qpnp-flash.
+
+config LEDS_QPNP_WLED
+	tristate "Support for QPNP WLED"
+	depends on LEDS_CLASS && MSM_SPMI && OF_SPMI
+	help
+	  This driver supports the WLED (White LED) functionality of
+	  Qualcomm Technologies PNP PMIC. WLED is used for display backlight.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called leds-qpnp-wled.
+
 config LEDS_SYSCON
 	bool "LED support for LEDs on system controllers"
 	depends on LEDS_CLASS=y
@@ -505,46 +549,32 @@ config LEDS_VERSATILE
 	  This option enabled support for the LEDs on the ARM Versatile
 	  and RealView boards. Say Y to enabled these.
 
+config LEDS_AW2013
+	tristate "LED support for AW2013"
+	depends on LEDS_CLASS && I2C
+	help
+	  This option enables support for the AW2013 RGB LED connected
+	  through I2C. Say Y to enable support for the AW2013 LED.
+
 config LEDS_S2MPB02
 	bool "LED support for the S2MPB02"
 	depends on LEDS_CLASS
 	help
 	  This option enables support for the LEDs on the S2MPB02.
 
-config LEDS_KTD2692
-	bool "LED support for the KTD2692"
+config LEDS_SM5705
+	tristate "LED support for SM5705 Flashlight"
+	depends on I2C && MFD_SM5705
 	help
-	  If you say yes here you will get support for
-	  for the KTD2692 FLASH led chip.
+	  This option enables support for on-chip LED driver on
+	  Silicon-mitus SM5705 includes Torch, Flash.
 
-config LEDS_S2MPB02_MULTI_TORCH_REAR2
-	bool "LED support for second multi flash"
-	help
-	  If you say yes here you will get support for
-	  for second multi flash.
-
-config LEDS_KTD2692_MULTI_TORCH_REAR3
-	bool "LED support for third multi flash"
-	help
-	  If you say yes here you will get support for
-	  for third multi flash.
-
-config LEDS_MAX77854_RGB
-	tristate "Led max77854 rgb"
-	depends on MFD_MAX77854 && LEDS_CLASS && I2C
-	help
-	  If you say yes here you will get support for
-	  for the MAX77854 RGB led chip.
-
-config LEDS_IRIS_IRLED_SUPPORT
-	bool "IRLED support for IRIS"
-	help
-	  This option enables support for the IRLED.
-
-config LEDS_IRIS_IRLED_CERTIFICATE_SUPPORT
-	bool "IRLED SYSFS support for IRIS CERTIFICATE"
-	help
-	  This option enables support for the IRLED.
+config SAMSUNG_SECURE_CAMERA
+        tristate "Flash current for Secure camera"
+        depends on LEDS_CLASS
+        default n
+        help
+        Enables support for flash current for secure camera
 
 comment "LED Triggers"
 source "drivers/leds/trigger/Kconfig"

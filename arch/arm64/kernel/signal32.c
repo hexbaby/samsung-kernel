@@ -370,7 +370,7 @@ asmlinkage int compat_sys_sigreturn(struct pt_regs *regs)
 	struct compat_sigframe __user *frame;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	/*
 	 * Since we stacked the signal on a 64-bit boundary,
@@ -404,7 +404,7 @@ asmlinkage int compat_sys_rt_sigreturn(struct pt_regs *regs)
 	struct compat_rt_sigframe __user *frame;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	/*
 	 * Since we stacked the signal on a 64-bit boundary,
@@ -527,7 +527,7 @@ static int compat_setup_sigframe(struct compat_sigframe __user *sf,
 
 	__put_user_error((compat_ulong_t)0, &sf->uc.uc_mcontext.trap_no, err);
 	/* set the compat FSR WnR */
-	__put_user_error(!!(current->thread.fault_code & ESR_ELx_WNR) <<
+	__put_user_error(!!(current->thread.fault_code & ESR_EL1_WRITE) <<
 			 FSR_WRITE_SHIFT, &sf->uc.uc_mcontext.error_code, err);
 	__put_user_error(current->thread.fault_address, &sf->uc.uc_mcontext.fault_address, err);
 	__put_user_error(set->sig[0], &sf->uc.uc_mcontext.oldmask, err);
@@ -556,6 +556,17 @@ int compat_setup_rt_frame(int usig, struct ksignal *ksig,
 
 	if (!frame)
 		return 1;
+		
+	/* To avoid kernel panic due to "chrome" user fault by invalid sp register. 
+	 */
+	if (usig == SIGSEGV) { 
+		if (!strcmp(current->comm, ".android.chrome")){ 
+			if (!find_vma(current->mm, (unsigned long)frame)) { 
+				pr_info("compat_setup_rt_frame: SIGSEGV process name= %s\n",current->comm); 
+				return 1; 
+			} 
+		} 
+	} 
 
 	err |= copy_siginfo_to_user32(&frame->info, &ksig->info);
 

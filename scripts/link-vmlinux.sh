@@ -105,15 +105,6 @@ mksysmap()
 	${CONFIG_SHELL} "${srctree}/scripts/mksysmap" ${1} ${2}
 }
 
-# Examine vmlinux file if it has correct JOPP magic.
-# It jusk check about only one function.
-# ${1} - vmlinux file
-# ${2} - JOPP magic
-checkup_jopp()
-{
-	${CONFIG_SHELL} "${srctree}/scripts/checkup_jopp.sh" ${1} ${2}
-}
-
 sortextable()
 {
 	${objtree}/scripts/sortextable ${1}
@@ -246,15 +237,21 @@ if [ -n "${CONFIG_KALLSYMS}" ]; then
 fi
 
 if [ -n "${CONFIG_RKP_CFP}" ]; then
-	echo '  RKP_CFP : instrumenting vmlinux... '
-	"${srctree}/scripts/rkp_cfp/instrument.py" --vmlinux "${objtree}/vmlinux" --inplace
+    echo '  RKP_CFP : instrumenting vmlinux... '
+    "${srctree}/scripts/rkp_cfp/instrument.py" --vmlinux "${objtree}/vmlinux" --inplace
 fi
 
 if [ -n "${CONFIG_RELOCATABLE_KERNEL}" ]; then
-    if [ -n "${CONFIG_CRYPTO_FIPS}" ]; then
+    if [ -n "${CONFIG_CRYPTO_FIPS}" ] && [ -n "${CONFIG_FIPS_FMP}" ] ; then
 	echo '  FIPS with KALSR : Generating hmac of crypto and fmp, then update vmlinux... '
-	${CONFIG_SHELL} "${srctree}/scripts/fips_kaslr_crypto_hmac.sh" "${objtree}/vmlinux" "${objtree}/System.map"
-    fi
+	${CONFIG_SHELL} "${srctree}/scripts/kaslr_fips_fmp_hmac.sh" "${objtree}/vmlinux" "${objtree}/System.map"
+    elif [ -n "${CONFIG_CRYPTO_FIPS}" ]; then
+	echo '  FIPS with KALSR : Generating hmac of crypto and update vmlinux... '
+        ${CONFIG_SHELL} "${srctree}/scripts/kaslr_fips_hmac.sh" "${objtree}/vmlinux" "${objtree}/System.map"
+    elif [ -n "${CONFIG_FIPS_FMP}" ]; then
+	echo '  FIPS with KALSR : Generating hmac of fmp and update vmlinux... '
+        ${CONFIG_SHELL} "${srctree}/scripts/kaslr_fmp_hmac.sh" "${objtree}/vmlinux" "${objtree}/System.map"
+    fi    
 else
     if [ -n "${CONFIG_CRYPTO_FIPS}" ]; then
 	echo '  FIPS : Generating hmac of crypto and updating vmlinux... '
@@ -265,11 +262,6 @@ else
 	echo '  FIPS : Generating hmac of fmp and updating vmlinux... '
 	${CONFIG_SHELL} "${srctree}/scripts/fips_fmp_hmac.sh" "${objtree}/vmlinux" "${objtree}/System.map"
     fi
-fi
-
-if [ -n "${CONFIG_RKP_CFP_JOPP}" ]; then
-	echo "  JOPP : double-checking jopp magic of vmlinux"
-	checkup_jopp vmlinux ${CONFIG_RKP_CFP_JOPP_MAGIC}
 fi
 
 

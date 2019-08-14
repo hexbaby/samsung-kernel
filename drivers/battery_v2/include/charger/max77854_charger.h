@@ -23,7 +23,7 @@
 #include <linux/mfd/max77854.h>
 #include <linux/mfd/max77854-private.h>
 #include <linux/regulator/machine.h>
-#include "../sec_charging_common.h"
+#include "include/sec_charging_common.h"
 
 enum {
 	CHIP_ID = 0,
@@ -43,8 +43,6 @@ ssize_t max77854_chg_store_attrs(struct device *dev,
 	.show = max77854_chg_show_attrs,			\
 	.store = max77854_chg_store_attrs,			\
 }
-
-#define MAX77854_CHG_SAFEOUT2                0x80
 
 /* MAX77854_CHG_REG_CHG_INT */
 #define MAX77854_BYP_I                  (1 << 0)
@@ -83,8 +81,6 @@ ssize_t max77854_chg_store_attrs(struct device *dev,
 #define MAX77854_CHGIN_OK_SHIFT         6
 #define MAX77854_AICL_OK                0x80
 #define MAX77854_AICL_OK_SHIFT          7
-#define MAX77854_DETBAT                 0x04
-#define MAX77854_DETBAT_SHIFT           2
 
 /* MAX77854_CHG_REG_CHG_DTLS_00 */
 #define MAX77854_BATP_DTLS		0x01
@@ -129,7 +125,7 @@ ssize_t max77854_chg_store_attrs(struct device *dev,
 #define MAX77854_MODE_OTG                       0x02
 #define MAX77854_MODE_BUCK                      0x04
 #define MAX77854_MODE_BOOST		        0x08
-#define MAX77854_WDTEN							0x10
+#define MAX77854_WDTEN                          0x10
 
 /* MAX&7843_CHG_REG_CHG_CNFG_01 */
 #define MAX77854_CHG_FQ_2MHz                    (1 << 3)
@@ -141,18 +137,14 @@ ssize_t max77854_chg_store_attrs(struct device *dev,
 
 /* MAX77854_CHG_REG_CHG_CNFG_04 */
 #define MAX77854_CHG_MINVSYS_MASK               0xC0
-#define MAX77854_CHG_MINVSYS_SHIFT		6 
-#define MAX77854_CHG_PRM_MASK                   0x1F
-#define MAX77854_CHG_PRM_SHIFT                  0
-
+#define MAX77854_CHG_MINVSYS_SHIFT              6
 #define CHG_CNFG_04_CHG_CV_PRM_SHIFT            0
 #define CHG_CNFG_04_CHG_CV_PRM_MASK             (0x3F << CHG_CNFG_04_CHG_CV_PRM_SHIFT)
 
 /* MAX77854_CHG_CNFG_06 */
-#define MAX77854_WDTCLR							0x1
+#define MAX77854_WDTCLR                         0x1
 
 /* MAX77854_CHG_REG_CHG_CNFG_07 */
-#define MAX77854_CHG_FMBST			0x04
 #define CHG_CNFG_07_REG_FMBST_SHIFT		2
 #define CHG_CNFG_07_REG_FMBST_MASK		(0x1 << CHG_CNFG_07_REG_FMBST_SHIFT)
 #define CHG_CNFG_07_REG_FGSRC_SHIFT		1
@@ -165,14 +157,12 @@ ssize_t max77854_chg_store_attrs(struct device *dev,
 #define MAX77854_CHG_WCIN_LIM                   0x3F
 
 /* MAX77854_CHG_REG_CHG_CNFG_12 */
-#define MAX77854_CHG_WCINSEL			0x40
+#define MAX77854_CHG_WCINSEL		        0x40
 #define CHG_CNFG_12_CHGINSEL_SHIFT		5
 #define CHG_CNFG_12_CHGINSEL_MASK		(0x1 << CHG_CNFG_12_CHGINSEL_SHIFT)
-#define CHG_CNFG_12_WCINSEL_SHIFT		6
-#define CHG_CNFG_12_WCINSEL_MASK		(0x1 << CHG_CNFG_12_WCINSEL_SHIFT)
 #define CHG_CNFG_12_VCHGIN_REG_MASK		(0x3 << 3)
 #define CHG_CNFG_12_WCIN_REG_MASK		(0x3 << 1)
-#define CHG_CNFG_12_DISSKIP				(0x1 << 0)
+#define CHG_CNFG_12_DISSKIP			(0x1 << 0)
 
 /* MAX77854_CHG_REG_CHG_SWI_INT */
 #define MAX77854_SLAVE_TREG_I			(1 << 0)
@@ -202,16 +192,12 @@ ssize_t max77854_chg_store_attrs(struct device *dev,
 #define SLOW_CHARGING_CURRENT_STANDARD          400
 
 #define WC_CURRENT_STEP		100
-#define WC_CURRENT_START	480
+#define WC_CURRENT_START	500
 
 struct max77854_charger_data {
 	struct device           *dev;
 	struct i2c_client       *i2c;
 	struct i2c_client       *pmic_i2c;
-#if defined(CONFIG_MAX77854_FG_SENSING_WA)
-	struct i2c_client	*gtest;
-	struct i2c_client	*otp;
-#endif
 	struct mutex            charger_mutex;
 
 	struct max77854_platform_data *max77854_pdata;
@@ -223,7 +209,6 @@ struct max77854_charger_data {
 	struct work_struct	chgin_work;
 	struct delayed_work	aicl_work;
 	struct delayed_work	isr_work;
-	struct delayed_work	recovery_work;	/*  softreg recovery work */
 	struct delayed_work	wpc_work;	/*  wpc detect work */
 	struct delayed_work	chgin_init_work;	/*  chgin init work */
 	struct delayed_work wc_current_work;
@@ -233,7 +218,6 @@ struct max77854_charger_data {
 	struct mutex ops_lock;
 
 	/* wakelock */
-	struct wake_lock recovery_wake_lock;
 	struct wake_lock wpc_wake_lock;
 	struct wake_lock chgin_wake_lock;
 	struct wake_lock wc_current_wake_lock;
@@ -247,8 +231,8 @@ struct max77854_charger_data {
 	unsigned int	input_current;
 	unsigned int	charging_current;
 	unsigned int	vbus_state;
-	bool		aicl_on;
-	bool		is_aicl;
+	int		aicl_on;
+	bool	slow_charging;
 	int		status;
 	int		charge_mode;
 	int uvlo_attach_flag;
@@ -262,10 +246,6 @@ struct max77854_charger_data {
 	int		irq_wcin;
 	int		irq_chgin;
 	int		irq_aicl;
-	int		irq_aicl_enabled;
-	/* software regulation */
-	bool		soft_reg_state;
-	int		soft_reg_current;
 
 	/* unsufficient power */
 	bool		reg_loop_deted;
@@ -278,15 +258,8 @@ struct max77854_charger_data {
 	int		wc_v_irq;
 	int		wc_v_state;
 	bool		wc_pwr_det;
-	int		soft_reg_recovery_cnt;
 	int		wc_current;
 	int		wc_pre_current;
-
-	int		jig_gpio;
-
-	bool enable_sysovlo_irq;
-	int	 irq_sysovlo;
-	struct wake_lock sysovlo_wake_lock;
 
 	bool is_mdock;
 	bool otg_on;
@@ -297,7 +270,7 @@ struct max77854_charger_data {
 	int charging_curr_step;
 	int float_voltage;
 
-	sec_charger_platform_data_t *pdata;
+	sec_charger_platform_data_t	*pdata;
 };
 
 #endif /* __MAX77854_CHARGER_H */

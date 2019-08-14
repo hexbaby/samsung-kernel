@@ -196,10 +196,12 @@ void __delete_from_page_cache(struct page *page, void *shadow)
 	 * invalidate any existing cleancache entries.  We can't leave
 	 * stale data around in the cleancache once our page is gone
 	 */
-	if (PageUptodate(page) && PageMappedToDisk(page))
+	if (PageUptodate(page) && PageMappedToDisk(page)) {
+		count_vm_event(PGPGOUTCLEAN);
 		cleancache_put_page(page);
-	else
+	} else {
 		cleancache_invalidate_page(mapping, page);
+	}
 
 	page_cache_tree_delete(mapping, page, shadow);
 
@@ -653,9 +655,6 @@ struct page *__page_cache_alloc(gfp_t gfp)
 {
 	int n;
 	struct page *page;
-
-	/* for avoiding allocation from cma page block */
-	gfp &= ~__GFP_MOVABLE;
 
 	if (cpuset_do_page_mem_spread()) {
 		unsigned int cpuset_mems_cookie;

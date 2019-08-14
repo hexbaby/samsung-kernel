@@ -1,5 +1,5 @@
 /*
- * Based on arch/arm/include/asm/assembler.h, arch/arm/mm/proc-macros.S
+ * Based on arch/arm/include/asm/assembler.h
  *
  * Copyright (C) 1996-2000 Russell King
  * Copyright (C) 2012 ARM Ltd.
@@ -23,8 +23,6 @@
 #ifndef __ASM_ASSEMBLER_H
 #define __ASM_ASSEMBLER_H
 
-#include <asm/asm-offsets.h>
-#include <asm/pgtable-hwdef.h>
 #include <asm/ptrace.h>
 #include <asm/thread_info.h>
 
@@ -45,15 +43,13 @@
 	 */
 	.macro	load_key, tsk
 #ifdef CONFIG_RKP_CFP_ROPP_HYPKEY
-	push	x29, x30
 	push	x0, x1
 	mov	x0, #0x3000
 	movk	x0, #0x8389, lsl #16
 	mov	x1, \tsk
 	add	x1, x1, #TI_RRK
-	bl	rkp_call
+	hvc	#0
 	pop	x0, x1
-	pop	x29, x30
 #else
 	ldr	RRK, [\tsk, #TI_RRK]
 #endif
@@ -81,15 +77,6 @@
 
 	.macro	enable_irq
 	msr	daifclr, #2
-	.endm
-
-	.macro	save_and_disable_irq, flags
-	mrs	\flags, daif
-	msr	daifset, #2
-	.endm
-
-	.macro	restore_irq, flags
-	msr	daif, \flags
 	.endm
 
 /*
@@ -146,16 +133,9 @@
  * SMP data memory barrier
  */
 	.macro	smp_dmb, opt
+#ifdef CONFIG_SMP
 	dmb	\opt
-	.endm
-
-/*
- * NOP sequence
- */
-	.macro	nops, num
-	.rept	\num
-	nop
-	.endr
+#endif
 	.endm
 
 #define USER(l, x...)				\
@@ -258,85 +238,6 @@ lr	.req	x30		// link register
 	.endm
 
 /*
- * vma_vm_mm - get mm pointer from vma pointer (vma->vm_mm)
- */
-	.macro	vma_vm_mm, rd, rn
-	ldr	\rd, [\rn, #VMA_VM_MM]
-	.endm
-
-/*
- * mmid - get context id from mm pointer (mm->context.id)
- */
-	.macro	mmid, rd, rn
-	ldr	\rd, [\rn, #MM_CONTEXT_ID]
-	.endm
-
-/*
- * dcache_line_size - get the minimum D-cache line size from the CTR register.
- */
-	.macro	dcache_line_size, reg, tmp
-	mrs	\tmp, ctr_el0			// read CTR
-	ubfm	\tmp, \tmp, #16, #19		// cache line size encoding
-	mov	\reg, #4			// bytes per word
-	lsl	\reg, \reg, \tmp		// actual cache line size
-	.endm
-
-/*
- * icache_line_size - get the minimum I-cache line size from the CTR register.
- */
-	.macro	icache_line_size, reg, tmp
-	mrs	\tmp, ctr_el0			// read CTR
-	bic	\tmp, \tmp, #(1 << 0)		// clear bit 0 to change IminLine to 4
-	and	\tmp, \tmp, #0xf		// cache line size encoding
-	mov	\reg, #4			// bytes per word
-	lsl	\reg, \reg, \tmp		// actual cache line size
-	.endm
-
-/*
- * tcr_set_idmap_t0sz - update TCR.T0SZ so that we can load the ID map
- */
-	.macro	tcr_set_idmap_t0sz, valreg, tmpreg
-#ifndef CONFIG_ARM64_VA_BITS_48
-	ldr_l	\tmpreg, idmap_t0sz
-	bfi	\valreg, \tmpreg, #TCR_T0SZ_OFFSET, #TCR_TxSZ_WIDTH
-#endif
-	.endm
-
-/*
- * Macro to perform a data cache maintenance for the interval
- * [kaddr, kaddr + size)
- *
- * 	op:		operation passed to dc instruction
- * 	domain:		domain used in dsb instruciton
- * 	kaddr:		starting virtual address of the region
- * 	size:		size of the region
- * 	Corrupts:	kaddr, size, tmp1, tmp2
- */
-	.macro dcache_by_line_op op, domain, kaddr, size, tmp1, tmp2
-	dcache_line_size \tmp1, \tmp2
-	add	\size, \kaddr, \size
-	sub	\tmp2, \tmp1, #1
-	bic	\kaddr, \kaddr, \tmp2
-9998:	dc	\op, \kaddr
-	add	\kaddr, \kaddr, \tmp1
-	cmp	\kaddr, \size
-	b.lo	9998b
-	dsb	\domain
-	.endm
-
-/*
- * reset_pmuserenr_el0 - reset PMUSERENR_EL0 if PMUv3 present
- */
-	.macro	reset_pmuserenr_el0, tmpreg
-	mrs	\tmpreg, id_aa64dfr0_el1	// Check ID_AA64DFR0_EL1 PMUVer
-	sbfx	\tmpreg, \tmpreg, #8, #4
-	cmp	\tmpreg, #1			// Skip if no PMU present
-	b.lt	9000f
-	msr	pmuserenr_el0, xzr		// Disable PMU access from EL0
-9000:
-	.endm
-
-/*
  * Annotate a function as position independent, i.e., safe to be called before
  * the kernel virtual mapping is activated.
  */
@@ -346,32 +247,5 @@ lr	.req	x30		// link register
 	.set	__pi_##x, x;		\
 	.size	__pi_##x, . - x;	\
 	ENDPROC(x)
-
-/*
- * Return the current thread_info.
- */
-	.macro	get_thread_info, rd
-	mrs	\rd, sp_el0
-	.endm
-
-	/*
-	 * mov_q - move an immediate constant into a 64-bit register using
-	 *         between 2 and 4 movz/movk instructions (depending on the
-	 *         magnitude and sign of the operand)
-	 */
-	.macro	mov_q, reg, val
-	.if (((\val) >> 31) == 0 || ((\val) >> 31) == 0x1ffffffff)
-	movz	\reg, :abs_g1_s:\val
-	.else
-	.if (((\val) >> 47) == 0 || ((\val) >> 47) == 0x1ffff)
-	movz	\reg, :abs_g2_s:\val
-	.else
-	movz	\reg, :abs_g3:\val
-	movk	\reg, :abs_g2_nc:\val
-	.endif
-	movk	\reg, :abs_g1_nc:\val
-	.endif
-	movk	\reg, :abs_g0_nc:\val
-	.endm
 
 #endif	/* __ASM_ASSEMBLER_H */

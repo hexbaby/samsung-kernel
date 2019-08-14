@@ -290,9 +290,9 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 
 #ifdef CONFIG_JOURNAL_DATA_TAG
 	if (shost->journal_tag == JOURNAL_TAG_ON)
-		queue_flag_set_unlocked(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
+		queue_flag_set(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
 	else
-		queue_flag_clear_unlocked(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
+		queue_flag_clear(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
 #endif
 
 	scsi_sysfs_device_initialize(sdev);
@@ -828,13 +828,8 @@ static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
 		 * well-known logical units. Force well-known type
 		 * to enumerate them correctly.
 		 */
-		if (scsi_is_wlun(sdev->lun) && sdev->type != TYPE_WLUN) {
-			sdev_printk(KERN_WARNING, sdev,
-				"%s: correcting incorrect peripheral device type 0x%x for W-LUN 0x%16xhN\n",
-				__func__, sdev->type, (unsigned int)sdev->lun);
+		if (scsi_is_wlun(sdev->lun) && sdev->type != TYPE_WLUN)
 			sdev->type = TYPE_WLUN;
-		}
-
 	}
 
 	if (sdev->type == TYPE_RBC || sdev->type == TYPE_ROM) {
@@ -976,6 +971,10 @@ static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
 		sdev->skip_vpd_pages = 1;
 
 	transport_configure_device(&sdev->sdev_gendev);
+
+	/* The LLD can override auto suspend tunables in ->slave_configure() */
+	sdev->use_rpm_auto = 0;
+	sdev->autosuspend_delay = SCSI_DEFAULT_AUTOSUSPEND_DELAY;
 
 	if (sdev->host->hostt->slave_configure) {
 		ret = sdev->host->hostt->slave_configure(sdev);
@@ -1538,12 +1537,12 @@ static int scsi_report_lun_scan(struct scsi_target *starget, int bflags,
  out_err:
 	kfree(lun_data);
  out:
+	scsi_device_put(sdev);
 	if (scsi_device_created(sdev))
 		/*
 		 * the sdev we used didn't appear in the report luns scan
 		 */
 		__scsi_remove_device(sdev);
-	scsi_device_put(sdev);
 	return ret;
 }
 

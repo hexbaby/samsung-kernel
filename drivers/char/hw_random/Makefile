@@ -4,7 +4,6 @@
 
 obj-$(CONFIG_HW_RANDOM) += rng-core.o
 rng-core-y := core.o
-obj-$(CONFIG_HW_RANDOM_EXYNOS_SWD) += exyswd-rng.o
 obj-$(CONFIG_HW_RANDOM_TIMERIOMEM) += timeriomem-rng.o
 obj-$(CONFIG_HW_RANDOM_INTEL) += intel-rng.o
 obj-$(CONFIG_HW_RANDOM_AMD) += amd-rng.o
@@ -31,3 +30,4 @@ obj-$(CONFIG_HW_RANDOM_TPM) += tpm-rng.o
 obj-$(CONFIG_HW_RANDOM_BCM2835) += bcm2835-rng.o
 obj-$(CONFIG_HW_RANDOM_MSM) += msm-rng.o
 obj-$(CONFIG_HW_RANDOM_XGENE) += xgene-rng.o
+obj-$(CONFIG_HW_RANDOM_MSM_LEGACY) += msm_rng.o

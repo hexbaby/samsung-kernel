@@ -25,6 +25,7 @@ int dwc3_host_init(struct dwc3 *dwc)
 	struct platform_device	*xhci;
 	struct usb_xhci_pdata	pdata;
 	int			ret;
+	struct device_node	*node = dwc->dev->of_node;
 
 	xhci = platform_device_alloc("xhci-hcd", PLATFORM_DEVID_AUTO);
 	if (!xhci) {
@@ -53,6 +54,10 @@ int dwc3_host_init(struct dwc3 *dwc)
 #ifdef CONFIG_DWC3_HOST_USB3_LPM_ENABLE
 	pdata.usb3_lpm_capable = 1;
 #endif
+	ret = of_property_read_u32(node, "xhci-imod-value",
+					   &pdata.imod_interval);
+	if (ret)
+		pdata.imod_interval = 0;	/* use default xhci.c value */
 
 	ret = platform_device_add_data(xhci, &pdata, sizeof(pdata));
 	if (ret) {
@@ -60,15 +65,7 @@ int dwc3_host_init(struct dwc3 *dwc)
 		goto err1;
 	}
 
-	/* If OTG is available, it will take care of this */
-	if (!dwc->dotg) {
-		ret = platform_device_add(xhci);
-		if (ret) {
-			dev_err(dwc->dev, "failed to register xHCI device\n");
-			goto err1;
-		}
-	}
-
+	/* Platform device gets added as part of state machine */
 	return 0;
 
 err1:
@@ -80,6 +77,6 @@ err0:
 
 void dwc3_host_exit(struct dwc3 *dwc)
 {
-	if (!dwc->dotg)
+	if (!dwc->is_drd)
 		platform_device_unregister(dwc->xhci);
 }

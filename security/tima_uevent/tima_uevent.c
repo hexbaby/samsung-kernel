@@ -33,6 +33,7 @@ static ssize_t show_tima_uevent(struct device *dev,
     if (!dev)
         return -ENODEV;
 
+    // TODO: extract TIMA uevent from the uevent list
     return sprintf(buf, "%s\n", "TIMA uevent data");
 }
 
@@ -66,7 +67,7 @@ tima_uevent_read(struct file *filp, char __user *buff,
     int size = strlen(tima_uevent);
     int retval = 0;
 
-    if ( !tima_uevent_validate() ) { 
+    if ( !tima_uevent_validate() ) {
         printk(KERN_ERR
                 "%s invalid request.\n",
                 __func__);
@@ -105,7 +106,7 @@ tima_uevent_write(struct file *filp, const char __user *buff,
     int retval = 0;
     char *req;
 
-    if ( !tima_uevent_validate() ) { 
+    if ( !tima_uevent_validate() ) {
         printk(KERN_ERR
                 "%s invalid request.\n",
                 __func__);
@@ -168,16 +169,6 @@ static int __init tima_uevent_init(void)
         goto error;
     }
 
-// we think the kzalloc isn't needed
-#if 0
-    /* register this tima device with the driver core */
-    tima_uevent_dev = kzalloc(sizeof(struct device), GFP_KERNEL);
-    if (unlikely(!tima_uevent_dev)) {
-        retval = -ENOMEM;
-        goto error;
-    }
-#endif
-
     tima_uevent_dev = device_create(tima_uevent_class,
             NULL /* parent */, 0 /* dev_t */, NULL /* drvdata */,
             TIMA_UEVENT_DEV);
@@ -186,6 +177,7 @@ static int __init tima_uevent_init(void)
         goto error_destroy;
     }
 
+    /* register this tima device with the driver core */
     retval = device_create_file(tima_uevent_dev, &dev_attr_name);
     if (retval)
         goto error_destroy;

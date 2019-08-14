@@ -18,17 +18,12 @@
 #ifndef __MAX77833_FUELGAUGE_H
 #define __MAX77833_FUELGAUGE_H __FILE__
 
-#if defined(ANDROID_ALARM_ACTIVATED)
-#include <linux/android_alarm.h>
-#endif
-
 #include <linux/battery/sec_charging_common.h>
 
 #include <linux/mfd/core.h>
 #include <linux/mfd/max77833.h>
 #include <linux/mfd/max77833-private.h>
 #include <linux/regulator/machine.h>
-#include <linux/wakelock.h>
 
 /* Slave address should be shifted to the right 1bit.
  * R/W bit should NOT be included.
@@ -47,6 +42,12 @@ struct sec_fuelgauge_reg_data {
 	u8 reg_addr;
 	u8 reg_data1;
 	u8 reg_data2;
+};
+
+enum max77833_valrt_mode {
+	MAX77833_NORMAL_MODE = 0,
+	MAX77833_VEMPTY_MODE,
+	MAX77833_VEMPTY_RECOVERY_MODE,
 };
 
 struct max77833_fg_info {
@@ -90,6 +91,8 @@ enum {
 	MAX77833_FG_AVCAP,
 	MAX77833_FG_REPCAP,
 	MAX77833_FG_CYCLE,
+	MAX77833_FG_ISYS,
+	MAX77833_FG_AVGISYS,
 };
 
 enum {
@@ -107,6 +110,8 @@ enum {
 #define CURRENT_RANGE_MAX_NUM	5
 
 struct battery_data_t {
+	u32 V_empty;
+	u32 V_empty_origin;
 	u32 QResidual20;
 	u32 QResidual30;
 	u32 Capacity;
@@ -188,8 +193,19 @@ struct max77833_fuelgauge_data {
 	int raw_capacity;
 	int current_now;
 	int current_avg;
+	int isys_current_now;
+	int isys_current_avg;
 	struct cv_slope *cv_data;
 	int cv_data_lenth;
+
+	bool using_temp_compensation;
+	bool low_temp_compensation_en;
+	bool using_hw_vempty;
+	bool hw_v_empty;
+	int sw_v_empty;
+
+	unsigned int low_temp_limit;
+	unsigned int low_temp_recovery;
 };
 
 #endif /* __MAX77833_FUELGAUGE_H */

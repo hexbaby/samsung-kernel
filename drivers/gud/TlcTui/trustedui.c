@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 TRUSTONIC LIMITED
+ * Copyright (c) 2013-2015 TRUSTONIC LIMITED
  * All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -12,17 +12,12 @@
  * GNU General Public License for more details.
  */
 
-/**
- * File            : trustedui.c
- * Created         : 26-02-2010
- */
-
 #include <linux/spinlock.h>
 #include <linux/module.h>
 #include <linux/t-base-tui.h>
 
 static int trustedui_mode = TRUSTEDUI_MODE_OFF;
-static int trustedui_blank_counter = 0;
+static int trustedui_blank_counter;
 
 static DEFINE_SPINLOCK(trustedui_lock);
 
@@ -97,7 +92,6 @@ void trustedui_set_mode(int mode)
 	spin_unlock_irqrestore(&trustedui_lock, flags);
 }
 EXPORT_SYMBOL(trustedui_set_mode);
-
 
 int trustedui_set_mask(int mask)
 {

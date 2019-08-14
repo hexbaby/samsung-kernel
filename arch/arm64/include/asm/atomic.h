@@ -22,7 +22,6 @@
 
 #include <linux/compiler.h>
 #include <linux/types.h>
-#include <linux/irqflags.h>
 
 #include <asm/barrier.h>
 #include <asm/cmpxchg.h>
@@ -112,28 +111,6 @@ static inline int atomic_cmpxchg(atomic_t *ptr, int old, int new)
 	return oldval;
 }
 
-static inline void atomic_push(atomic_t *v, int value, int width)
-{
-	unsigned long flags;
-
-	raw_local_irq_save(flags);
-	v->counter = (v->counter << width) | (value & ((1 << width) - 1));
-	raw_local_irq_restore(flags);
-}
-
-static inline int atomic_pop(atomic_t *v, int width)
-{
-	int result;
-	unsigned long flags;
-
-	raw_local_irq_save(flags);
-	result = v->counter;
-	v->counter >>= width;
-	raw_local_irq_restore(flags);
-
-	return result & ((1 << width) - 1);
-}
-
 #define atomic_xchg(v, new) (xchg(&((v)->counter), new))
 
 static inline int __atomic_add_unless(atomic_t *v, int a, int u)
@@ -157,6 +134,8 @@ static inline int __atomic_add_unless(atomic_t *v, int a, int u)
 
 #define atomic_add_negative(i,v) (atomic_add_return(i, v) < 0)
 
+
+#ifndef CONFIG_GENERIC_ATOMIC64
 /*
  * 64-bit atomic operations.
  */
@@ -275,5 +254,6 @@ static inline int atomic64_add_unless(atomic64_t *v, long a, long u)
 #define atomic64_dec_and_test(v)	(atomic64_dec_return((v)) == 0)
 #define atomic64_inc_not_zero(v)	atomic64_add_unless((v), 1LL, 0LL)
 
+#endif /*!CONFIG_GENERIC_ATOMIC64*/
 #endif
 #endif

@@ -1966,6 +1966,7 @@ enum ieee80211_key_len {
 	WLAN_KEY_LEN_TKIP = 32,
 	WLAN_KEY_LEN_AES_CMAC = 16,
 	WLAN_KEY_LEN_SMS4 = 32,
+	WLAN_KEY_LEN_WAPI_SMS4 = 32,
 };
 
 #define IEEE80211_WEP_IV_LEN		4
@@ -1976,6 +1977,7 @@ enum ieee80211_key_len {
 #define IEEE80211_TKIP_IV_LEN		8
 #define IEEE80211_TKIP_ICV_LEN		4
 #define IEEE80211_CMAC_PN_LEN		6
+#define IEEE80211_GCMP_PN_LEN		6
 
 /* Public action codes */
 enum ieee80211_pub_actioncode {
@@ -2199,6 +2201,8 @@ enum ieee80211_sa_query_action {
 #define WLAN_AKM_SUITE_TDLS		0x000FAC07
 #define WLAN_AKM_SUITE_SAE		0x000FAC08
 #define WLAN_AKM_SUITE_FT_OVER_SAE	0x000FAC09
+#define WLAN_AKM_SUITE_WAPI_PSK		0x000FAC11  /* WAPI */
+#define WLAN_AKM_SUITE_WAPI_CERT	0x000FAC12  /* WAPI */
 #define WLAN_AKM_SUITE_CCKM		0x00409600  /* CCKM */
 
 #define WLAN_MAX_KEY_LEN		32

@@ -33,7 +33,6 @@
 #include <linux/pfn.h>
 #include <linux/export.h>
 #include <linux/seq_file.h>
-#include <linux/smc.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -43,13 +42,12 @@
 /* Mar 9, 2016, limit the length of string to 1 byte: "0" or "1"*/
 #define MST_CTRL_CMD_LEN ((size_t)1)
 
-#define SMC_CMD_FC_NFC_ACTION ((uint32_t)(0x83000030))
+extern void mst_ctrl_of_mst_hw_onoff(bool on);
 
 ssize_t mst_ctrl_write(struct file *file, const char __user *buffer, size_t size, loff_t *offset) {
 
 	unsigned long mode;
 	char *string;
-	int nfc_status;
 
 	if (size == 0)
 		return 0;
@@ -84,13 +82,13 @@ ssize_t mst_ctrl_write(struct file *file, const char __user *buffer, size_t size
 	switch(mode) {
 		case 1:
 			printk(KERN_ERR " %s -> Notify secure world that NFS starts.\n", __FUNCTION__);
-			nfc_status = exynos_smc(SMC_CMD_FC_NFC_ACTION, 1, 0, 0);
-			printk(KERN_ERR " %s -> value of nfc_status is %d.\n", __FUNCTION__, nfc_status);
+			mst_ctrl_of_mst_hw_onoff(0);
+			printk(KERN_ERR " %s -> nfc_status is on / mst_status is off.\n", __FUNCTION__);
 			break;
 		case 0:
 			printk(KERN_ERR " %s -> Notify secure world that NFS ends.\n", __FUNCTION__);
-			nfc_status = exynos_smc(SMC_CMD_FC_NFC_ACTION, 2, 0, 0);
-			printk(KERN_ERR " %s -> value of nfc_status is %d.\n", __FUNCTION__, nfc_status);
+			mst_ctrl_of_mst_hw_onoff(1);
+			printk(KERN_ERR " %s -> nfc_status is off.\n", __FUNCTION__);
 			break;
 		default:
 			printk(KERN_ERR " %s -> Invalid mst operations\n", __FUNCTION__);
@@ -116,15 +114,17 @@ long mst_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	 */
 	switch (cmd) {
 		case 1:
-			printk(KERN_ERR " %s -> Notify secure world that NFS starts.\n", __FUNCTION__);
-			exynos_smc(SMC_CMD_FC_NFC_ACTION, 0x1, 0, 0);
+			printk(KERN_ERR " %s -> [ioctl] Notify secure world that NFS starts.\n", __FUNCTION__);
+			mst_ctrl_of_mst_hw_onoff(0);
+			printk(KERN_ERR " %s -> [ioctl] nfc_status is on / mst_status is off.\n", __FUNCTION__);
 			break;
 		case 0:
-			printk(KERN_ERR " %s -> Notify secure world that NFS ends.\n", __FUNCTION__);
-			exynos_smc(SMC_CMD_FC_NFC_ACTION, 0x2, 0, 0);
+			printk(KERN_ERR " %s -> [ioctl] Notify secure world that NFS ends.\n", __FUNCTION__);
+			mst_ctrl_of_mst_hw_onoff(1);
+			printk(KERN_ERR " %s -> [ioctl] nfc_status is off.\n", __FUNCTION__);
 			break;
 		default:
-			printk(KERN_ERR " %s -> Invalid mst ctrl operations\n", __FUNCTION__);
+			printk(KERN_ERR " %s -> [ioctl] Invalid mst ctrl operations\n", __FUNCTION__);
 			return -1;
 			break;
 	}

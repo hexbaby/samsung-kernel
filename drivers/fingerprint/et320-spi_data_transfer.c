@@ -23,7 +23,7 @@
 
 #include "et320.h"
 
-int etspi_mass_read(struct etspi_data *etspi, u8 addr, u8 *buf, int buf_size)
+int etspi_mass_read(struct etspi_data *etspi, u8 addr, u8 *buf, int read_len)
 {
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 	return 0;
@@ -32,8 +32,7 @@ int etspi_mass_read(struct etspi_data *etspi, u8 addr, u8 *buf, int buf_size)
 	struct spi_device *spi;
 	struct spi_message m;
 	u8 *write_addr = NULL, *read_data = NULL;
-	u32 read_data_size = 0;
-
+	/* Write and read data in one data query section */
 	struct spi_transfer t_set_addr = {
 		.tx_buf = NULL,
 		.len = 2,
@@ -41,21 +40,14 @@ int etspi_mass_read(struct etspi_data *etspi, u8 addr, u8 *buf, int buf_size)
 	struct spi_transfer t_read_data = {
 		.tx_buf = NULL,
 		.rx_buf = NULL,
-		.len = read_data_size,
+		.len = read_len + 3,
 	};
-
-	/* Write and read data in one data query section */
-
-	if ((buf_size + SHIFT_BYTE_OF_IMAGE) % DIVISION_OF_IMAGE != 0)
-		read_data_size = buf_size + SHIFT_BYTE_OF_IMAGE + (DIVISION_OF_IMAGE - ((buf_size + SHIFT_BYTE_OF_IMAGE) % DIVISION_OF_IMAGE));
-	else
-		read_data_size = buf_size + SHIFT_BYTE_OF_IMAGE;
-
 	/* Set start address */
 
-	read_data = kzalloc(read_data_size, GFP_KERNEL);
+	read_data = kzalloc(read_len + 3, GFP_KERNEL);
 
-	if (read_data == NULL) return -ENOMEM;
+	if (read_data == NULL)
+		return -ENOMEM;
 
 	write_addr = kzalloc(2, GFP_KERNEL);
 	write_addr[0] = ET320_WRITE_ADDRESS;
@@ -63,10 +55,8 @@ int etspi_mass_read(struct etspi_data *etspi, u8 addr, u8 *buf, int buf_size)
 
 	t_set_addr.tx_buf = write_addr;
 	t_read_data.tx_buf = t_read_data.rx_buf = read_data;
-	t_read_data.len = read_data_size;
 
-	pr_debug("%s buf_size = %d, read_data_size = %d\n", __func__,
-		buf_size, read_data_size);
+	pr_debug("%s read_len = %d\n", __func__, read_len);
 
 	read_data[0] = ET320_READ_DATA;
 
@@ -82,7 +72,7 @@ int etspi_mass_read(struct etspi_data *etspi, u8 addr, u8 *buf, int buf_size)
 	kfree(write_addr);
 
 	if (status == 0) {
-		memcpy(buf, read_data + SHIFT_BYTE_OF_IMAGE, buf_size);
+		memcpy(buf, read_data + 3, read_len);
 	} else {
 		pr_err(KERN_ERR "%s read data error status = %d\n", __func__, status);
 	}

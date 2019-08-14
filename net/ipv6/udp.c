@@ -53,11 +53,11 @@
 #include <trace/events/skb.h>
 #include "udp_impl.h"
 
-static unsigned int udp6_ehashfn(struct net *net,
-				  const struct in6_addr *laddr,
-				  const u16 lport,
-				  const struct in6_addr *faddr,
-				  const __be16 fport)
+static u32 udp6_ehashfn(const struct net *net,
+			const struct in6_addr *laddr,
+			const u16 lport,
+			const struct in6_addr *faddr,
+			const __be16 fport)
 {
 	static u32 udp6_ehash_secret __read_mostly;
 	static u32 udp_ipv6_hash_secret __read_mostly;
@@ -104,9 +104,9 @@ int ipv6_rcv_saddr_equal(const struct sock *sk, const struct sock *sk2)
 	return 0;
 }
 
-static unsigned int udp6_portaddr_hash(struct net *net,
-				       const struct in6_addr *addr6,
-				       unsigned int port)
+static u32 udp6_portaddr_hash(const struct net *net,
+			      const struct in6_addr *addr6,
+			      unsigned int port)
 {
 	unsigned int hash, mix = net_hash_mix(net);
 
@@ -901,9 +901,11 @@ int __udp6_lib_rcv(struct sk_buff *skb, struct udp_table *udptable,
 		ret = udpv6_queue_rcv_skb(sk, skb);
 		sock_put(sk);
 
-		/* a return value > 0 means to resubmit the input */
+		/* a return value > 0 means to resubmit the input, but
+		 * it wants the return to be -protocol, or 0
+		 */
 		if (ret > 0)
-			return ret;
+			return -ret;
 
 		return 0;
 	}
@@ -1108,10 +1110,6 @@ int udpv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 			if (addr_len < SIN6_LEN_RFC2133)
 				return -EINVAL;
 			daddr = &sin6->sin6_addr;
-			if (ipv6_addr_any(daddr) &&
-			    ipv6_addr_v4mapped(&np->saddr))
-				ipv6_addr_set_v4mapped(htonl(INADDR_LOOPBACK),
-						       daddr);
 			break;
 		case AF_INET:
 			goto do_udp_sendmsg;
@@ -1139,8 +1137,13 @@ int udpv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 			msg->msg_name = &sin;
 			msg->msg_namelen = sizeof(sin);
 do_udp_sendmsg:
-			if (__ipv6_only_sock(sk))
+			if (__ipv6_only_sock(sk)) {
+				printk(KERN_DEBUG "udpv6_sendmsg() ipv6_addr_v4mapped & __ipv6_only_sock\n");
+				printk(KERN_DEBUG "udpv6_sendmsg() s6_addr32 %08X %08X %08X %08X\n",
+				daddr->s6_addr32[0], daddr->s6_addr32[1],
+				daddr->s6_addr32[2], daddr->s6_addr32[3]);
 				return -ENETUNREACH;
+			}
 			return udp_sendmsg(iocb, sk, msg, len);
 		}
 	}
@@ -1219,7 +1222,7 @@ do_udp_sendmsg:
 		fl6.flowi6_oif = np->sticky_pktinfo.ipi6_ifindex;
 
 	fl6.flowi6_mark = sk->sk_mark;
-	fl6.flowi6_uid = sk->sk_uid;
+	fl6.flowi6_uid = sock_i_uid(sk);
 
 	if (msg->msg_controllen) {
 		opt = &opt_space;
@@ -1512,7 +1515,6 @@ struct proto udpv6_prot = {
 	.compat_getsockopt = compat_udpv6_getsockopt,
 #endif
 	.clear_sk	   = udp_v6_clear_sk,
-	.diag_destroy      = udp_abort,
 };
 
 static struct inet_protosw udpv6_protosw = {

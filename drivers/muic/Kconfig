@@ -6,7 +6,6 @@ comment "MUIC configs"
 
 config USE_MUIC
 	bool "Using MUIC device driver"
-	depends on I2C
 	default n
 	help
 	  If you say yes here you will get support for
@@ -14,7 +13,6 @@ config USE_MUIC
 
 config USE_SAFEOUT
 	bool "Using SAFEOUT device driver"
-	depends on I2C
 	default n
 	help
 	  If you say yes here you will get support for
@@ -64,6 +62,14 @@ config MUIC_MAX77833_RESET_WA
         help
           If you say yes here you will get support for the MAX77833 MUIC RESET WA.
 
+config MUIC_MAX77888
+	bool "Using MAX77888 MUIC"
+	depends on MFD_MAX77888 && USE_MUIC
+	default n
+	help
+	  If you say yes here you will get support for
+	  for the MAX77888 MUIC chip.
+
 config MUIC_UNIVERSAL
 	bool "UNIVERSAL MUIC"
 	depends on USE_MUIC
@@ -92,6 +98,12 @@ config MUIC_HV_12V
 	help
 	  If you say yes here you will get support for the AFC.
 
+config SUPPORT_QC30
+	bool "SUPPORT_QC30"
+	default n
+	help
+	  If you say yes here you will get support for the QC3.0 charger.
+
 config MUIC_SUPPORT_CCIC
 	bool "MUIC supports CCIC chip interface"
 	depends on MUIC_UNIVERSAL
@@ -99,16 +111,68 @@ config MUIC_SUPPORT_CCIC
 	help
 	  If you say yes here you will get support for the CCIC chip.
 
-config MUIC_HV_SUPPORT_POGO_DOCK
-	bool "MUIC_HV_SUPPORT_POGO_DOCK"
-	depends on MUIC_HV
+config MUIC_SUPPORT_RUSTPROOF
+	bool "MUIC Disable UART"
+	depends on !SEC_FACTORY
 	default n
 	help
-	  If you say yes here you will get support for the AFC pogo dock.
+	 This option will disable the UART to prevent the rusting of the
+	 IF Connector in the case of Kmini Devices.
 
-config HICCUP_CHARGER
-	bool  "Using HICCUP charger"
-	depends on USE_MUIC && !SEC_FACTORY
+config MUIC_SUPPORT_VZW_ACC
+	bool "MUIC supports VZW ACC"
+	depends on MUIC_UNIVERSAL
 	default n
 	help
-	  If you say yes here you will get support for the hiccup charger.
+	 If you say yes here you will get support for the VZW Accessory & Incompatible.
+
+config MUIC_SUPPORT_LANHUB
+	bool "MUIC supports LANHUB"
+	depends on MUIC_UNIVERSAL
+	default n
+	help
+	 If you say yes here you will get support for the LANHUB.
+
+config MUIC_SUPPORT_EARJACK
+	bool "MUIC supports EARJACK"
+	depends on MUIC_UNIVERSAL
+	default n
+	help
+	 If you say yes here you will get support for the mUSB Earjack.
+
+config MUIC_HV_FORCE_LIMIT
+        bool "Force limit AFC QC MAX CHG VOLTAGE"
+        depends on MUIC_UNIVERSAL_MAX77854
+        default n
+        help
+          If you say yes here you will add function of limit afc charging volatage.
+
+config MUIC_UNIVERSAL_SM5703
+	bool "SM5703 MUIC"
+	depends on USE_MUIC
+	default n
+	help
+	  If you say yes here you will get support for the SM5703 MUIC chip.
+
+config MUIC_UNIVERSAL_SM5705
+	bool "SM5705 MUIC"
+	depends on USE_MUIC
+	default n
+	help
+	  If you say yes here you will get support for the SM5705 MUIC chip.
+
+config MUIC_UNIVERSAL_SM5705_AFC
+	bool "SM5705 MUIC AFC"
+	depends on USE_MUIC
+	default n
+	help
+	  If you say yes here you will get support for the SM5705 MUIC
+	  AFC feature.
+
+config MUIC_SM5705_SWITCH_CONTROL
+	bool "SM5705 TYPE C SUPPORT"
+	depends on MUIC_UNIVERSAL_SM5705 && MUIC_SUPPORT_CCIC
+	default n
+	help
+	  It's a work around for SM5705 HW bug in USB Type C model.
+

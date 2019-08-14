@@ -282,6 +282,45 @@ static int mxt_patch_stop_timer(struct mxt_data *data)
 	return ret;
 }
 
+/*
+ OPT= 0:ALL, 2:BATT ONLY, 3:TA ONLY
+*/
+#if 0 	// not used
+static int mxt_patch_check_tacfg(struct mxt_data *data, u8 option, u8 ta_mode)
+{
+	if(option&0x02){
+		if(ta_mode){//TA
+			if((option&0x01)==0){
+				__mxt_patch_ddebug(data, "|- SCFG BATT SKIP");
+				return 1;
+			}
+		}
+		else{// BATT
+			if((option&0x01)==1){
+				__mxt_patch_ddebug(data, "|- SCFG TA SKIP");
+				return 1;
+			}
+		}
+	}
+
+	if (option&0x04) {
+#if defined(CONFIG_N1A_3G)
+		if (data->setdata) {
+			__mxt_patch_ddebug(data, "|- SCFG RF");
+			return 0;
+		} else {
+			__mxt_patch_ddebug(data, "|- SCFG RF SKIP");
+			return 1;
+		}
+#else
+		__mxt_patch_ddebug(data, "|- SCFG RF SKIP");
+		return 1;
+#endif
+	}
+	return 0;
+}
+#endif
+
 static int mxt_patch_write_stage_cfg(struct mxt_data *data,
 		struct stage_cfg* pscfg, bool do_action)
 {
@@ -1330,8 +1369,10 @@ static void mxt_patch_T6_object(struct mxt_data *data,
 	/* Normal mode */
 	if (message->message[0] == 0x00) {
 		//__mxt_patch_debug(data, "PATCH: NORMAL\n");
+#if 0 //Event Test
 		if(data->patch.event_cnt)
 			mxt_patch_test_event(data, 0);
+#endif
 	}
 	/* Calibration */
 	if (message->message[0] & 0x10){

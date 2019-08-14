@@ -3,9 +3,7 @@
  *
  *  Driver for Richwave RTC6213N FM Tuner
  *
- *  Copyright (c) 2009 Tobias Lorenz <tobias.lorenz@gmx.net>
- *  Copyright (c) 2012 Hans de Goede <hdegoede@redhat.com>
- *  Copyright (c) 2013 Richwave Technology Co.Ltd
+ * Copyright (c) 2013 Richwave Technology Co.Ltd
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,7 +16,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 /* driver definitions */
@@ -142,9 +141,8 @@
 /* #define V4L2_CID_PRIVATE_BASE        0x08000000 */
 
 #define RW_PRIBASE	V4L2_CID_PRIVATE_BASE
-/* #define RTC6213N_IOC_POWERUP	(RW_PRIBASE + (POWERCFG<<4) + 15)
- * #define RTC6213N_IOC_POWERDOWN	(RW_PRIBASE + (POWERCFG<<4) + 14)
- */
+/*#define RTC6213N_IOC_POWERUP	(RW_PRIBASE + (POWERCFG<<4) + 15)
+#define RTC6213N_IOC_POWERDOWN	(RW_PRIBASE + (POWERCFG<<4) + 14)*/
 
 #define V4L2_CID_PRIVATE_DEVICEID		(RW_PRIBASE + (DEVICEID<<4) + 0)
 #define V4L2_CID_PRIVATE_CSR0_DIS_SMUTE	(RW_PRIBASE + (MPXCFG<<4) + 15)
@@ -160,8 +158,8 @@
 #define V4L2_CID_PRIVATE_SEEK_CANCEL	(RW_PRIBASE + (SEEKCFG1<<4) + 10)
 #define V4L2_CID_PRIVATE_CSR0_SEEKRSSITH (RW_PRIBASE + (SEEKCFG1<<4) + 0)
 
-#define V4L2_CID_PRIVATE_CSR0_OFSTH		(RW_PRIBASE + (SEEKCFG2<<4) + 7)
-#define V4L2_CID_PRIVATE_CSR0_QLTTH		(RW_PRIBASE + (SEEKCFG2<<4) + 0)
+#define V4L2_CID_PRIVATE_CSR0_OFSTH    	(RW_PRIBASE + (SEEKCFG2<<4) + 7)
+#define V4L2_CID_PRIVATE_CSR0_QLTTH   	(RW_PRIBASE + (SEEKCFG2<<4) + 0)
 #define V4L2_CID_PRIVATE_RDS_RDY	    (RW_PRIBASE + (STATUS<<4) + 15)
 #define V4L2_CID_PRIVATE_STD	        (RW_PRIBASE + (STATUS<<4) + 14)
 #define V4L2_CID_PRIVATE_SF		        (RW_PRIBASE + (STATUS<<4) + 13)
@@ -177,8 +175,6 @@
 #define TUNE_WAITING		4
 #define RDS_WAITING			5
 #define SEEK_CANCEL			6
-
-#define VOLUME_NUM 16
 
 /**************************************************************************
  * General Driver Definitions
@@ -198,7 +194,7 @@ struct rtc6213n_device {
 
 	/* RDS receive buffer */
 	wait_queue_head_t read_queue;
-	struct mutex lock;			/* buffer locking */
+	struct mutex lock;      /* buffer locking */
 	unsigned char *buffer;      /* size is always multiple of three */
 	unsigned int buf_size;
 	unsigned int rd_index;
@@ -208,9 +204,12 @@ struct rtc6213n_device {
 	bool stci_enabled;      /* Seek/Tune Complete Interrupt */
 
 	struct i2c_client *client;
-	bool vol_db;
-	int rx_vol[VOLUME_NUM];
 };
+
+/**************************************************************************
+ * Firmware Versions
+ **************************************************************************/
+#define RADIO_FW_VERSION    15
 
 /**************************************************************************
  * Frequency Multiplicator

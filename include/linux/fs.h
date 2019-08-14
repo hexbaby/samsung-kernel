@@ -49,8 +49,6 @@ struct swap_info_struct;
 struct seq_file;
 struct workqueue_struct;
 struct iov_iter;
-struct fscrypt_info;
-struct fscrypt_operations;
 
 extern void __init inode_init(void);
 extern void __init inode_init_early(void);
@@ -200,15 +198,20 @@ typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 #define READ			0
 #define WRITE			RW_MASK
 #define READA			RWA_MASK
-#define KERNEL_READ             (READ|REQ_KERNEL)
-#define KERNEL_WRITE            (WRITE|REQ_KERNEL)
 
 #define READ_SYNC		(READ | REQ_SYNC)
 #define WRITE_SYNC		(WRITE | REQ_SYNC | REQ_NOIDLE)
 #define WRITE_ODIRECT		(WRITE | REQ_SYNC)
 #define WRITE_FLUSH		(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FLUSH)
+#define WRITE_FLUSH_BARRIER	(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FLUSH | \
+					REQ_BARRIER)
 #define WRITE_FUA		(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FUA)
 #define WRITE_FLUSH_FUA		(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FLUSH | REQ_FUA)
+#define WRITE_POST_FLUSH_BARRIER	(WRITE | REQ_SYNC | REQ_NOIDLE | \
+					 REQ_POST_FLUSH_BARRIER | REQ_BARRIER)
+#define WRITE_ORDERED_FLUSH_BARRIER	(WRITE | REQ_SYNC | REQ_NOIDLE | \
+					 REQ_FLUSH | REQ_POST_FLUSH_BARRIER | \
+					 REQ_BARRIER)
 
 /*
  * Attribute flags.  These should be or-ed together to figure out what
@@ -422,19 +425,6 @@ struct address_space {
 	spinlock_t		private_lock;	/* for use by the address_space */
 	struct list_head	private_list;	/* ditto */
 	void			*private_data;	/* ditto */
-#if defined(CONFIG_MMC_DW_FMP_ECRYPT_FS) || defined(CONFIG_UFS_FMP_ECRYPT_FS)
-	unsigned char		*iv;		/* iv */
-	unsigned char		*key;		/* key */
-	unsigned long		key_length;	/* key length */
-	char			*alg;		/* algorithm */
-	pgoff_t			sensitive_data_index;	/* data starts here */
-	struct crypto_hash	*hash_tfm;	/* hash transform */
-#ifdef CONFIG_CRYPTO_FIPS
-	bool			cc_enable;	/* cc flag */
-#endif
-	bool			use_fmp;	/* use fmp flag  */
-	bool			plain_text;	/* plain_text flag */
-#endif
 #ifdef CONFIG_SDP
 	int userid;
 #endif
@@ -651,10 +641,6 @@ struct inode {
 	struct hlist_head	i_fsnotify_marks;
 #endif
 
-#if IS_ENABLED(CONFIG_FS_ENCRYPTION)
-	struct fscrypt_info	*i_crypt_info;
-#endif
-
 	void			*i_private; /* fs or device private pointer */
 };
 
@@ -852,6 +838,10 @@ struct file {
 	struct list_head	f_tfile_llink;
 #endif /* #ifdef CONFIG_EPOLL */
 	struct address_space	*f_mapping;
+
+#ifdef CONFIG_FILE_TABLE_DEBUG
+	struct hlist_node f_hash;
+#endif /* #ifdef CONFIG_FILE_TABLE_DEBUG */
 } __attribute__((aligned(4)));	/* lest something weird decides that 2 is OK */
 
 struct file_handle {
@@ -1249,9 +1239,6 @@ struct super_block {
 	const struct xattr_handler **s_xattr;
 
 	struct list_head	s_inodes;	/* all inodes */
-
-	const struct fscrypt_operations	*s_cop;
-
 	struct hlist_bl_head	s_anon;		/* anonymous dentries for (nfs) exporting */
 	struct list_head	s_mounts;	/* list of mounts; _not_ for fs use */
 	struct block_device	*s_bdev;
@@ -1446,21 +1433,13 @@ extern bool inode_owner_or_capable(const struct inode *inode);
  * VFS helper functions..
  */
 extern int vfs_create(struct inode *, struct dentry *, umode_t, bool);
-extern int vfs_create2(struct vfsmount *, struct inode *, struct dentry *, umode_t, bool);
 extern int vfs_mkdir(struct inode *, struct dentry *, umode_t);
-extern int vfs_mkdir2(struct vfsmount *, struct inode *, struct dentry *, umode_t);
 extern int vfs_mknod(struct inode *, struct dentry *, umode_t, dev_t);
-extern int vfs_mknod2(struct vfsmount *, struct inode *, struct dentry *, umode_t, dev_t);
 extern int vfs_symlink(struct inode *, struct dentry *, const char *);
-extern int vfs_symlink2(struct vfsmount *, struct inode *, struct dentry *, const char *);
 extern int vfs_link(struct dentry *, struct inode *, struct dentry *, struct inode **);
-extern int vfs_link2(struct vfsmount *, struct dentry *, struct inode *, struct dentry *, struct inode **);
 extern int vfs_rmdir(struct inode *, struct dentry *);
-extern int vfs_rmdir2(struct vfsmount *, struct inode *, struct dentry *);
 extern int vfs_unlink(struct inode *, struct dentry *, struct inode **);
-extern int vfs_unlink2(struct vfsmount *, struct inode *, struct dentry *, struct inode **);
 extern int vfs_rename(struct inode *, struct dentry *, struct inode *, struct dentry *, struct inode **, unsigned int);
-extern int vfs_rename2(struct vfsmount *, struct inode *, struct dentry *, struct inode *, struct dentry *, struct inode **, unsigned int);
 extern int vfs_whiteout(struct inode *, struct dentry *);
 
 /*
@@ -1556,6 +1535,7 @@ struct file_operations {
 	long (*fallocate)(struct file *file, int mode, loff_t offset,
 			  loff_t len);
 	int (*show_fdinfo)(struct seq_file *m, struct file *f);
+	/* get_lower_file is for stackable file system */
 	struct file* (*get_lower_file)(struct file *f);
 };
 
@@ -1563,7 +1543,6 @@ struct inode_operations {
 	struct dentry * (*lookup) (struct inode *,struct dentry *, unsigned int);
 	void * (*follow_link) (struct dentry *, struct nameidata *);
 	int (*permission) (struct inode *, int);
-	int (*permission2) (struct vfsmount *, struct inode *, int);
 	struct posix_acl * (*get_acl)(struct inode *, int);
 
 	int (*readlink) (struct dentry *, char __user *,int);
@@ -1581,7 +1560,6 @@ struct inode_operations {
 	int (*rename2) (struct inode *, struct dentry *,
 			struct inode *, struct dentry *, unsigned int);
 	int (*setattr) (struct dentry *, struct iattr *);
-	int (*setattr2) (struct vfsmount *, struct dentry *, struct iattr *);
 	int (*getattr) (struct vfsmount *mnt, struct dentry *, struct kstat *);
 	int (*setxattr) (struct dentry *, const char *,const void *,size_t,int);
 	ssize_t (*getxattr) (struct dentry *, const char *, void *, size_t);
@@ -1595,6 +1573,8 @@ struct inode_operations {
 			   umode_t create_mode, int *opened);
 	int (*tmpfile) (struct inode *, struct dentry *, umode_t);
 	int (*set_acl)(struct inode *, struct posix_acl *, int);
+
+	/* WARNING: probably going away soon, do not use! */
 } ____cacheline_aligned;
 
 ssize_t rw_copy_check_uvector(int type, const struct iovec __user * uvector,
@@ -1623,13 +1603,9 @@ struct super_operations {
 	int (*unfreeze_fs) (struct super_block *);
 	int (*statfs) (struct dentry *, struct kstatfs *);
 	int (*remount_fs) (struct super_block *, int *, char *);
-	int (*remount_fs2) (struct vfsmount *, struct super_block *, int *, char *);
-	void *(*clone_mnt_data) (void *);
-	void (*copy_mnt_data) (void *, void *);
 	void (*umount_begin) (struct super_block *);
 
 	int (*show_options)(struct seq_file *, struct dentry *);
-	int (*show_options2)(struct vfsmount *, struct seq_file *, struct dentry *);
 	int (*show_devname)(struct seq_file *, struct dentry *);
 	int (*show_path)(struct seq_file *, struct dentry *);
 	int (*show_stats)(struct seq_file *, struct dentry *);
@@ -1767,12 +1743,8 @@ struct super_operations {
 #define __I_DIO_WAKEUP		9
 #define I_DIO_WAKEUP		(1 << I_DIO_WAKEUP)
 #define I_LINKABLE		(1 << 10)
-#define I_DIRTY_TIME		(1 << 11)
-#define __I_DIRTY_TIME_EXPIRED	12
-#define I_DIRTY_TIME_EXPIRED	(1 << __I_DIRTY_TIME_EXPIRED)
 
 #define I_DIRTY (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES)
-#define I_DIRTY_ALL (I_DIRTY | I_DIRTY_TIME)
 
 extern void __mark_inode_dirty(struct inode *, int);
 static inline void mark_inode_dirty(struct inode *inode)
@@ -1846,9 +1818,6 @@ struct file_system_type {
 #define FS_RENAME_DOES_D_MOVE	32768	/* FS will handle d_move() during rename() internally. */
 	struct dentry *(*mount) (struct file_system_type *, int,
 		       const char *, void *);
-	struct dentry *(*mount2) (struct vfsmount *, struct file_system_type *, int,
-			       const char *, void *);
-	void *(*alloc_mnt_data) (void);
 	void (*kill_sb) (struct super_block *);
 	struct module *owner;
 	struct file_system_type * next;
@@ -1938,7 +1907,6 @@ extern int current_umask(void);
 
 extern void ihold(struct inode * inode);
 extern void iput(struct inode *);
-extern int generic_update_time(struct inode *, struct timespec *, int);
 
 static inline struct inode *file_inode(const struct file *f)
 {
@@ -2117,8 +2085,6 @@ struct filename {
 extern long vfs_truncate(struct path *, loff_t);
 extern int do_truncate(struct dentry *, loff_t start, unsigned int time_attrs,
 		       struct file *filp);
-extern int do_truncate2(struct vfsmount *, struct dentry *, loff_t start,
-			unsigned int time_attrs, struct file *filp);
 extern int do_fallocate(struct file *file, int mode, loff_t offset,
 			loff_t len);
 extern long do_sys_open(int dfd, const char __user *filename, int flags,
@@ -2341,11 +2307,8 @@ extern int intr_sync(int *);
 extern sector_t bmap(struct inode *, sector_t);
 #endif
 extern int notify_change(struct dentry *, struct iattr *, struct inode **);
-extern int notify_change2(struct vfsmount *, struct dentry *, struct iattr *, struct inode **);
 extern int inode_permission(struct inode *, int);
-extern int inode_permission2(struct vfsmount *, struct inode *, int);
 extern int __inode_permission(struct inode *, int);
-extern int __inode_permission2(struct vfsmount *, struct inode *, int);
 extern int generic_permission(struct inode *, int);
 extern int __check_sticky(struct inode *dir, struct inode *inode);
 
@@ -2612,6 +2575,7 @@ static inline ssize_t blockdev_direct_IO(int rw, struct kiocb *iocb,
 
 void inode_dio_wait(struct inode *inode);
 void inode_dio_done(struct inode *inode);
+struct inode *dio_bio_get_inode(struct bio *bio);
 
 extern void inode_set_flags(struct inode *inode, unsigned int flags,
 			    unsigned int mask);

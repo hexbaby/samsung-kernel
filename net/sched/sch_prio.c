@@ -99,8 +99,10 @@ static struct sk_buff *prio_peek(struct Qdisc *sch)
 {
 	struct prio_sched_data *q = qdisc_priv(sch);
 	int prio;
+
 	if (!q->enable_flow)
 		return NULL;
+
 	for (prio = 0; prio < q->bands; prio++) {
 		struct Qdisc *qdisc = q->queues[prio];
 		struct sk_buff *skb = qdisc->ops->peek(qdisc);
@@ -114,6 +116,7 @@ static struct sk_buff *prio_dequeue(struct Qdisc *sch)
 {
 	struct prio_sched_data *q = qdisc_priv(sch);
 	int prio;
+
 	if (!q->enable_flow)
 		return NULL;
 
@@ -202,7 +205,7 @@ static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
 		struct Qdisc *child = q->queues[i];
 		q->queues[i] = &noop_qdisc;
 		if (child != &noop_qdisc) {
-			qdisc_tree_reduce_backlog(child, child->q.qlen, child->qstats.backlog);
+			qdisc_tree_decrease_qlen(child, child->q.qlen);
 			qdisc_destroy(child);
 		}
 	}
@@ -221,15 +224,15 @@ static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
 				q->queues[i] = child;
 
 				if (old != &noop_qdisc) {
-					qdisc_tree_reduce_backlog(old,
-								  old->q.qlen,
-								  old->qstats.backlog);
+					qdisc_tree_decrease_qlen(old,
+								 old->q.qlen);
 					qdisc_destroy(old);
 				}
 				sch_tree_unlock(sch);
 			}
 		}
 	}
+
 	/* Schedule qdisc when flow re-enabled */
 	if (flow_change && q->enable_flow) {
 		if (!test_bit(__QDISC_STATE_DEACTIVATED,
@@ -287,7 +290,13 @@ static int prio_graft(struct Qdisc *sch, unsigned long arg, struct Qdisc *new,
 	if (new == NULL)
 		new = &noop_qdisc;
 
-	*old = qdisc_replace(sch, new, &q->queues[band]);
+	sch_tree_lock(sch);
+	*old = q->queues[band];
+	q->queues[band] = new;
+	qdisc_tree_decrease_qlen(*old, (*old)->q.qlen);
+	qdisc_reset(*old);
+	sch_tree_unlock(sch);
+
 	return 0;
 }
 

@@ -36,7 +36,6 @@ obj-$(CONFIG_VIDEO_SAMSUNG_S5P_TV)	+= s5p-tv/
 
 obj-$(CONFIG_VIDEO_SAMSUNG_S5P_G2D)	+= s5p-g2d/
 obj-$(CONFIG_VIDEO_SAMSUNG_EXYNOS_GSC)	+= exynos-gsc/
-obj-$(CONFIG_VIDEO_EXYNOS)		+= exynos/
 
 obj-$(CONFIG_BLACKFIN)                  += blackfin/
 
@@ -49,5 +48,8 @@ obj-$(CONFIG_SOC_CAMERA)		+= soc_camera/
 obj-$(CONFIG_VIDEO_RENESAS_VSP1)	+= vsp1/
 
 obj-y	+= omap/
+obj-y	+= msm/
 
 ccflags-y += -I$(srctree)/drivers/media/i2c
+
+obj-y += msm/

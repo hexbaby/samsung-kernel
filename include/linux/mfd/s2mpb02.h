@@ -2,6 +2,7 @@
  * s2mpb02.h - Driver for the Samsung s2mpb02
  *
  *  Copyright (C) 2014 Samsung Electrnoics
+ *  XXX <xxx@samsung.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -65,6 +66,10 @@ struct s2mpb02_dev {
 	struct mutex irqlock;
 	int irq_masks_cur[S2MPB02_IRQ_GROUP_NR];
 	int irq_masks_cache[S2MPB02_IRQ_GROUP_NR];
+
+	struct pinctrl *max_pinctrl;
+	struct pinctrl_state *gpio_state_active;
+	struct pinctrl_state *gpio_state_suspend;
 
 	struct s2mpb02_platform_data *pdata;
 };

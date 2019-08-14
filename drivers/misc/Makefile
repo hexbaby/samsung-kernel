@@ -54,19 +54,27 @@ obj-$(CONFIG_LATTICE_ECP3_CONFIG)	+= lattice-ecp3-config.o
 obj-$(CONFIG_SRAM)		+= sram.o
 obj-y				+= mic/
 obj-$(CONFIG_GENWQE)		+= genwqe/
+obj-$(CONFIG_QSEECOM) += qseecom.o
+obj-$(CONFIG_HDCP_QSEECOM) += hdcp.o
+ifdef CONFIG_COMPAT
+obj-$(CONFIG_QSEECOM) += compat_qseecom.o
+endif
+obj-$(CONFIG_QSEECOM)  += tzic64.o
 obj-$(CONFIG_ECHO)		+= echo/
 obj-$(CONFIG_VEXPRESS_SYSCFG)	+= vexpress-syscfg.o
 obj-$(CONFIG_CXL_BASE)		+= cxl/
-obj-$(CONFIG_MCU_IPC)		+= mcu_ipc/
-obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= modem_v1/
-obj-$(CONFIG_UID_SYS_STATS) += uid_sys_stats.o
-obj-$(CONFIG_MEMORY_STATE_TIME) += memory_state_time.o
+obj-$(CONFIG_UID_CPUTIME) += uid_cputime.o
+obj-y				+= qcom/
+obj-$(CONFIG_TI_DRV2667) += ti_drv2667.o
+obj-$(CONFIG_USB_EXT_TYPE_C_PERICOM)	+= type-c-pericom.o
+obj-$(CONFIG_USB_EXT_TYPE_C_TI)		+= type-c-ti.o
+obj-$(CONFIG_QPNP_MISC) 	+= qpnp-misc.o
+ifeq ($(TIMA_ENABLED),1)
+obj-$(CONFIG_TIMA_LOG)		+= tima_debug_log.o
+endif
 
-# Secure OS Mobicore Interface
-obj-$(CONFIG_TRUSTONIC_TEE)	+= tzic64.o
+obj-$(CONFIG_SEC_BSP) += sec_misc.o sec_param.o
+obj-$(CONFIG_RT_REGMAP) += rt-regmap.o
 
 # for DMVerity
 obj-$(CONFIG_DM_VERITY)		+= dmverity_query.o
-
-# Tima
-obj-$(CONFIG_TIMA_LOG)		+= tima_debug_log.o

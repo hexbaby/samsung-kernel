@@ -119,6 +119,65 @@ i2c_read_error:
 	return -1;
 }
 
+int regmap_write_value_ex(struct regmap_desc *pdesc, int uattr, int value)
+{
+	struct i2c_client *i2c = pdesc->muic->i2c;
+	struct reg_attr attr;
+	int curr, result = 0;
+	u8 reg_val;
+
+	_REG_ATTR(&attr, uattr);
+
+	if (pdesc->trace)
+		pr_info("%s %s[%02x]:%02x<<%d, %02x\n", __func__,
+			regmap_to_name(pdesc, attr.addr),
+			attr.addr, attr.mask, attr.bitn, value);
+
+	curr = muic_i2c_read_byte(i2c, attr.addr);
+	if (curr < 0)
+		goto i2c_read_error;
+
+	if (uattr & _ATTR_OVERWRITE_M)
+		reg_val = value;
+	else {
+		reg_val  = curr & ~(attr.mask << attr.bitn);
+		reg_val	|= ((value & attr.mask) << attr.bitn);
+	}
+
+	if (reg_val ^ curr) {
+		if (muic_i2c_write_byte(i2c, attr.addr, reg_val) < 0)
+			goto i2c_write_error;
+
+		result = muic_i2c_read_byte(i2c, attr.addr);
+		if (result < 0)
+			goto i2c_read_error;
+
+		if (pdesc->trace)
+			pr_info("  -%s done %02x+%02x->%02x(=%02x)\n",
+				(uattr & _ATTR_OVERWRITE_M) ?
+				"Overwrite" : "Update",
+				curr, value, reg_val, result);
+	} else {
+		result = reg_val;
+
+		if (pdesc->trace)
+			pr_info("  -%s skip %02x+%02x->%02x(=%02x)\n",
+				(uattr & _ATTR_OVERWRITE_M) ?
+				"Overwrite" : "Update",
+				curr, value, reg_val, result);
+	}
+
+	return result | ((curr << 8) & 0xff00);
+
+i2c_write_error:
+	pr_err("%s i2c write error.\n", __func__);
+	return -1;
+
+i2c_read_error:
+	pr_err("%s i2c read error.\n", __func__);
+	return -1;
+}
+
 /* read a shifed masked value */
 int regmap_read_value(struct regmap_desc *pdesc, int uattr)
 {
@@ -340,6 +399,10 @@ extern void muic_register_max77849_regmap_desc(struct regmap_desc **pdesc);
 extern void muic_register_max77854_regmap_desc(struct regmap_desc **pdesc);
 #endif
 
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+extern void muic_register_sm5705_regmap_desc(struct regmap_desc **pdesc);
+#endif
+
 static struct vendor_regmap vendor_regmap_tbl[] = {
 #if defined(CONFIG_MUIC_UNIVERSAL_SM5703)
 	{"sm,sm5703", muic_register_sm5703_regmap_desc},
@@ -352,6 +415,9 @@ static struct vendor_regmap vendor_regmap_tbl[] = {
 #endif
 #if defined(CONFIG_MUIC_UNIVERSAL_MAX77854)
 	{"max,max77854", muic_register_max77854_regmap_desc},
+#endif
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+	{"sm,sm5705", muic_register_sm5705_regmap_desc},
 #endif
 	{"", NULL},
 };

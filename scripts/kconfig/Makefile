@@ -81,6 +81,30 @@ allnoconfig allyesconfig allmodconfig alldefconfig randconfig: $(obj)/conf
 
 PHONY += listnewconfig olddefconfig oldnoconfig savedefconfig defconfig
 
+ifneq ($(VARIANT_DEFCONFIG),)
+export KCONFIG_VARIANT := arch/$(SRCARCH)/configs/$(VARIANT_DEFCONFIG)
+endif
+
+ifneq ($(DEBUG_DEFCONFIG),)
+export KCONFIG_DEBUG := arch/$(SRCARCH)/configs/$(DEBUG_DEFCONFIG)
+endif
+
+ifneq ($(SELINUX_DEFCONFIG),)
+export KCONFIG_SELINUX := arch/$(SRCARCH)/configs/$(SELINUX_DEFCONFIG)
+endif
+
+ifneq ($(SELINUX_LOG_DEFCONFIG),)
+export KCONFIG_LOG_SELINUX := arch/$(SRCARCH)/configs/$(SELINUX_LOG_DEFCONFIG)
+endif
+
+ifneq ($(TIMA_DEFCONFIG),)
+export KCONFIG_TIMA := arch/$(SRCARCH)/configs/$(TIMA_DEFCONFIG)
+endif
+
+ifneq ($(DMVERITY_DEFCONFIG),)
+export KCONFIG_DMVERITY := arch/$(SRCARCH)/configs/$(DMVERITY_DEFCONFIG)
+endif
+
 listnewconfig olddefconfig: $(obj)/conf
 	$< --$@ $(Kconfig)
 
@@ -104,22 +128,20 @@ endif
 %_defconfig: $(obj)/conf
 	$(Q)$< --defconfig=arch/$(SRCARCH)/configs/$@ $(Kconfig)
 
-configfiles=$(wildcard $(srctree)/kernel/configs/$(1).config $(srctree)/arch/$(SRCARCH)/configs/$(1).config)
+configfiles=$(wildcard $(srctree)/kernel/configs/$@ $(srctree)/arch/$(SRCARCH)/configs/$@)
 
-define mergeconfig
-$(if $(wildcard $(objtree)/.config),, $(error You need an existing .config for this target))
-$(if $(call configfiles,$(1)),, $(error No configuration exists for this target on this architecture))
-$(Q)$(CONFIG_SHELL) $(srctree)/scripts/kconfig/merge_config.sh -m -O $(objtree) $(objtree)/.config $(call configfiles,$(1))
-+$(Q)yes "" | $(MAKE) -f $(srctree)/Makefile oldconfig
-endef
+%.config: $(obj)/conf
+	$(if $(call configfiles),, $(error No configuration exists for this target on this architecture))
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/kconfig/merge_config.sh -m .config $(configfiles)
+	+$(Q)yes "" | $(MAKE) -f $(srctree)/Makefile oldconfig
 
 PHONY += kvmconfig
-kvmconfig:
-	$(call mergeconfig,kvm_guest)
+kvmconfig: kvm_guest.config
+	@:
 
 PHONY += tinyconfig
-tinyconfig: allnoconfig
-	$(call mergeconfig,tiny)
+tinyconfig:
+	$(Q)$(MAKE) -f $(srctree)/Makefile allnoconfig tiny.config
 
 # Help text used by make help
 help:

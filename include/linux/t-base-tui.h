@@ -1,16 +1,16 @@
 /*
-* Copyright (c) 2013-2014 TRUSTONIC LIMITED
-* All Rights Reserved.
-*
-* This program is free software; you can redistribute it and/or
-* modify it under the terms of the GNU General Public License
-* version 2 as published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*/
+ * Copyright (c) 2013-2015 TRUSTONIC LIMITED
+ * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ */
 
 #ifndef __TBASE_TUI_H__
 #define __TBASE_TUI_H__
@@ -32,8 +32,6 @@ int trustedui_get_current_mode(void);
 void trustedui_set_mode(int mode);
 int trustedui_set_mask(int mask);
 int trustedui_clear_mask(int mask);
-
-void trustedui_set_tsp_irq(int irq_num);
 
 #endif /* CONFIG_TRUSTONIC_TRUSTED_UI */
 

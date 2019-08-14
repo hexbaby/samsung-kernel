@@ -1,6 +1,6 @@
 /*
  */
-
+			
 #include <linux/mm.h>
 #include <linux/miscdevice.h>
 #include <linux/slab.h>
@@ -21,13 +21,17 @@
 #include <linux/pfn.h>
 #include <linux/export.h>
 #include <linux/seq_file.h>
+#include <linux/knox_kap.h>
 
 #include <asm/uaccess.h>
-#include <asm/io.h>
+#include <asm/io.h> 
+
+#include "qseecom_kernel.h"
 
 #ifdef CONFIG_RKP_CFP_FIX_SMC_BUG
 #include <linux/rkp_cfp.h>
 #endif
+
 #define SMC_CMD_KAP_CALL                (0x83000009)
 #define SMC_CMD_KAP_STATUS                (0x8300000A)
 
@@ -43,18 +47,59 @@ u64 exynos_smc64(u64 cmd, u64 arg1, u64 arg2, u64 arg3)
 
         __asm__ volatile (
 #ifdef CONFIG_RKP_CFP_FIX_SMC_BUG
-		PRE_SMC_INLINE
+	PRE_SMC_INLINE
 #endif
-                "dsb    sy\n"
-                "smc    0\n"
+        "dsb    sy\n"
+        "smc    0\n"
 #ifdef CONFIG_RKP_CFP_FIX_SMC_BUG
-		POST_SMC_INLINE
+	POST_SMC_INLINE
 #endif
                 : "+r"(reg0), "+r"(reg1), "+r"(reg2), "+r"(reg3)
 
         );
 
         return reg0;
+}
+
+static int get_kap_lksecapp_call(void)
+{
+	int ret = -1 ;
+	int err = -1 ;
+	int dmv_req_len = 0 ;
+	int dmv_rsp_len = 0 ;
+	dmv_req_t *dmv_req = NULL;
+	dmv_rsp_t *dmv_rsp = NULL;
+	struct qseecom_handle *qhandle_kap = NULL;
+
+  	printk(KERN_ERR" %s -> qhandle address : %p \n", __FUNCTION__, qhandle_kap);
+  	ret = qseecom_start_app((&qhandle_kap), "lksecapp", QSEECOM_SBUFF_SIZE);
+	if (ret) {
+		printk(KERN_ERR" %s -> qseecom_start_app failed %d\n", __FUNCTION__, ret);
+		goto err_ret;
+	}
+	printk(KERN_ERR" %s -> qseecom_start_app succeeded. %d\n", __FUNCTION__, ret);
+	dmv_req = (dmv_req_t *)qhandle_kap->sbuf;
+	printk(KERN_ERR" %s -> dmv_req address : %p . \n", __FUNCTION__, dmv_req);
+	dmv_req_len = sizeof(dmv_req_t);
+
+	dmv_req->cmd_id = SEC_BOOT_CMD101_GET_DMV_DATA;
+
+	dmv_rsp = (dmv_rsp_t *)(qhandle_kap->sbuf + dmv_req_len);
+	dmv_rsp_len = sizeof(dmv_rsp_t);
+
+	err = qseecom_send_command(qhandle_kap, dmv_req, dmv_req_len, dmv_rsp, dmv_rsp_len);
+	
+	printk(KERN_ERR" %s -> read KAP status %d\n", __FUNCTION__, dmv_req->data.dmv_bl_status.security_mode);
+	if (err) {
+		printk(KERN_ERR" %s -> Failed to send command : %d\n", __FUNCTION__, err);
+		goto err_ret;
+	}
+
+	return dmv_req->data.dmv_bl_status.security_mode;
+
+err_ret:
+	printk(KERN_ERR" %s -> sending command to tz app failed with error %d, shutting down %s\n", __FUNCTION__, err, "lksecapp");
+	return err;	
 }
 
 static void turn_off_kap(void) {
@@ -83,17 +128,17 @@ static int knox_kap_read(struct seq_file *m, void *v)
 	//clean_dcache_area(&tz_ret, 8);
 	//tima_send_cmd(__pa(&tz_ret), 0x3f850221);
 	//tz_ret = exynos_smc_kap(SMC_CMD_KAP_CALL, 0x50, 0, 0);
-	tz_ret =  exynos_smc64(SMC_CMD_KAP_STATUS, 0, 0, 0);
+	tz_ret =   get_kap_lksecapp_call();
 	//tz_ret = KAP_MAGIC | 1;
 
 	printk(KERN_ERR "KAP Read STATUS val = %lx\n", tz_ret);
 
-	if (tz_ret == (KAP_MAGIC | 3)) {
+	if (tz_ret == (KAP_MAGIC | 0x01)) {
 		ret_val = 0x03;		//RKP and/or DMVerity says device is tampered
-	} else if (tz_ret == (KAP_MAGIC | 1)) {
+	} else if (tz_ret == (KAP_MAGIC | 0x11)) {
 		/* KAP is ON*/
 		if (kap_off_reboot == 1){
-			ret_val = 0x10;		//KAP is ON and will turn OFF upon next reboot
+			ret_val = 0x10;		//KAP is ON and will turn OFF upon next reboot 
 		} else {
 			ret_val = 0x11;		//KAP is ON and will stay ON
 		}
@@ -120,8 +165,8 @@ static int knox_kap_open(struct inode *inode, struct file *filp)
 
 long knox_kap_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	/*
-	 * Switch according to the ioctl called
+	/* 
+	 * Switch according to the ioctl called 
 	 */
 	switch (cmd) {
 		case 0:

@@ -43,8 +43,6 @@
 #define INIT_COMPLETION(x) reinit_completion(&x)
 #endif
 
-static DECLARE_WAIT_QUEUE_HEAD(dbmdx_wq);
-
 static void uart_transport_enable(struct dbmdx_private *p, bool enable);
 
 static int uart_open_file(struct dbmdx_uart_private *p)
@@ -535,48 +533,6 @@ int send_uart_cmd_boot(struct dbmdx_private *p,  u32 command)
 	return 0;
 }
 
-int uart_verify_boot_checksum(struct dbmdx_private *p,
-	const void *checksum, size_t chksum_len)
-{
-	struct dbmdx_uart_private *uart_p =
-				(struct dbmdx_uart_private *)p->chip->pdata;
-	int ret;
-	u8 rx_checksum[10];
-
-	if (!checksum)
-		return 0;
-
-	if (chksum_len > 8) {
-		dev_err(uart_p->dev, "%s: illegal checksum length\n", __func__);
-		return -EINVAL;
-	}
-
-	uart_flush_rx_fifo(uart_p);
-
-	ret = send_uart_cmd_boot(p, DBMDX_READ_CHECKSUM);
-
-	if (ret < 0) {
-		dev_err(uart_p->dev, "%s: could not read checksum\n", __func__);
-		return -EIO;
-	}
-
-	ret = uart_read_data(p, (void *)rx_checksum, chksum_len + 2);
-
-	if (ret < 0) {
-		dev_err(uart_p->dev, "%s: could not read checksum data\n",
-			__func__);
-		return -EIO;
-	}
-
-	ret = p->verify_checksum(p, checksum, &rx_checksum[2], chksum_len);
-	if (ret) {
-		dev_err(uart_p->dev, "%s: checksum mismatch\n", __func__);
-		return -EILSEQ;
-	}
-
-	return 0;
-}
-
 static int uart_can_boot(struct dbmdx_private *p)
 {
 	struct dbmdx_uart_private *uart_p =
@@ -656,9 +612,8 @@ out:
 	return ret;
 }
 
-static int uart_boot(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw)
+static int uart_boot(const struct firmware *fw, struct dbmdx_private *p,
+		     const void *checksum, size_t chksum_len, int load_fw)
 {
 	struct dbmdx_uart_private *uart_p =
 				(struct dbmdx_uart_private *)p->chip->pdata;
@@ -687,21 +642,15 @@ static int uart_dump_state(struct dbmdx_private *p, char *buf)
 
 	dev_dbg(uart_p->dev, "%s\n", __func__);
 
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\t===UART Interface  Dump====\n");
+	off += sprintf(buf + off, "\t===UART Interface  Dump====\n");
 
-	off += snprintf(buf + off, PAGE_SIZE - off, "\tUart Interface:\t%s\n",
-				uart_p->uart_open ? "Open" : "Closed");
+	off += sprintf(buf + off, "\tUart Interface:\t%s\n",
+			uart_p->uart_open ? "Open" : "Closed");
 
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\tUART Write Chunk Size:\t\t%d\n",
+	off += sprintf(buf + off, "\tUART Write Chunk Size:\t\t%d\n",
 				uart_p->pdata->write_chunk_size);
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\tUART Read Chunk Size:\t\t%d\n",
+	off += sprintf(buf + off, "\tUART Read Chunk Size:\t\t%d\n",
 				uart_p->pdata->read_chunk_size);
-	off += snprintf(buf + off, PAGE_SIZE - off,
-					"\tInterface resumed:\t%s\n",
-			uart_p->interface_enabled ? "ON" : "OFF");
 
 	return off;
 }
@@ -734,24 +683,6 @@ static void uart_transport_enable(struct dbmdx_private *p, bool enable)
 	u32 uart_baud;
 
 	dev_dbg(uart_p->dev, "%s (%s)\n", __func__, enable ? "ON" : "OFF");
-
-	if (enable) {
-
-#ifdef CONFIG_PM_WAKELOCKS
-		wake_lock(&uart_p->ps_nosuspend_wl);
-#endif
-		ret = wait_event_interruptible(dbmdx_wq,
-			uart_p->interface_enabled);
-
-		if (ret)
-			dev_dbg(uart_p->dev,
-				"%s, waiting for interface was interrupted",
-				__func__);
-		else
-			dev_dbg(uart_p->dev, "%s, interface is active\n",
-				__func__);
-	}
-
 	if (enable) {
 
 		p->wakeup_set(p);
@@ -823,52 +754,13 @@ static void uart_transport_enable(struct dbmdx_private *p, bool enable)
 		}
 
 	} else {
-#ifdef CONFIG_PM_WAKELOCKS
-		wake_unlock(&uart_p->ps_nosuspend_wl);
-#endif
+
 		p->wakeup_release(p);
 
 		if (!uart_p->uart_open)
 			return;
 		uart_close_file(uart_p);
 	}
-}
-
-static void uart_resume(struct dbmdx_private *p)
-{
-	struct dbmdx_uart_private *uart_p =
-				(struct dbmdx_uart_private *)p->chip->pdata;
-
-	dev_dbg(uart_p->dev, "%s\n", __func__);
-
-	uart_interface_resume(uart_p);
-}
-
-
-void uart_interface_resume(struct dbmdx_uart_private *uart_p)
-{
-	dev_dbg(uart_p->dev, "%s\n", __func__);
-
-	uart_p->interface_enabled = 1;
-	wake_up_interruptible(&dbmdx_wq);
-}
-
-static void uart_suspend(struct dbmdx_private *p)
-{
-	struct dbmdx_uart_private *uart_p =
-				(struct dbmdx_uart_private *)p->chip->pdata;
-
-	dev_dbg(uart_p->dev, "%s\n", __func__);
-
-	uart_interface_suspend(uart_p);
-}
-
-
-void uart_interface_suspend(struct dbmdx_uart_private *uart_p)
-{
-	dev_dbg(uart_p->dev, "%s\n", __func__);
-
-	uart_p->interface_enabled = 0;
 }
 
 int uart_wait_till_alive(struct dbmdx_private *p)
@@ -1095,6 +987,179 @@ static int uart_prepare_amodel_loading(struct dbmdx_private *p)
 	return 0;
 }
 
+static int uart_load_amodel(struct dbmdx_private *p,  const void *data,
+			   size_t size, size_t gram_size, size_t net_size,
+			   const void *checksum, size_t chksum_len,
+			   enum dbmdx_load_amodel_mode load_amodel_mode)
+{
+	struct dbmdx_uart_private *uart_p =
+				(struct dbmdx_uart_private *)p->chip->pdata;
+	int retry = RETRY_COUNT;
+	int ret;
+	ssize_t send_bytes;
+	size_t cur_pos;
+	size_t cur_size;
+	u8 rx_checksum[6];
+	size_t model_size;
+	int model_size_fw;
+
+	dev_dbg(uart_p->dev, "%s\n", __func__);
+
+	model_size = gram_size + net_size + DBMDX_AMODEL_HEADER_SIZE*2;
+	model_size_fw = (int)(model_size / 16) + 1;
+
+	while (retry--) {
+
+		if (load_amodel_mode == LOAD_AMODEL_PRIMARY) {
+			ret = send_uart_cmd_va(
+					p,
+					DBMDX_VA_PRIMARY_AMODEL_SIZE |
+					model_size_fw,
+					NULL);
+
+			if (ret < 0) {
+				dev_err(p->dev,
+					"%s: failed to set prim. amodel size\n",
+					__func__);
+				continue;
+			}
+		} else if (load_amodel_mode == LOAD_AMODEL_2NDARY) {
+			ret = send_uart_cmd_va(
+					p,
+					DBMDX_VA_SECONDARY_AMODEL_SIZE |
+					model_size_fw,
+					NULL);
+
+			if (ret < 0) {
+				dev_err(p->dev,
+					"%s: failed to set prim. amodel size\n",
+					__func__);
+				continue;
+			}
+		}
+
+		ret = send_uart_cmd_va(p,
+			DBMDX_VA_LOAD_NEW_ACUSTIC_MODEL | load_amodel_mode,
+			NULL);
+
+		if (ret < 0) {
+			dev_err(p->dev,
+				"%s: failed to set fm to receive new amodel\n",
+				__func__);
+			continue;
+		}
+
+		dev_info(p->dev,
+			"%s: ---------> acoustic model download start\n",
+			__func__);
+
+		cur_size = DBMDX_AMODEL_HEADER_SIZE;
+		cur_pos = 0;
+		/* Send Gram Header */
+		send_bytes = uart_write_data(p, data, cur_size);
+
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* wait for FW to process the header */
+		usleep_range(DBMDX_USLEEP_AMODEL_HEADER,
+			DBMDX_USLEEP_AMODEL_HEADER + 1000);
+
+		cur_pos += DBMDX_AMODEL_HEADER_SIZE;
+		cur_size = gram_size;
+
+		/* Send Gram Data */
+		send_bytes = uart_write_data(p, data + cur_pos, cur_size);
+
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		cur_pos += gram_size;
+		cur_size = DBMDX_AMODEL_HEADER_SIZE;
+
+		/* Send Net Header */
+		send_bytes = uart_write_data(p, data + cur_pos, cur_size);
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* wait for FW to process the header */
+		usleep_range(DBMDX_USLEEP_AMODEL_HEADER,
+			DBMDX_USLEEP_AMODEL_HEADER + 1000);
+
+		cur_pos += DBMDX_AMODEL_HEADER_SIZE;
+		cur_size = net_size;
+
+		/* Send Net Data */
+		send_bytes = uart_write_data(p, data + cur_pos, cur_size);
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* verify checksum */
+		if (checksum) {
+			ret = send_uart_cmd_boot(p, DBMDX_READ_CHECKSUM);
+			if (ret < 0) {
+				dev_err(uart_p->dev,
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = uart_read_data(p, rx_checksum, 6);
+			if (ret < 0) {
+				dev_err(uart_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(p, checksum, &rx_checksum[2],
+						 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
+					__func__);
+				continue;
+			}
+		}
+		break;
+	}
+
+	/* no retries left, failed to load acoustic */
+	if (retry < 0) {
+		dev_err(p->dev, "%s: failed to load acoustic model\n",
+			__func__);
+		return -1;
+	}
+
+	/* send boot command */
+	ret = send_uart_cmd_boot(p, DBMDX_FIRMWARE_BOOT);
+	if (ret < 0) {
+		dev_err(p->dev, "%s: booting the firmware failed\n",
+			__func__);
+		return -1;
+	}
+
+	usleep_range(DBMDX_USLEEP_UART_AFTER_LOAD_AMODEL,
+		DBMDX_USLEEP_UART_AFTER_LOAD_AMODEL + 1000);
+
+	return 0;
+}
+
 static int uart_finish_amodel_loading(struct dbmdx_private *p)
 {
 	struct dbmdx_uart_private *uart_p =
@@ -1148,12 +1213,12 @@ static int uart_set_read_chunk_size(struct dbmdx_private *p, u32 size)
 		dev_err(uart_p->dev,
 			"%s Error setting UART read chunk. Max chunk size: %u\n",
 		__func__, MAX_UART_READ_CHUNK_SIZE);
-		return -EINVAL;
+		return -1;
 	} else if ((size % 2) != 0) {
 		dev_err(uart_p->dev,
 			"%s Error setting UART read chunk. Uneven size\n",
 		__func__);
-		return -EINVAL;
+		return -2;
 	} else if (size == 0)
 		uart_p->pdata->read_chunk_size = DEFAULT_UART_READ_CHUNK_SIZE;
 	else
@@ -1174,12 +1239,12 @@ static int uart_set_write_chunk_size(struct dbmdx_private *p, u32 size)
 		dev_err(uart_p->dev,
 			"%s Error setting UART write chunk. Max chunk size: %u\n",
 		__func__, MAX_UART_WRITE_CHUNK_SIZE);
-		return -EINVAL;
+		return -1;
 	} else if ((size % 2) != 0) {
 		dev_err(uart_p->dev,
 			"%s Error setting UART write chunk. Uneven size\n",
 		__func__);
-		return -EINVAL;
+		return -2;
 	} else if (size == 0)
 		uart_p->pdata->write_chunk_size = DEFAULT_UART_WRITE_CHUNK_SIZE;
 	else
@@ -1290,11 +1355,6 @@ int uart_common_probe(struct platform_device *pdev, const char threadnamefmt[])
 	init_completion(&p->uart_done);
 	atomic_set(&p->stop_uart_probing, 0);
 
-#ifdef CONFIG_PM_WAKELOCKS
-	wake_lock_init(&p->ps_nosuspend_wl, WAKE_LOCK_SUSPEND,
-		"dbmdx_nosuspend_wakelock_uart");
-#endif
-
 	/* fill in chip interface functions */
 	p->chip.can_boot = uart_can_boot;
 	p->chip.prepare_boot = uart_prepare_boot;
@@ -1308,21 +1368,17 @@ int uart_common_probe(struct platform_device *pdev, const char threadnamefmt[])
 	p->chip.write = uart_write_data;
 	p->chip.send_cmd_vqe = send_uart_cmd_vqe;
 	p->chip.send_cmd_va = send_uart_cmd_va;
-	p->chip.send_cmd_boot = send_uart_cmd_boot;
-	p->chip.verify_boot_checksum = uart_verify_boot_checksum;
 	p->chip.prepare_buffering = uart_prepare_buffering;
 	p->chip.read_audio_data = uart_read_audio_data;
 	p->chip.finish_buffering = uart_finish_buffering;
 	p->chip.prepare_amodel_loading = uart_prepare_amodel_loading;
+	p->chip.load_amodel = uart_load_amodel;
 	p->chip.finish_amodel_loading = uart_finish_amodel_loading;
 	p->chip.get_write_chunk_size = uart_get_write_chunk_size;
 	p->chip.get_read_chunk_size = uart_get_read_chunk_size;
 	p->chip.set_write_chunk_size = uart_set_write_chunk_size;
 	p->chip.set_read_chunk_size = uart_set_read_chunk_size;
-	p->chip.resume = uart_resume;
-	p->chip.suspend = uart_suspend;
 
-	p->interface_enabled = 1;
 
 	dev_set_drvdata(p->dev, &p->chip);
 
@@ -1354,10 +1410,6 @@ int uart_common_remove(struct platform_device *pdev)
 	struct dbmdx_uart_private *p = (struct dbmdx_uart_private *)ci->pdata;
 
 	dev_set_drvdata(p->dev, NULL);
-
-#ifdef CONFIG_PM_WAKELOCKS
-	wake_lock_destroy(&p->ps_nosuspend_wl);
-#endif
 
 	uart_close_file(p);
 	kfree(p);

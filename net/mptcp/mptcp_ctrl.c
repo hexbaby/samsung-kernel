@@ -62,8 +62,8 @@ static struct kmem_cache *mptcp_sock_cache __read_mostly;
 static struct kmem_cache *mptcp_cb_cache __read_mostly;
 static struct kmem_cache *mptcp_tw_cache __read_mostly;
 
-int sysctl_mptcp_enabled __read_mostly;
-int sysctl_mptcp_checksum __read_mostly;
+int sysctl_mptcp_enabled __read_mostly = 1;
+int sysctl_mptcp_checksum __read_mostly = 1;
 int sysctl_mptcp_debug __read_mostly;
 EXPORT_SYMBOL(sysctl_mptcp_debug);
 int sysctl_mptcp_syn_retries __read_mostly = 3;
@@ -1457,16 +1457,6 @@ static int mptcp_sub_send_fin(struct sock *sk)
 	return 0;
 }
 
-/* Protect bind_hash on mptcp */
-static bool mptcp_tcp_close_state(struct sock *sk)
-{
-	bool state;
-	lock_sock(sk);
-	state = tcp_close_state(sk);
-	release_sock(sk);
-	return state;
-}
-
 void mptcp_sub_close_wq(struct work_struct *work)
 {
 	struct tcp_sock *tp = container_of(work, struct mptcp_tcp_sock, work.work)->tp;
@@ -1491,7 +1481,7 @@ void mptcp_sub_close_wq(struct work_struct *work)
 		tp->closing = 1;
 		sock_rps_reset_flow(sk);
 		tcp_close(sk, 0);
-	} else if (mptcp_tcp_close_state(sk)) {
+	} else if (tcp_close_state(sk)) {
 		sk->sk_shutdown |= SEND_SHUTDOWN;
 		tcp_send_fin(sk);
 	}

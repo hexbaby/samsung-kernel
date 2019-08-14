@@ -31,12 +31,12 @@
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
 #include <asm/system_misc.h>
+#include <asm/suspend.h>
 
-#ifdef CONFIG_RKP_CFP_FIX_SMC_BUG
-#include <linux/rkp_cfp.h>
-#endif
 #define PSCI_POWER_STATE_TYPE_STANDBY		0
 #define PSCI_POWER_STATE_TYPE_POWER_DOWN	1
+
+#define PSCI_POWER_STATE_BIT	BIT(30)
 
 struct psci_power_state {
 	u16	id;
@@ -45,7 +45,7 @@ struct psci_power_state {
 };
 
 struct psci_operations {
-	int (*cpu_suspend)(struct psci_power_state state,
+	int (*cpu_suspend)(unsigned long state_id,
 			   unsigned long entry_point);
 	int (*cpu_off)(struct psci_power_state state);
 	int (*cpu_on)(unsigned long cpuid, unsigned long entry_point);
@@ -123,15 +123,14 @@ static int psci_get_version(void)
 	return err;
 }
 
-static int psci_cpu_suspend(struct psci_power_state state,
+static int psci_cpu_suspend(unsigned long  state_id,
 			    unsigned long entry_point)
 {
 	int err;
-	u32 fn, power_state;
+	u32 fn;
 
 	fn = psci_function_id[PSCI_FN_CPU_SUSPEND];
-	power_state = psci_power_state_pack(state);
-	err = invoke_psci_fn(fn, power_state, entry_point, 0);
+	err = invoke_psci_fn(fn, state_id, entry_point, 0);
 	return psci_to_linux_errno(err);
 }
 
@@ -280,6 +279,58 @@ static void psci_sys_poweroff(void)
  * PSCI Function IDs for v0.2+ are well defined so use
  * standard values.
  */
+static int __init psci_1_0_init(struct device_node *np)
+{
+	int err, ver;
+
+	err = get_set_conduit_method(np);
+
+	if (err)
+		goto out_put_node;
+
+	ver = psci_get_version();
+
+	if (ver == PSCI_RET_NOT_SUPPORTED) {
+		/* PSCI v1.0 mandates implementation of PSCI_ID_VERSION. */
+		pr_err("PSCI firmware does not comply with the v1.0 spec.\n");
+		err = -EOPNOTSUPP;
+		goto out_put_node;
+	} else {
+		pr_info("PSCIv%d.%d detected in firmware.\n",
+				PSCI_VERSION_MAJOR(ver),
+				PSCI_VERSION_MINOR(ver));
+		if (PSCI_VERSION_MAJOR(ver) != 1) {
+			err = -EINVAL;
+			pr_err("Conflicting PSCI version detected.\n");
+			goto out_put_node;
+		}
+	}
+
+	pr_info("Using standard PSCI v0.2 function IDs\n");
+	psci_function_id[PSCI_FN_CPU_SUSPEND] = PSCI_0_2_FN64_CPU_SUSPEND;
+	psci_ops.cpu_suspend = psci_cpu_suspend;
+
+	psci_function_id[PSCI_FN_CPU_OFF] = PSCI_0_2_FN_CPU_OFF;
+	psci_ops.cpu_off = psci_cpu_off;
+
+	psci_function_id[PSCI_FN_CPU_ON] = PSCI_0_2_FN64_CPU_ON;
+	psci_ops.cpu_on = psci_cpu_on;
+
+	psci_function_id[PSCI_FN_MIGRATE] = PSCI_0_2_FN64_MIGRATE;
+	psci_ops.migrate = psci_migrate;
+
+	psci_function_id[PSCI_FN_AFFINITY_INFO] = PSCI_0_2_FN64_AFFINITY_INFO;
+	psci_ops.affinity_info = psci_affinity_info;
+
+	psci_function_id[PSCI_FN_MIGRATE_INFO_TYPE] =
+		PSCI_0_2_FN_MIGRATE_INFO_TYPE;
+	psci_ops.migrate_info_type = psci_migrate_info_type;
+
+out_put_node:
+	of_node_put(np);
+	return err;
+}
+
 static int __init psci_0_2_init(struct device_node *np)
 {
 	int err, ver;
@@ -300,7 +351,6 @@ static int __init psci_0_2_init(struct device_node *np)
 		pr_info("PSCIv%d.%d detected in firmware.\n",
 				PSCI_VERSION_MAJOR(ver),
 				PSCI_VERSION_MINOR(ver));
-
 		if (PSCI_VERSION_MAJOR(ver) == 0 &&
 				PSCI_VERSION_MINOR(ver) < 2) {
 			err = -EINVAL;
@@ -381,6 +431,7 @@ out_put_node:
 static const struct of_device_id psci_of_match[] __initconst = {
 	{ .compatible = "arm,psci",	.data = psci_0_1_init},
 	{ .compatible = "arm,psci-0.2",	.data = psci_0_2_init},
+	{ .compatible = "arm,psci-1.0", .data = psci_1_0_init},
 	{},
 };
 
@@ -399,8 +450,11 @@ int __init psci_init(void)
 	return init_fn(np);
 }
 
+#ifdef CONFIG_SMP
+
 static int __init cpu_psci_cpu_init(struct device_node *dn, unsigned int cpu)
 {
+	pr_info("Initializing psci_cpu_init\n");
 	return 0;
 }
 
@@ -463,12 +517,12 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 	for (i = 0; i < 10; i++) {
 		err = psci_ops.affinity_info(cpu_logical_map(cpu), 0);
 		if (err == PSCI_0_2_AFFINITY_LEVEL_OFF) {
-			pr_info("CPU%d killed.\n", cpu);
+			pr_debug("CPU%d killed.\n", cpu);
 			return 1;
 		}
 
 		msleep(10);
-		pr_info("Retrying again to check for CPU kill\n");
+		pr_debug("Retrying again to check for CPU kill\n");
 	}
 
 	pr_warn("CPU%d may not have shut down cleanly (AFFINITY_INFO reports %d)\n",
@@ -477,83 +531,35 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 	return 0;
 }
 #endif
+#endif
 
-static int psci_suspend_finisher(unsigned long index)
+static int psci_suspend_finisher(unsigned long state_id)
 {
-	struct psci_power_state *state = __get_cpu_var(psci_power_state);
-
-	return psci_ops.cpu_suspend(state[index - 1],
-				    virt_to_phys(cpu_resume));
+	return psci_ops.cpu_suspend(state_id, virt_to_phys(cpu_resume));
 }
 
-/**
- * Ideally, we hope that PSCI framework cover the all power states, but it
- * is not correspond on some platforms. Below function supports extra power
- * state that PSCI cannot be handled.
- */
-static int psci_suspend_customized_finisher(unsigned long index)
+static int __maybe_unused cpu_psci_cpu_suspend(unsigned long state_id)
 {
-	struct psci_power_state state = {
-			.id = 0,
-			.type = 0,
-			.affinity_level = 0,
-	};
-
-	switch (index) {
-	case PSCI_CLUSTER_SLEEP:
-		state.affinity_level = 1;
-		break;
-	case PSCI_SYSTEM_IDLE:
-		state.id = 1;
-		break;
-	case PSCI_SYSTEM_IDLE_AUDIO:
-		state.id = 2;
-		break;
-	case PSCI_SYSTEM_IDLE_CLUSTER_SLEEP:
-		state.id = 1;
-		state.affinity_level = 1;
-		break;
-	case PSCI_SYSTEM_SLEEP:
-		state.affinity_level = 3;
-		break;
-	default:
-		panic("Unsupported psci state, index = %ld\n", index);
-		break;
-	};
-
-	return psci_ops.cpu_suspend(state, virt_to_phys(cpu_resume));
-}
-
-static int __maybe_unused cpu_psci_cpu_suspend(unsigned long index)
-{
-	int ret;
-	struct psci_power_state *state = __get_cpu_var(psci_power_state);
-
-	/*
-	 * idle state index 0 corresponds to wfi, should never be called
-	 * from the cpu_suspend operations
-	 */
-	if (WARN_ON_ONCE(!index))
+	if (WARN_ON_ONCE(!state_id))
 		return -EINVAL;
 
-	if (unlikely(index >= PSCI_UNUSED_INDEX))
-		return __cpu_suspend(index, psci_suspend_customized_finisher);
-
-	if (state[index - 1].type == PSCI_POWER_STATE_TYPE_STANDBY)
-		ret = psci_ops.cpu_suspend(state[index - 1], 0);
+	if (state_id & PSCI_POWER_STATE_BIT)
+		return __cpu_suspend(state_id, psci_suspend_finisher);
 	else
-		ret = __cpu_suspend(index, psci_suspend_finisher);
-
-	return ret;
+		return  psci_ops.cpu_suspend(state_id, 0);
 }
 
-const struct cpu_operations cpu_psci_ops = {
+static struct cpu_operations cpu_psci_ops = {
 	.name		= "psci",
 #ifdef CONFIG_CPU_IDLE
 	.cpu_init_idle	= cpu_psci_cpu_init_idle,
 	.cpu_suspend	= cpu_psci_cpu_suspend,
 #endif
+#ifdef CONFIG_SMP
 	.cpu_init	= cpu_psci_cpu_init,
+#ifdef CONFIG_ARM64_CPU_SUSPEND
+	.cpu_suspend	= cpu_psci_cpu_suspend,
+#endif
 	.cpu_prepare	= cpu_psci_cpu_prepare,
 	.cpu_boot	= cpu_psci_cpu_boot,
 #ifdef CONFIG_HOTPLUG_CPU
@@ -561,5 +567,6 @@ const struct cpu_operations cpu_psci_ops = {
 	.cpu_die	= cpu_psci_cpu_die,
 	.cpu_kill	= cpu_psci_cpu_kill,
 #endif
+#endif
 };
-
+CPU_METHOD_OF_DECLARE(psci, "psci", &cpu_psci_ops);

@@ -278,6 +278,9 @@
 #include <net/tcp.h>
 #include <net/xfrm.h>
 #include <net/ip.h>
+#include <net/ip6_route.h>
+#include <net/ipv6.h>
+#include <net/transp_v6.h>
 #include <net/sock.h>
 
 #include <asm/uaccess.h>
@@ -303,6 +306,12 @@ EXPORT_SYMBOL(sysctl_tcp_wmem);
 
 atomic_long_t tcp_memory_allocated;	/* Current allocated memory. */
 EXPORT_SYMBOL(tcp_memory_allocated);
+
+int sysctl_tcp_delack_seg __read_mostly = TCP_DELACK_SEG;
+EXPORT_SYMBOL(sysctl_tcp_delack_seg);
+
+int sysctl_tcp_use_userconfig __read_mostly;
+EXPORT_SYMBOL(sysctl_tcp_use_userconfig);
 
 /*
  * Current number of TCP sockets.
@@ -820,6 +829,7 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 			 */
 			if (!skb_queue_empty(&sk->sk_receive_queue))
 				break;
+
 			sk_wait_data(sk, &timeo);
 			if (signal_pending(current)) {
 				ret = sock_intr_errno(timeo);
@@ -1024,7 +1034,7 @@ new_segment:
 
 		i = skb_shinfo(skb)->nr_frags;
 		can_coalesce = skb_can_coalesce(skb, i, page, offset);
-		if (!can_coalesce && i >= sysctl_max_skb_frags) {
+		if (!can_coalesce && i >= MAX_SKB_FRAGS) {
 			tcp_mark_push(tp, skb);
 			goto new_segment;
 		}
@@ -1156,12 +1166,9 @@ static int tcp_sendmsg_fastopen(struct sock *sk, struct msghdr *msg,
 				int *copied, size_t size)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct sockaddr *uaddr = msg->msg_name;
 	int err, flags;
 
-	if (!(sysctl_tcp_fastopen & TFO_CLIENT_ENABLE) ||
-	    (uaddr && msg->msg_namelen >= sizeof(uaddr->sa_family) &&
-	     uaddr->sa_family == AF_UNSPEC))
+	if (!(sysctl_tcp_fastopen & TFO_CLIENT_ENABLE))
 		return -EOPNOTSUPP;
 	if (tp->fastopen_req != NULL)
 		return -EALREADY; /* Another Fast Open is in progress */
@@ -1174,7 +1181,7 @@ static int tcp_sendmsg_fastopen(struct sock *sk, struct msghdr *msg,
 	tp->fastopen_req->size = size;
 
 	flags = (msg->msg_flags & MSG_DONTWAIT) ? O_NONBLOCK : 0;
-	err = __inet_stream_connect(sk->sk_socket, uaddr,
+	err = __inet_stream_connect(sk->sk_socket, msg->msg_name,
 				    msg->msg_namelen, flags);
 	*copied = tp->fastopen_req->copied;
 	tcp_free_fastopen_req(tp);
@@ -1305,18 +1312,12 @@ new_segment:
 
 				/*
 				 * Check whether we can use HW checksum.
-				 *
-				 * If dss-csum is enabled, we do not do hw-csum.
-				 * In case of non-mptcp we check the
-				 * device-capabilities.
-				 * In case of mptcp, hw-csum's will be handled
-				 * later in mptcp_write_xmit.
 				 */
 				if (
 #ifdef CONFIG_MPTCP
 					((mptcp(tp) && !tp->mpcb->dss_csum) || !mptcp(tp)) &&
 				    (mptcp(tp) ||
-#endif
+#endif 
 						sk->sk_route_caps & NETIF_F_ALL_CSUM)
 #ifdef CONFIG_MPTCP
 					)
@@ -1356,7 +1357,7 @@ new_segment:
 
 				if (!skb_can_coalesce(skb, i, pfrag->page,
 						      pfrag->offset)) {
-					if (i == sysctl_max_skb_frags || !sg) {
+					if (i == MAX_SKB_FRAGS || !sg) {
 						tcp_mark_push(tp, skb);
 						goto new_segment;
 					}
@@ -1529,7 +1530,7 @@ static int tcp_peek_sndq(struct sock *sk, struct msghdr *msg, int len)
  * a window update.
  */
 #ifndef CONFIG_MPTCP
-static
+static 
 #endif
 void tcp_cleanup_rbuf(struct sock *sk, int copied)
 {
@@ -1547,8 +1548,11 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 		   /* Delayed ACKs frequently hit locked sockets during bulk
 		    * receive. */
 		if (icsk->icsk_ack.blocked ||
-		    /* Once-per-two-segments ACK was not sent by tcp_input.c */
-		    tp->rcv_nxt - tp->rcv_wup > icsk->icsk_ack.rcv_mss ||
+		    /* Once-per-sysctl_tcp_delack_seg segments
+			  * ACK was not sent by tcp_input.c
+			  */
+		    tp->rcv_nxt - tp->rcv_wup > (icsk->icsk_ack.rcv_mss) *
+						sysctl_tcp_delack_seg ||
 		    /*
 		     * If this read emptied read buffer, we send ACK, if
 		     * connection is not bidirectional, user drained
@@ -1818,7 +1822,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				 "recvmsg bug: copied %X seq %X rcvnxt %X fl %X\n",
 				 *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				 flags))
-				break;
+				goto selfdestruct;
 
 			offset = *seq - TCP_SKB_CB(skb)->seq;
 			if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN)
@@ -2082,6 +2086,10 @@ recv_urg:
 recv_sndq:
 	err = tcp_peek_sndq(sk, msg, len);
 	goto out;
+selfdestruct:
+	err = -EBADFD;
+	tcp_done(sk);
+	goto out;
 }
 EXPORT_SYMBOL(tcp_recvmsg);
 
@@ -2144,7 +2152,7 @@ static const unsigned char new_state[16] = {
 };
 
 #ifndef CONFIG_MPTCP
-static
+static 
 #endif
 int tcp_close_state(struct sock *sk)
 {
@@ -2473,15 +2481,9 @@ int tcp_disconnect(struct sock *sk, int flags)
 	tcp_set_ca_state(sk, TCP_CA_Open);
 	tcp_clear_retrans(tp);
 	inet_csk_delack_init(sk);
-	/* Initialize rcv_mss to TCP_MIN_MSS to avoid division by 0
-	 * issue in __tcp_select_window()
-	 */
-	icsk->icsk_ack.rcv_mss = TCP_MIN_MSS;
 	tcp_init_send_head(sk);
 	memset(&tp->rx_opt, 0, sizeof(tp->rx_opt));
 	__sk_dst_reset(sk);
-	dst_release(sk->sk_rx_dst);
-	sk->sk_rx_dst = NULL;
 
 	WARN_ON(inet->inet_num && !icsk->icsk_bind_hash);
 
@@ -2957,6 +2959,16 @@ void tcp_get_info(const struct sock *sk, struct tcp_info *info)
 
 	rate = READ_ONCE(sk->sk_max_pacing_rate);
 	info->tcpi_max_pacing_rate = rate != ~0U ? rate : ~0ULL;
+
+	/*
+	* Expose reference count for socket.
+	*/
+	if (NULL != sk->sk_socket) {
+		struct file *filep = sk->sk_socket->file;
+
+		if (filep)
+			info->tcpi_count = file_count(filep);
+	}
 }
 EXPORT_SYMBOL_GPL(tcp_get_info);
 
@@ -3422,3 +3434,136 @@ void __init tcp_init(void)
 	BUG_ON(tcp_register_congestion_control(&tcp_reno) != 0);
 	tcp_tasklet_init();
 }
+
+static int tcp_is_local(struct net *net, __be32 addr) {
+	struct rtable *rt;
+	struct flowi4 fl4 = { .daddr = addr };
+	int is_local;
+	rt = ip_route_output_key(net, &fl4);
+	if (IS_ERR_OR_NULL(rt))
+		return 0;
+
+	is_local = rt->dst.dev && (rt->dst.dev->flags & IFF_LOOPBACK);
+	ip_rt_put(rt);
+	return is_local;
+}
+
+#if defined(CONFIG_IPV6)
+static int tcp_is_local6(struct net *net, struct in6_addr *addr) {
+	struct rt6_info *rt6 = rt6_lookup(net, addr, addr, 0, 0);
+	int is_local;
+
+	is_local = rt6 && rt6->dst.dev && (rt6->dst.dev->flags & IFF_LOOPBACK);
+	ip6_rt_put(rt6);
+	return is_local;
+}
+#endif
+
+/*
+ * tcp_nuke_addr - destroy all sockets on the given local address
+ * if local address is the unspecified address (0.0.0.0 or ::), destroy all
+ * sockets with local addresses that are not configured.
+ */
+int tcp_nuke_addr(struct net *net, struct sockaddr *addr)
+{
+	int family = addr->sa_family;
+	unsigned int bucket;
+
+	struct in_addr *in = NULL;
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+	struct in6_addr *in6 = NULL;
+#endif
+	if (family == AF_INET) {
+		in = &((struct sockaddr_in *)addr)->sin_addr;
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+	} else if (family == AF_INET6) {
+		in6 = &((struct sockaddr_in6 *)addr)->sin6_addr;
+#endif
+	} else {
+		return -EAFNOSUPPORT;
+	}
+
+	for (bucket = 0; bucket <= tcp_hashinfo.ehash_mask; bucket++) {
+		struct hlist_nulls_node *node;
+		struct sock *sk;
+		spinlock_t *lock = inet_ehash_lockp(&tcp_hashinfo, bucket);
+
+restart:
+		spin_lock_bh(lock);
+		sk_nulls_for_each(sk, node, &tcp_hashinfo.ehash[bucket].chain) {
+			struct inet_sock *inet = inet_sk(sk);
+
+			if (sk->sk_state == TCP_TIME_WAIT) {
+				/*
+				 * Sockets that are in TIME_WAIT state are
+				 * instances of lightweight inet_timewait_sock,
+				 * we should simply skip them (or we'll try to
+				 * access non-existing fields and crash).
+				 */
+				continue;
+			}
+
+			if (sysctl_ip_dynaddr && sk->sk_state == TCP_SYN_SENT)
+				continue;
+
+			if (sock_flag(sk, SOCK_DEAD))
+				continue;
+
+			if (family == AF_INET) {
+				__be32 s4 = inet->inet_rcv_saddr;
+				if (s4 == LOOPBACK4_IPV6)
+					continue;
+
+				if (in && in->s_addr != s4 &&
+				    !(in->s_addr == INADDR_ANY &&
+				      !tcp_is_local(net, s4)))
+					continue;
+			}
+
+#if defined(CONFIG_IPV6)
+			if (family == AF_INET6) {
+				struct in6_addr *s6;
+				if (!inet->pinet6)
+					continue;
+
+				if (sk->sk_family == AF_INET)
+					continue;
+
+				s6 = &sk->sk_v6_rcv_saddr;
+				if (ipv6_addr_type(s6) == IPV6_ADDR_MAPPED)
+					continue;
+
+				if (!ipv6_addr_equal(in6, s6) &&
+				    !(ipv6_addr_equal(in6, &in6addr_any) &&
+				      !tcp_is_local6(net, s6)))
+				continue;
+			}
+#endif
+
+			sock_hold(sk);
+			spin_unlock_bh(lock);
+
+			lock_sock(sk);
+			local_bh_disable();
+			bh_lock_sock(sk);
+
+			if (!sock_flag(sk, SOCK_DEAD)) {
+				smp_wmb();  /* be consistent with tcp_reset */
+				sk->sk_err = ETIMEDOUT;
+				sk->sk_error_report(sk);
+				tcp_done(sk);
+			}
+
+			bh_unlock_sock(sk);
+			local_bh_enable();
+			release_sock(sk);
+			sock_put(sk);
+
+			goto restart;
+		}
+		spin_unlock_bh(lock);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tcp_nuke_addr);

@@ -20,13 +20,9 @@ config PCIE_DW
 
 config PCI_EXYNOS
 	bool "Samsung Exynos PCIe controller"
-	depends on SOC_EXYNOS8890
+	depends on SOC_EXYNOS5440
 	select PCIEPORTBUS
 	select PCIE_DW
-
-config PCI_EXYNOS_TEST
-	bool "EXYNOS PCIe driver test"
-	depends on PCI_EXYNOS
 
 config PCI_IMX6
 	bool "Freescale i.MX6 PCIe controller"
@@ -54,7 +50,7 @@ config PCI_RCAR_GEN2_PCIE
 
 config PCI_HOST_GENERIC
 	bool "Generic PCI host controller"
-	depends on ARM && OF
+	depends on (ARM || ARM64) && OF
 	help
 	  Say Y here if you want to support a simple generic PCI host
 	  controller, such as the one emulated by kvmtool.
@@ -85,18 +81,23 @@ config PCIE_XILINX
 	  Say 'Y' here if you want kernel to support the Xilinx AXI PCIe
 	  Host Bridge driver.
 
-config SEC_PANIC_PCIE_ERR
-	depends on PCI_EXYNOS
-	bool "PANIC on PCIe Error"
-
 config PCI_XGENE
 	bool "X-Gene PCIe controller"
 	depends on ARCH_XGENE
 	depends on OF
 	select PCIEPORTBUS
+	select PCI_MSI_IRQ_DOMAIN if PCI_MSI
 	help
 	  Say Y here if you want internal PCI support on APM X-Gene SoC.
 	  There are 5 internal PCIe ports available. Each port is GEN3 capable
 	  and have varied lanes from x1 to x8.
+
+config PCI_XGENE_MSI
+	bool "X-Gene v1 PCIe MSI feature"
+	depends on PCI_XGENE && PCI_MSI
+	default y
+	help
+	  Say Y here if you want PCIe MSI support for the APM X-Gene v1 SoC.
+	  This MSI driver supports 5 PCIe ports on the APM X-Gene v1 SoC.
 
 endmenu

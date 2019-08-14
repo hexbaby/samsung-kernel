@@ -251,6 +251,7 @@ void shake_page(struct page *p, int access)
 			};
 			node_set(nid, shrink.nodes_to_scan);
 
+			shrink.priority = DEF_PRIORITY;
 			nr = shrink_slab(&shrink, 1000, 1000);
 			if (page_count(p) == 1)
 				break;
@@ -1006,7 +1007,7 @@ static int hwpoison_user_mappings(struct page *p, unsigned long pfn,
 	if (kill)
 		collect_procs(ppage, &tokill, flags & MF_ACTION_REQUIRED);
 
-	ret = try_to_unmap(ppage, ttu);
+	ret = try_to_unmap(ppage, ttu, NULL);
 	if (ret != SWAP_SUCCESS)
 		printk(KERN_ERR "MCE %#lx: failed to unmap page (mapcount=%d)\n",
 				pfn, page_mapcount(ppage));
@@ -1189,10 +1190,7 @@ int memory_failure(unsigned long pfn, int trapno, int flags)
 	 * page_remove_rmap() in try_to_unmap_one(). So to determine page status
 	 * correctly, we save a copy of the page flags at this time.
 	 */
-	if (PageHuge(p))
-		page_flags = hpage->flags;
-	else
-		page_flags = p->flags;
+	page_flags = p->flags;
 
 	/*
 	 * unpoison always clear PG_hwpoison inside page lock
@@ -1573,8 +1571,12 @@ static int soft_offline_huge_page(struct page *page, int flags)
 	if (ret) {
 		pr_info("soft offline: %#lx: migration failed %d, type %lx\n",
 			pfn, ret, page->flags);
-		if (!list_empty(&pagelist))
-			putback_movable_pages(&pagelist);
+		/*
+		 * We know that soft_offline_huge_page() tries to migrate
+		 * only one hugepage pointed to by hpage, so we need not
+		 * run through the pagelist here.
+		 */
+		putback_active_hugepage(hpage);
 		if (ret > 0)
 			ret = -EIO;
 	} else {

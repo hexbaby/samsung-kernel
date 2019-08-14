@@ -260,7 +260,7 @@ struct of_pci_range *of_pci_range_parser_one(struct of_pci_range_parser *parser,
 	if (!parser->range || parser->range + parser->np > parser->end)
 		return NULL;
 
-	range->pci_space = be32_to_cpup(parser->range);
+	range->pci_space = parser->range[0];
 	range->flags = of_bus_pci_get_flags(parser->range);
 	range->pci_addr = of_read_number(parser->range + 1, ns);
 	range->cpu_addr = of_translate_address(parser->node,
@@ -781,6 +781,22 @@ unsigned long __weak pci_address_to_pio(phys_addr_t address)
 #endif
 }
 
+const __be32 *of_get_address_by_name(struct device_node *dev, const char *name,
+		u64 *size, unsigned int *flags)
+{
+	int index;
+	if (!name)
+		return NULL;
+
+	/* Try to read "reg-names" property and get the index by name */
+	index = of_property_match_string(dev, "reg-names", name);
+	if (index < 0)
+		return NULL;
+
+	return of_get_address(dev, index, size, flags);
+}
+EXPORT_SYMBOL(of_get_address_by_name);
+
 static int __of_address_to_resource(struct device_node *dev,
 		const __be32 *addrp, u64 size, unsigned int flags,
 		const char *name, struct resource *r)
@@ -889,7 +905,7 @@ EXPORT_SYMBOL(of_iomap);
  *		return PTR_ERR(base);
  */
 void __iomem *of_io_request_and_map(struct device_node *np, int index,
-					char *name)
+					const char *name)
 {
 	struct resource res;
 	void __iomem *mem;
@@ -1019,3 +1035,19 @@ bool of_dma_is_coherent(struct device_node *np)
 	return false;
 }
 EXPORT_SYMBOL_GPL(of_dma_is_coherent);
+
+void __iomem *of_iomap_by_name(struct device_node *np, const char *name)
+{
+	int index;
+
+	if (!name)
+		return NULL;
+
+	/* Try to read "reg-names" property and get the index by name */
+	index = of_property_match_string(np, "reg-names", name);
+	if (index < 0)
+		return NULL;
+
+	return of_iomap(np, index);
+}
+EXPORT_SYMBOL(of_iomap_by_name);

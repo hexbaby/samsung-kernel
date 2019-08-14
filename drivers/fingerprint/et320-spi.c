@@ -36,15 +36,20 @@
 #include <linux/miscdevice.h>
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-#include <linux/smc.h>
-#endif
-#include <linux/sysfs.h>
 
 static DECLARE_BITMAP(minors, N_SPI_MINORS);
 
 static LIST_HEAD(device_list);
 static DEFINE_MUTEX(device_list_lock);
+
+/* using for awake the samsung FP daemon */
+extern bool fp_lockscreen_mode;
+#ifdef ENABLE_SENSORS_FPRINT_SECURE
+#ifdef CONFIG_SENSORS_FP_LOCKSCREEN_MODE
+/* input/Keyboard/gpio_keys.c */
+extern bool wakeup_by_key(void);
+#endif
+#endif
 
 static int gpio_irq;
 static struct etspi_data *g_data;
@@ -219,97 +224,6 @@ static ssize_t etspi_write(struct file *filp,
 }
 
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
-static int etspi_sec_spi_prepare(struct sec_spi_info *spi_info,
-		struct spi_device *spi)
-{
-	struct clk *fp_spi_pclk, *fp_spi_sclk;
-
-	fp_spi_pclk = clk_get(NULL, "fp-spi-pclk");
-	if (IS_ERR(fp_spi_pclk)) {
-		pr_err("Can't get fp_spi_pclk\n");
-		return -1;
-	}
-
-	fp_spi_sclk = clk_get(NULL, "fp-spi-sclk");
-	if (IS_ERR(fp_spi_sclk)) {
-		pr_err("Can't get fp_spi_sclk\n");
-		return -1;
-	}
-
-	clk_prepare_enable(fp_spi_pclk);
-	clk_prepare_enable(fp_spi_sclk);
-	clk_set_rate(fp_spi_sclk, spi_info->speed * 2);
-
-	clk_put(fp_spi_pclk);
-	clk_put(fp_spi_sclk);
-
-	return 0;
-}
-
-static int etspi_sec_spi_unprepare(struct sec_spi_info *spi_info,
-		struct spi_device *spi)
-{
-	struct clk *fp_spi_pclk, *fp_spi_sclk;
-
-	fp_spi_pclk = clk_get(NULL, "fp-spi-pclk");
-	if (IS_ERR(fp_spi_pclk)) {
-		pr_err("Can't get fp_spi_pclk\n");
-		return -1;
-	}
-
-	fp_spi_sclk = clk_get(NULL, "fp-spi-sclk");
-	if (IS_ERR(fp_spi_sclk)) {
-		pr_err("Can't get fp_spi_sclk\n");
-		return -1;
-	}
-
-	clk_disable_unprepare(fp_spi_pclk);
-	clk_disable_unprepare(fp_spi_sclk);
-
-	clk_put(fp_spi_pclk);
-	clk_put(fp_spi_sclk);
-
-	return 0;
-}
-
-#if !defined(CONFIG_SOC_EXYNOS8890)
-static struct amba_device *adev_dma;
-static int etspi_sec_dma_prepare(struct sec_spi_info *spi_info)
-{
-	struct device_node *np;
-
-	for_each_compatible_node(np, NULL, "arm,pl330")
-	{
-		if (!of_device_is_available(np))
-			continue;
-
-		if (!of_dma_secure_mode(np))
-			continue;
-
-		adev_dma = of_find_amba_device_by_node(np);
-		pr_info("[%s]device_name:%s\n", __func__, dev_name(&adev_dma->dev));
-		break;
-	}
-
-	if (adev_dma == NULL)
-		return -1;
-
-	pm_runtime_get_sync(&adev_dma->dev);
-
-	return 0;
-}
-
-static int etspi_sec_dma_unprepare(void)
-{
-	if (adev_dma == NULL)
-		return -1;
-
-	pm_runtime_put(&adev_dma->dev);
-
-	return 0;
-}
-#endif
-
 #ifdef CONFIG_SENSORS_FP_LOCKSCREEN_MODE
 static int etspi_send_wake_up_signal(struct etspi_data *etspi)
 {
@@ -368,13 +282,8 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct spi_device *spi;
 	u32 tmp;
 	struct egis_ioc_transfer *ioc = NULL;
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-	struct egis_ioc_transfer_32 *ioc_32 = NULL;
-	u64 tx_buffer_64, rx_buffer_64;
-#endif
 	u8 *buf, *address, *result, *image_buf;
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
-	struct sec_spi_info *spi_info = NULL;
 	unsigned int lockscreen_mode = 0;
 #endif
 	/* Check type and command number */
@@ -422,52 +331,8 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		goto out;
 	}
 
-	/*
-	 *	If platform is 32bit and kernel is 64bit
-	 *	We will alloc egis_ioc_transfer for 64bit and 32bit
-	 *	We use ioc_32(32bit) to get data from user mode.
-	 *	Then copy the ioc_32 to ioc(64bit).
-	 */
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-	tmp = _IOC_SIZE(cmd);
-	if ((tmp == 0) || (tmp % sizeof(struct egis_ioc_transfer_32)) != 0) {
-		pr_err("%s ioc_32 size error\n", __func__);
-		retval = -EINVAL;
-		goto out;
-	}
-	ioc_32 = kmalloc(tmp, GFP_KERNEL);
-	if (ioc_32 == NULL) {
-		retval = -ENOMEM;
-		pr_err("%s ioc_32 kmalloc error\n", __func__);
-		goto out;
-	}
-	if (__copy_from_user(ioc_32, (void __user *)arg, tmp)) {
-		retval = -EFAULT;
-		pr_err("%s ioc_32 copy_from_user error\n", __func__);
-		goto out;
-	}
-	ioc = kmalloc(sizeof(struct egis_ioc_transfer), GFP_KERNEL);
-	if (ioc == NULL) {
-		retval = -ENOMEM;
-		pr_err("%s ioc kmalloc error\n", __func__);
-		goto out;
-	}
-	tx_buffer_64 = (u64)ioc_32->tx_buf;
-	rx_buffer_64 = (u64)ioc_32->rx_buf;
-	ioc->tx_buf = (u8 *)tx_buffer_64;
-	ioc->rx_buf = (u8 *)rx_buffer_64;
-	ioc->len = ioc_32->len;
-	ioc->speed_hz = ioc_32->speed_hz;
-	ioc->delay_usecs = ioc_32->delay_usecs;
-	ioc->bits_per_word = ioc_32->bits_per_word;
-	ioc->cs_change = ioc_32->cs_change;
-	ioc->opcode = ioc_32->opcode;
-	memcpy(ioc->pad, ioc_32->pad, 3);
-	kfree(ioc_32);
-#else
 	tmp = _IOC_SIZE(cmd);
 	if ((tmp == 0) || (tmp % sizeof(struct egis_ioc_transfer)) != 0) {
-		pr_err("%s ioc size error\n", __func__);
 		retval = -EINVAL;
 		goto out;
 	}
@@ -483,7 +348,6 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		retval = -EFAULT;
 		goto out;
 	}
-#endif
 
 	switch (ioc->opcode) {
 	/*
@@ -557,14 +421,12 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				break;
 			} else {
 				pr_info("%s already enabled. DISABLE_SPI_CLOCK\n", __func__);
-				retval = etspi_sec_spi_unprepare(spi_info, spi);
+
+				retval = fp_spi_clock_disable(spi);
 				if (retval < 0)
-					pr_err("%s: couldn't disable spi clks\n", __func__);
-#if !defined(CONFIG_SOC_EXYNOS8890)
-				retval = etspi_sec_dma_unprepare();
-				if (retval < 0)
-					pr_err("%s: couldn't disable spi dma\n", __func__);
-#endif
+					pr_err("%s: couldn't disable spi clks\n"
+						, __func__);
+				usleep_range(950, 1000);
 #ifdef FEATURE_SPI_WAKELOCK
 				wake_unlock(&etspi->fp_spi_lock);
 #endif
@@ -572,27 +434,21 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			}
 		}
 		spi->max_speed_hz = ioc->speed_hz;
-		spi_info = kmalloc(sizeof(struct sec_spi_info),
-			GFP_KERNEL);
-		if (spi_info != NULL) {
-			pr_info("%s ENABLE_SPI_CLOCK\n", __func__);
-
-			spi_info->speed = spi->max_speed_hz;
-			retval = etspi_sec_spi_prepare(spi_info, spi);
+		retval = fp_spi_clock_enable(spi);
+		if (retval < 0)
+			pr_err("%s: Unable to enable spi clk\n",
+				__func__);
+		else {
+			retval = fp_spi_clock_set_rate(spi);
 			if (retval < 0)
-				pr_err("%s: Unable to enable spi clk\n", __func__);
-#if !defined(CONFIG_SOC_EXYNOS8890)
-			retval = etspi_sec_dma_prepare(spi_info);
-			if (retval < 0)
-				pr_err("%s: Unable to enable spi dma\n", __func__);
-#endif
-			kfree(spi_info);
+				pr_err("%s: Unable to set spi clk rate\n",
+					__func__);
+		}
+		usleep_range(950, 1000);
 #ifdef FEATURE_SPI_WAKELOCK
-			wake_lock(&etspi->fp_spi_lock);
+		wake_lock(&etspi->fp_spi_lock);
 #endif
-			etspi->enabled_clk = true;
-		} else
-			retval = -ENOMEM;
+		etspi->enabled_clk = true;
 #else
 		spi->max_speed_hz = ioc->speed_hz;
 #endif
@@ -673,14 +529,11 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (etspi->enabled_clk) {
 			pr_info("%s DISABLE_SPI_CLOCK\n", __func__);
 
-			retval = etspi_sec_spi_unprepare(spi_info, spi);
+			retval = fp_spi_clock_disable(spi);
 			if (retval < 0)
-				pr_err("%s: couldn't disable spi clks\n", __func__);
-#if !defined(CONFIG_SOC_EXYNOS8890)
-			retval = etspi_sec_dma_unprepare();
-			if (retval < 0)
-				pr_err("%s: couldn't disable spi dma\n", __func__);
-#endif
+				pr_err("%s: couldn't disable spi clks\n"
+					, __func__);
+			usleep_range(950, 1000);
 #ifdef FEATURE_SPI_WAKELOCK
 			wake_unlock(&etspi->fp_spi_lock);
 #endif
@@ -692,27 +545,25 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (ioc->len) {
 			u8 retry_cnt = 0;
 			pr_info("%s FP_CPU_SPEEDUP ON:%d, retry: %d\n",
-				__func__, ioc->len, retry_cnt);
-#if defined(CONFIG_SECURE_OS_BOOSTER_API)
-			do {
-				retval = secos_booster_start(ioc->len - 1);
-				retry_cnt++;
-				if (retval) {
-					pr_err("%s: booster start failed. (%d) retry: %d\n"
-						, __func__, retval, retry_cnt);
-					if (retry_cnt < 7)
-						usleep_range(500, 510);
-				}
-			} while (retval && retry_cnt < 7);
-#endif
+					__func__, ioc->len, retry_cnt);
+			if (etspi->min_cpufreq_limit) {
+				do {
+					retval = set_freq_limit(DVFS_FINGER_ID, etspi->min_cpufreq_limit);
+					retry_cnt++;
+					if (retval) {
+						pr_err("%s: booster start failed. (%d) retry: %d\n"
+							, __func__, retval, retry_cnt);
+						if (retry_cnt < 7)
+							usleep_range(500, 510);
+					}
+				} while (retval && retry_cnt < 7);
+			}
 		} else {
 			pr_info("%s FP_CPU_SPEEDUP OFF\n", __func__);
-#if defined(CONFIG_SECURE_OS_BOOSTER_API)
-			retval = secos_booster_stop();
+			retval = set_freq_limit(DVFS_FINGER_ID, -1);
 			if (retval)
 				pr_err("%s: booster stop failed. (%d)\n"
 					, __func__, retval);
-#endif
 		}
 		break;
 	case FP_SET_SENSOR_TYPE:
@@ -739,6 +590,9 @@ static long etspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 
 #endif
+	case FP_POWER_CONTROL_ET510:
+	case FP_IOCTL_RESERVED_01:
+		break;
 	default:
 		retval = -EFAULT;
 		break;
@@ -953,12 +807,6 @@ void etspi_platformUninit(struct etspi_data *etspi)
 		gpio_free(etspi->drdyPin);
 		if (etspi->ocp_en)
 			gpio_free(etspi->ocp_en);
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-		if (etspi->cs_gpio)
-			gpio_free(etspi->cs_gpio);
-#endif
-#endif
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 #ifdef FEATURE_SPI_WAKELOCK
 		wake_lock_destroy(&etspi->fp_spi_lock);
@@ -975,20 +823,6 @@ static int etspi_parse_dt(struct device *dev,
 	int errorno = 0;
 	int gpio;
 
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-	gpio = of_get_named_gpio_flags(np, "etspi-csgpio",
-		0, &flags);
-	if (gpio < 0) {
-		errorno = gpio;
-		goto dt_exit;
-	} else {
-		data->cs_gpio = gpio;
-		pr_info("%s: cs_gpio=%d\n",
-			__func__, data->cs_gpio);
-	}
-#endif
-#endif
 	gpio = of_get_named_gpio_flags(np, "etspi-sleepPin",
 		0, &flags);
 	if (gpio < 0) {
@@ -1043,6 +877,10 @@ static int etspi_parse_dt(struct device *dev,
 				__func__, data->ldo_pin2);
 		}
 	}
+
+	if (of_property_read_u32(np, "etspi-min_cpufreq_limit",
+		&data->min_cpufreq_limit))
+		data->min_cpufreq_limit = 0;
 
 	pr_info("%s is successful\n", __func__);
 	return errorno;
@@ -1209,37 +1047,6 @@ static int etspi_wakeup_daemon(struct etspi_data *etspi)
 }
 #endif
 
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-static int etspi_set_cs_gpio(struct etspi_data *etspi, struct s3c64xx_spi_csinfo *cs)
-{
-	int status = -1;
-
-	pr_info("%s, spi auto cs mode(%d)\n", __func__, cs->cs_mode);
-
-	if (etspi->cs_gpio) {
-	        cs->line = etspi->cs_gpio;
-	        if (!gpio_is_valid(cs->line))
-	                cs->line = 0;
-	} else {
-	        cs->line = 0;
-	}
-
-	if(cs->line != 0) {
-	        status = gpio_request_one(cs->line, GPIOF_OUT_INIT_HIGH,
-	                               dev_name(&etspi->spi->dev));
-	        if (status) {
-	                dev_err(&etspi->spi->dev,
-	                        "Failed to get /CS gpio [%d]: %d\n",
-	                        cs->line, status);
-	        }
-	}
-
-        return status;
-}
-#endif
-#endif
-
 /*-------------------------------------------------------------------------*/
 
 static struct class *etspi_class;
@@ -1253,9 +1060,6 @@ static int etspi_probe(struct spi_device *spi)
 	unsigned long minor;
 #ifndef ENABLE_SENSORS_FPRINT_SECURE
 	int retry = 0;
-#ifdef CONFIG_SOC_EXYNOS8890
-	struct s3c64xx_spi_csinfo *cs;
-#endif
 #endif
 
 	pr_info("%s\n", __func__);
@@ -1298,18 +1102,6 @@ static int etspi_probe(struct spi_device *spi)
 	spi->mode = SPI_MODE_0;
 	spi->chip_select = 0;
 #ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-	/* set cs pin in fp driver, use only Exynos8890 */
-	/* for use auto cs mode with dualization fp sensor */
-	cs = spi->controller_data;
-
-	if (cs->cs_mode == 1) {
-		status = etspi_set_cs_gpio(etspi, cs);
-	} else {
-		pr_info("%s, spi manual mode(%d)\n", __func__, cs->cs_mode);
-	}
-#endif
-
 	status = spi_setup(spi);
 	if (status != 0) {
 		pr_err("%s spi_setup() is failed. status : %d\n",
@@ -1424,35 +1216,23 @@ static int etspi_remove(struct spi_device *spi)
 
 static int etspi_pm_suspend(struct device *dev)
 {
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-	int ret;
-#endif
 	pr_info("%s\n", __func__);
 
 	if (g_data != NULL) {
 		g_data->drdy_irq_flag = DRDY_IRQ_DISABLE;
 		etspi_disable_debug_timer();
 		etspi_power_control(g_data, 0);
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-		ret = exynos_smc(MC_FC_FP_PM_SUSPEND, 0, 0, 0);
-		pr_info("%s: suspend smc ret = %d\n", __func__, ret);
-#endif
 	}
 	return 0;
 }
 
 static int etspi_pm_resume(struct device *dev)
 {
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-	int ret;
-#endif
 	pr_info("%s\n", __func__);
 
 	if (g_data != NULL) {
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 		etspi_wakeup_daemon(g_data);
-		ret = exynos_smc(MC_FC_FP_PM_RESUME, 0, 0, 0);
-		pr_info("%s: resume smc ret = %d\n", __func__, ret);
 #endif
 		etspi_power_control(g_data, 1);
 		etspi_enable_debug_timer();

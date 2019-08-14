@@ -21,6 +21,10 @@
 
 #include <linux/clk.h>
 
+#ifdef ENABLE_SENSORS_FPRINT_SECURE
+#define FEATURE_SPI_WAKELOCK
+#endif
+
 /* fingerprint debug timer */
 #define FPSENSOR_DEBUG_TIMER_SEC (10 * HZ)
 
@@ -46,21 +50,6 @@ enum {
 
 #ifdef CONFIG_SENSORS_FINGERPRINT_DUALIZATION
 extern int FP_CHECK; /* extern variable */
-#endif
-
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-#define MC_FC_FP_PM_SUSPEND ((uint32_t)(0x83000021))
-#define MC_FC_FP_PM_RESUME ((uint32_t)(0x83000022))
-#define MC_FC_FP_PM_SUSPEND_RETAIN ((uint32_t)(0x83000026))
-
-/* using for awake the samsung FP daemon */
-extern bool fp_lockscreen_mode;
-#ifdef CONFIG_SENSORS_FP_LOCKSCREEN_MODE
-/* input/Keyboard/gpio_keys.c */
-extern bool wakeup_by_key(void);
-/* export variable for signaling */
-EXPORT_SYMBOL(fp_lockscreen_mode);
-#endif
 #endif
 
 #endif

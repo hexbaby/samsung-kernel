@@ -18,13 +18,12 @@
 #ifndef __MAX77854_FUELGAUGE_H
 #define __MAX77854_FUELGAUGE_H __FILE__
 
+#include "include/sec_charging_common.h"
+
 #include <linux/mfd/core.h>
 #include <linux/mfd/max77854.h>
 #include <linux/mfd/max77854-private.h>
 #include <linux/regulator/machine.h>
-#include "../sec_charging_common.h"
-
-#include <linux/sec_batt.h>
 
 /* Slave address should be shifted to the right 1bit.
  * R/W bit should NOT be included.
@@ -43,7 +42,7 @@ enum max77854_vempty_mode {
 	VEMPTY_MODE_SW_RECOVERY,
 };
 
-struct sec_fg_info {
+struct max77854_fg_info {
 	/* test print count */
 	int pr_cnt;
 	/* full charge comp */
@@ -77,8 +76,6 @@ enum {
 	FG_AVCAP,
 	FG_REPCAP,
 	FG_CYCLE,
-	FG_QH,
-	FG_QH_VF_SOC,
 };
 
 enum {
@@ -99,12 +96,9 @@ struct battery_data_t {
 	u32 V_empty;
 	u32 V_empty_origin;
 	u32 sw_v_empty_vol;
-	u32 sw_v_empty_vol_cisd;
 	u32 sw_v_empty_recover_vol;	
 	u32 QResidual20;
 	u32 QResidual30;
-	u32 dpacc;
-	u32 dqacc;
 	u32 TempCo;
 	u32 Capacity;
 	u8	*type_str;
@@ -154,12 +148,11 @@ struct max77854_fuelgauge_data {
 	 * used in individual fuel gauge file only
 	 * (ex. dummy_fuelgauge.c)
 	 */
-	struct sec_fg_info	info;
+	struct max77854_fg_info	info;
 	struct battery_data_t        *battery_data;
 
 	bool is_fuel_alerted;
 	struct wake_lock fuel_alert_wake_lock;
-	struct wake_lock fg_reset_wake_lock;
 
 	unsigned int capacity_old;	/* only for atomic calculation */
 	unsigned int capacity_max;	/* only for dynamic calculation */
@@ -178,7 +171,6 @@ struct max77854_fuelgauge_data {
 	int raw_capacity;
 	int current_now;
 	int current_avg;
-	unsigned int ttf_capacity;
 	struct cv_slope *cv_data;
 	int cv_data_lenth;
 
@@ -190,15 +182,10 @@ struct max77854_fuelgauge_data {
 	int low_temp_limit;
 
 	bool auto_discharge_en;
-	bool bad_coffset;
 	u32 discharge_temp_threshold;
 	u32 discharge_volt_threshold;
 
 	u32 fg_resistor;
-
-#if defined(CONFIG_BATTERY_CISD)
-	bool valert_count_flag;
-#endif
 };
 
 #endif /* __MAX77854_FUELGAUGE_H */

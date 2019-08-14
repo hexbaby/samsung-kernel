@@ -20,17 +20,23 @@
 #include <linux/earlysuspend.h>
 #endif
 
-#if defined(CONFIG_TOUCHSCREEN_ATMEL_MXT874U)
-#define MXT_DEV_NAME	"MXT874U"
+#if defined(CONFIG_TOUCHSCREEN_ATMEL_MXT748U)
+#define MXT_DEV_NAME	"MXT748U"
 #endif
+
+#define MXT_BACKUP_TIME			60	/* msec */
+#define MXT_RESET_INTEVAL_TIME	50	/* msec */
 
 /************** Feature + **************/
 #define TSP_SEC_FACTORY			1
+#define TSP_INFORM_CHARGER		0
+#define TSP_USE_SHAPETOUCH		0
 #define ENABLE_TOUCH_KEY		0
 #define TSP_CHECK_ATCH			0
-#define TSP_PATCH				1
+#define TSP_PATCH			1
 #define TSP_USE_PALM_FLAG		1
-#define TSP_CHANGE_CONFIG_FOR_INPUT  0
+#define TSP_CHANGE_CONFIG_FOR_INPUT  	0
+#define TSP_HOVER_WORKAROUND		0
 #define USE_FOR_SUFACE			0
 #ifdef CONFIG_SEC_FACTORY
 //#define REPORT_2D_Z				/* only for CONFIG_SEC_FACTORY */
@@ -59,13 +65,14 @@
 #if TSP_SEC_FACTORY
 #define NODE_PER_PAGE	64
 #define DATA_PER_NODE	2
+#define TSP_BUF_SIZE	 1024
 
 #define REF_OFFSET_VALUE	16384
 #define REF_MIN_VALUE		(19744 - REF_OFFSET_VALUE)
 #define REF_MAX_VALUE		(28884 - REF_OFFSET_VALUE)
 
 #define TSP_CMD_STR_LEN			32
-#define TSP_CMD_RESULT_STR_LEN		512
+#define TSP_CMD_RESULT_STR_LEN	2000	//512
 #define TSP_CMD_PARAM_NUM		8
 
 #define MXT_FIRMWARE_INKERNEL_PATH_NAME	"/sdcard/Firmware/TSP/mxt.fw"
@@ -613,6 +620,9 @@ struct mxt_data {
 	u16 mxt_err_cnt;
 	struct regulator *vcc_supply;
 	struct pinctrl *pinctrl;
+	struct pinctrl_state *pins_default;
+	struct pinctrl_state *pins_sleep;
+	
 	char config_date[MXT_CONFIG_VERSION_LENGTH];
 
 	bool tsp_pwr_enabled;

@@ -8,12 +8,12 @@
 #include <linux/spinlock.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
+#include <linux/stacktrace.h>
 #include <linux/completion.h>
 #include <linux/cpumask.h>
 #include <linux/page-debug-flags.h>
 #include <linux/uprobes.h>
 #include <linux/page-flags-layout.h>
-#include <linux/workqueue.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
 
@@ -42,32 +42,6 @@ struct address_space;
  * allows the use of atomic double word operations on the flags/mapping
  * and lru list pointers also.
  */
-
-#ifdef CONFIG_PTRACK_DEBUG
-#define PTRACK_ADDRS_COUNT 16
-#define MEMBLOCK_NUM 3
-struct ptrack {
-	unsigned long addr;	/* Called from address */
-#ifdef CONFIG_STACKTRACE
-	unsigned long addrs[PTRACK_ADDRS_COUNT];	/* Called from address */
-#endif
-	int cpu;		/* Was running on cpu */
-	int pid;		/* Pid context */
-	u64 when;		/* When did the operation occur */
-};
-
-struct ptrack_info {
-	unsigned long memblockcnt;
-	struct ptrack **tables[MEMBLOCK_NUM];
-	unsigned long tables_size[MEMBLOCK_NUM];
-};
-
-enum ptrack_item {
-	PTRACK_ALLOC = 0,
-	PTRACK_FREE,
-	PTRACK_ITEM_NUM};
-#endif
-
 struct page {
 	/* First double word block */
 	unsigned long flags;		/* Atomic flags, some possibly
@@ -211,6 +185,9 @@ struct page {
 #ifdef CONFIG_WANT_PAGE_DEBUG_FLAGS
 	unsigned long debug_flags;	/* Use atomic bitops on this */
 #endif
+#ifdef CONFIG_BLK_DEV_IO_TRACE
+	struct task_struct *tsk_dirty;	/* task that sets this page dirty */
+#endif
 
 #ifdef CONFIG_KMEMCHECK
 	/*
@@ -223,9 +200,11 @@ struct page {
 #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
 	int _last_cpupid;
 #endif
-
-#ifdef CONFIG_PTRACK_DEBUG
-	struct ptrack * ptrack;
+#ifdef CONFIG_PAGE_OWNER
+	int order;
+	gfp_t gfp_mask;
+	struct stack_trace trace;
+	unsigned long trace_entries[8];
 #endif
 }
 /*
@@ -490,7 +469,10 @@ struct mm_struct {
 	bool tlb_flush_pending;
 #endif
 	struct uprobes_state uprobes_state;
-	struct work_struct async_put_work;
+#ifdef CONFIG_MSM_APP_SETTINGS
+	int app_setting;
+#endif
+
 };
 
 static inline void mm_init_cpumask(struct mm_struct *mm)

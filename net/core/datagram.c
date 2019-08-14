@@ -227,12 +227,12 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned int flags,
 					_off -= skb->len;
 					continue;
 				}
-				
+
 				skb = skb_set_peeked(skb);
 				error = PTR_ERR(skb);
 				if (IS_ERR(skb))
 					goto unlock_err;
-				
+
 				atomic_inc(&skb->users);
 			} else
 				__skb_unlink(skb, queue);

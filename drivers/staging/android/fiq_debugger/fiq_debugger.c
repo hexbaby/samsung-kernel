@@ -396,7 +396,7 @@ static void fiq_debugger_work(struct work_struct *work)
 		cmd += 6;
 		while (*cmd == ' ')
 			cmd++;
-		if ((*cmd != '\0') && sysrq_on())
+		if ((cmd != '\0') && sysrq_on())
 			kernel_restart(cmd);
 		else
 			kernel_restart(NULL);
@@ -426,38 +426,37 @@ static void fiq_debugger_irq_exec(struct fiq_debugger_state *state, char *cmd)
 static void fiq_debugger_help(struct fiq_debugger_state *state)
 {
 	fiq_debugger_printf(&state->output,
-				"FIQ Debugger commands:\n");
+			"FIQ Debugger commands:\n");
 	if (sysrq_on()) {
 		fiq_debugger_printf(&state->output,
-				" pc            PC status\n"
-				" regs          Register dump\n"
-				" allregs       Extended Register dump\n"
-				" bt            Stack trace\n");
+			" pc            PC status\n"
+			" regs          Register dump\n"
+			" allregs       Extended Register dump\n"
+			" bt            Stack trace\n");
 		fiq_debugger_printf(&state->output,
-				" reboot [<c>]  Reboot with command <c>\n"
-				" reset [<c>]   Hard reset with command <c>\n"
-				" irqs          Interupt status\n"
-				" kmsg          Kernel log\n"
-				" version       Kernel version\n");
+			" reboot [<c>]  Reboot with command <c>\n"
+			" reset [<c>]   Hard reset with command <c>\n"
+			" irqs          Interrupt status\n"
+			" kmsg          Kernel log\n"
+			" version       Kernel version\n");
 		fiq_debugger_printf(&state->output,
-				" cpu           Current CPU\n"
-				" cpu <number>  Switch to CPU<number>\n"
-				" sysrq         sysrq options\n"
-				" sysrq <param> Execute sysrq with <param>\n");
+			" cpu           Current CPU\n"
+			" cpu <number>  Switch to CPU<number>\n"
+			" sysrq         sysrq options\n"
+			" sysrq <param> Execute sysrq with <param>\n");
 	} else {
 		fiq_debugger_printf(&state->output,
-				" reboot [<c>]  Reboot with command <c>\n"
-				" reset [<c>]   Hard reset with command <c>\n"
-				" irqs          Interupt status\n");
+			" reboot        Reboot\n"
+			" reset         Hard reset\n"
+			" irqs          Interrupt status\n");
 	}
 	fiq_debugger_printf(&state->output,
-				" sleep         Allow sleep while in FIQ\n"
-				" nosleep       Disable sleep while in FIQ\n"
-				" console       Switch terminal to console\n"
-				" ps            Process list\n");
+			" sleep         Allow sleep while in FIQ\n"
+			" nosleep       Disable sleep while in FIQ\n"
+			" console       Switch terminal to console\n"
+			" ps            Process list\n");
 #ifdef CONFIG_KGDB
-	if (fiq_kgdb_enable)
-		fiq_debugger_printf(&state->output,
+	fiq_debugger_printf(&state->output,
 				" kgdb          Enter kernel debugger\n");
 #endif
 }
@@ -538,7 +537,7 @@ static bool fiq_debugger_fiq_exec(struct fiq_debugger_state *state,
 					    state->current_cpu);
 	} else if (!strncmp(cmd, "cpu ", 4) && sysrq_on()) {
 		unsigned long cpu = 0;
-		if (strict_strtoul(cmd + 4, 10, &cpu) == 0)
+		if (kstrtoul(cmd + 4, 10, &cpu) == 0)
 			fiq_debugger_switch_cpu(state, cpu);
 		else
 			fiq_debugger_printf(&state->output, "invalid cpu\n");

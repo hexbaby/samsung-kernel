@@ -2,7 +2,6 @@
 #define _ASMARM_BUG_H
 
 #include <linux/linkage.h>
-#include <linux/types.h>
 
 #ifdef CONFIG_BUG
 
@@ -23,12 +22,12 @@
 
 #define __BUG(__file, __line, __value)				\
 do {								\
-	asm volatile("1:\t" BUG_INSTR_TYPE #__value "\n"  \
-		".pushsection .rodata.str, \"aMS\", %progbits, 1\n" \
-		"2:\t.asciz " #__file "\n" 			\
-		".popsection\n" 				\
+	asm volatile("1:\t" BUG_INSTR_TYPE #__value "\n"	\
+		".pushsection .rodata.str, \"aMS\", 1\n"	\
+		"2:\t.asciz " #__file "\n"			\
+		".popsection\n"					\
 		".pushsection __bug_table,\"a\"\n"		\
-		"3:\t.dword 1b, 2b\n"				\
+		"3:\t.quad 1b, 2b\n"				\
 		"\t.word " #__line ", 0\n"			\
 		".popsection");					\
 	unreachable();						\
@@ -38,11 +37,14 @@ do {								\
 
 #define __BUG(__file, __line, __value)				\
 do {								\
-	asm volatile(BUG_INSTR_TYPE #__value "\n");		\
+	asm volatile(BUG_INSTR_TYPE #__value);			\
 	unreachable();						\
 } while (0)
 #endif  /* CONFIG_DEBUG_BUGVERBOSE */
 
 #define HAVE_ARCH_BUG
 #endif  /* CONFIG_BUG */
+
+#include <asm-generic/bug.h>
+
 #endif

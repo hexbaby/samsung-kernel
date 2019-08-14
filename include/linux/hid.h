@@ -737,6 +737,7 @@ struct hid_ll_driver {
 #else
 #define IS_INPUT_APPLICATION(a) (((a >= 0x00010000) && (a <= 0x00010008)) || (a == 0x00010080) || (a == 0x000c0001) || ((a >= 0x000d0002) && (a <= 0x000d0006)))
 #endif
+
 /* HID core API */
 
 extern int hid_debug;

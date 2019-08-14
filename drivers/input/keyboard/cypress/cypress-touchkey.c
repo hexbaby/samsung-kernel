@@ -15,7 +15,6 @@
 static u8 module_divider[] = {0, 0xff};
 #endif
 
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 /**************************************************/
 #define LIGHT_VERSION			160719
 #define LIGHT_TABLE_MAX			6
@@ -30,7 +29,6 @@ struct light_info tkey_light_voltage_table[LIGHT_TABLE_MAX] =
 	{ WINDOW_COLOR_PINKGOLD,	3300},
 };
 /**************************************************/
-#endif
 
 static const u8 fac_reg_index[] = {
 	TK_THRESHOLD,
@@ -50,20 +48,17 @@ static char *str_states[] = {"on_irq", "off_irq", "on_i2c", "off_i2c"};
 static int touchkey_led_status;
 static int touchled_cmd_reversed;
 static bool touchkey_probe;
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
 static struct touchkey_i2c *tkey_info;
-#endif
 
 int touchkey_mode_change(struct touchkey_i2c *tkey_i2c, int cmd);
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 static int efs_read_light_table_version(struct touchkey_i2c *tkey_i2c);
-#endif
+
 static void change_touch_key_led_voltage(struct device *dev, int vol_mv)
 {
 	struct regulator *tled_regulator;
 	int ret;
 
-	tled_regulator = regulator_get(NULL, TK_LED_REGULATOR_NAME);
+	tled_regulator = regulator_get(dev, TK_LED_REGULATOR_NAME);
 	if (IS_ERR(tled_regulator)) {
 		input_err(true, dev, "%s: failed to get resource %s\n",
 				__func__, TK_LED_REGULATOR_NAME);
@@ -92,7 +87,6 @@ static ssize_t brightness_control(struct device *dev,
 	return size;
 }
 
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 static int read_window_type(void)
 {
 	struct file *type_filp = NULL;
@@ -115,20 +109,17 @@ static int read_window_type(void)
 	if (ret != 9 * sizeof(char)) {
 		pr_err("%s touchkey %s: fd read fail\n", SECLOG, __func__);
 		ret = -EIO;
-		goto out;
+		return ret;
 	}
 
-	if (window_type[1] < '0' || window_type[1] >= 'f') {
-		ret = -EAGAIN;
-		goto out;
-	}
-
-	ret = (window_type[1] - '0') & 0x0f;
-	pr_info("%s touchkey %s: %d\n", SECLOG, __func__, ret);
-out:
 	filp_close(type_filp, current->files);
 	set_fs(old_fs);
 
+	if (window_type[1] < '0' || window_type[1] >= 'f')
+		return -EAGAIN;
+
+	ret = (window_type[1] - '0') & 0x0f;
+	pr_info("%s touchkey %s: %d\n", SECLOG, __func__, ret);
 	return ret;
 }
 
@@ -512,7 +503,7 @@ out:
 				"%s: retry %d times but can't check efs\n", __func__, count);
  	}
 }
-#endif
+
 static int i2c_touchkey_read(struct i2c_client *client,
 		u8 reg, u8 *val, unsigned int len)
 {
@@ -638,6 +629,7 @@ static int touchkey_pinctrl_init(struct touchkey_i2c *tkey_i2c)
 {
 	struct device *dev = &tkey_i2c->client->dev;
 	int i;
+	int ret;
 
 	tkey_i2c->pinctrl_irq = devm_pinctrl_get(dev);
 	if (IS_ERR(tkey_i2c->pinctrl_irq)) {
@@ -650,6 +642,25 @@ static int touchkey_pinctrl_init(struct touchkey_i2c *tkey_i2c)
 			input_err(true, dev, "%s: Failed to get pinctrl state\n", __func__);
 			goto err_pinctrl_get_state;
 		}
+	}
+
+	/* sub det pin set */
+	if (gpio_is_valid(tkey_i2c->dtdata->sub_det)) {
+		tkey_i2c->pinctrl_det = devm_pinctrl_get(dev);
+		if (IS_ERR(tkey_i2c->pinctrl_det)) {
+			input_err(true, dev, "%s: Failed to get pinctrl\n", __func__);
+			goto err_pinctrl_get_det;
+		}
+
+		tkey_i2c->pins_default = pinctrl_lookup_state(tkey_i2c->pinctrl_det, "sub_det");
+		if (IS_ERR(tkey_i2c->pins_default)) {
+			input_err(true, dev, "%s: Failed to get pinctrl state\n", __func__);
+			goto err_pinctrl_get_state_det;
+		}
+
+		ret = pinctrl_select_state(tkey_i2c->pinctrl_det, tkey_i2c->pins_default);
+		if (ret < 0)
+			input_err(true, dev, "%s: Failed to configure sub_det pin\n", __func__);
 	}
 
 	dev = tkey_i2c->client->dev.parent->parent;
@@ -670,6 +681,9 @@ static int touchkey_pinctrl_init(struct touchkey_i2c *tkey_i2c)
 
 	return 0;
 
+err_pinctrl_get_state_det:
+	devm_pinctrl_put(tkey_i2c->pinctrl_det);
+err_pinctrl_get_det:
 err_pinctrl_get_state_i2c:
 	devm_pinctrl_put(tkey_i2c->pinctrl_i2c);
 err_pinctrl_get_i2c:
@@ -933,12 +947,6 @@ static ssize_t touchkey_threshold0_show(struct device *dev,
 {
 	struct FAC_CMD cmd = {TK_CMD_READ_THRESHOLD, 0, 0};
 	return touchkey_fac_read_data(dev, buf, &cmd);
-}
-
-static ssize_t get_chip_vendor(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "CYPRESS\n");
 }
 
 /* To check firmware compatibility */
@@ -1366,7 +1374,6 @@ bool tkey_is_enabled(struct touchkey_i2c *tkey_i2c)
 	return true;
 }
 
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
 int touchkey_thd_change(struct touchkey_i2c *tkey_i2c)
 {
 	char data[3] = {0, };
@@ -1420,7 +1427,6 @@ int change_touchkey_thd_for_fingerprint(int on)
 	return ret;
 }
 EXPORT_SYMBOL(change_touchkey_thd_for_fingerprint);
-#endif
 
 static int touchkey_stop(struct touchkey_i2c *tkey_i2c)
 {
@@ -1498,10 +1504,8 @@ static int touchkey_start(struct touchkey_i2c *tkey_i2c)
 	touchkey_read_status(tkey_i2c);
 	touchkey_mode_change(tkey_i2c, CMD_MODE_RESERVED);
 
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
 	if (!tkey_i2c->tsk_enable_glove_mode && tkey_i2c->thd_changed)
 		touchkey_thd_change(tkey_i2c);
-#endif
 
 	enable_irq(tkey_i2c->irq);
 err_start_out:
@@ -2146,7 +2150,6 @@ static ssize_t set_touchkey_firm_status_show(struct device *dev,
 	return count;
 }
 
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 static ssize_t touchkey_light_version_read(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -2235,6 +2238,31 @@ static ssize_t touchkey_light_id_compare(struct device *dev,
 	input_info(true, &tkey_i2c->client->dev,
 			"%s: window_type:%d, %s\n", __func__, window_type, buf);
 	return count;
+}
+
+static ssize_t touchkey_fingerprint_mode(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t size)
+{
+	struct touchkey_i2c *tkey_i2c = dev_get_drvdata(dev);
+	int enable, ret;
+
+	if (!tkey_i2c)
+		return -ENXIO;
+
+	sscanf(buf, "%d\n", &enable);
+
+	if (enable != 0 && enable != 1) {
+		input_err(true, &tkey_i2c->client->dev,
+			"%s: abnormal param %d\n", __func__, enable);
+		return -EIO;
+	}
+
+	ret = change_touchkey_thd_for_fingerprint(enable);
+	if (ret < 0)
+		return ret;
+
+	return size;
 }
 
 static char* tokenizer(char* str, char delim)
@@ -2378,34 +2406,6 @@ static ssize_t touchkey_light_table_write(struct device *dev,
 
 	return size;
 }
-#endif
-
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
-static ssize_t touchkey_fingerprint_mode(struct device *dev,
-		struct device_attribute *attr,
-		const char *buf, size_t size)
-{
-	struct touchkey_i2c *tkey_i2c = dev_get_drvdata(dev);
-	int enable, ret;
-
-	if (!tkey_i2c)
-		return -ENXIO;
-
-	sscanf(buf, "%d\n", &enable);
-
-	if (enable != 0 && enable != 1) {
-		input_err(true, &tkey_i2c->client->dev,
-			"%s: abnormal param %d\n", __func__, enable);
-		return -EIO;
-	}
-
-	ret = change_touchkey_thd_for_fingerprint(enable);
-	if (ret < 0)
-		return ret;
-
-	return size;
-}
-#endif
 
 static DEVICE_ATTR(brightness, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
 		touchkey_led_control);
@@ -2428,7 +2428,6 @@ static DEVICE_ATTR(touchkey_back_raw, S_IRUGO, touchkey_raw_data1_show, NULL);
 static DEVICE_ATTR(touchkey_recent_idac, S_IRUGO, touchkey_idac0_show, NULL);
 static DEVICE_ATTR(touchkey_back_idac, S_IRUGO, touchkey_idac1_show, NULL);
 static DEVICE_ATTR(touchkey_threshold, S_IRUGO, touchkey_threshold0_show, NULL);
-static DEVICE_ATTR(touchkey_get_chip_vendor, S_IRUGO, get_chip_vendor, NULL);
 #ifdef CONFIG_GLOVE_TOUCH
 static DEVICE_ATTR(glove_mode, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
 		glove_mode_enable);
@@ -2439,15 +2438,12 @@ static DEVICE_ATTR(flip_mode, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
 #endif
 static DEVICE_ATTR(keyboard_mode, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
 		keyboard_cover_mode_enable);
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 static DEVICE_ATTR(touchkey_light_version, S_IRUGO, touchkey_light_version_read, NULL);
 static DEVICE_ATTR(touchkey_light_update, S_IWUSR | S_IWGRP, NULL, touchkey_light_update);
 static DEVICE_ATTR(touchkey_light_id_compare, S_IRUGO, touchkey_light_id_compare, NULL);
-static DEVICE_ATTR(touchkey_light_table_write, S_IWUSR | S_IWGRP, NULL, touchkey_light_table_write);
-#endif
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
 static DEVICE_ATTR(touchkey_fingerprint_mode, S_IWUSR | S_IWGRP, NULL, touchkey_fingerprint_mode);
-#endif
+static DEVICE_ATTR(touchkey_light_table_write, S_IWUSR | S_IWGRP, NULL, touchkey_light_table_write);
+
 static struct attribute *touchkey_attributes[] = {
 	&dev_attr_brightness.attr,
 	&dev_attr_touch_sensitivity.attr,
@@ -2463,7 +2459,6 @@ static struct attribute *touchkey_attributes[] = {
 	&dev_attr_touchkey_recent_idac.attr,
 	&dev_attr_touchkey_back_idac.attr,
 	&dev_attr_touchkey_threshold.attr,
-	&dev_attr_touchkey_get_chip_vendor.attr,
 #ifdef CONFIG_GLOVE_TOUCH
 	&dev_attr_glove_mode.attr,
 #endif
@@ -2471,15 +2466,11 @@ static struct attribute *touchkey_attributes[] = {
 	&dev_attr_flip_mode.attr,
 #endif
 	&dev_attr_keyboard_mode.attr,
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS	
 	&dev_attr_touchkey_light_version.attr,
 	&dev_attr_touchkey_light_update.attr,
 	&dev_attr_touchkey_light_id_compare.attr,
-	&dev_attr_touchkey_light_table_write.attr,
-#endif
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
 	&dev_attr_touchkey_fingerprint_mode.attr,
-#endif
+	&dev_attr_touchkey_light_table_write.attr,
 	NULL,
 };
 
@@ -2503,10 +2494,10 @@ static int touchkey_power(void *data, bool on)
 		return ret;
 	}
 
-	regulator_core = regulator_get(NULL, tkey_i2c->dtdata->regulator_avdd);
+	regulator_core = regulator_get(dev, TK_CORE_REGULATOR_NAME);
 	if (IS_ERR_OR_NULL(regulator_core)) {
 		input_err(true, dev,
-				"%s : %s regulator_get failed\n", __func__, tkey_i2c->dtdata->regulator_avdd);
+				"%s : %s regulator_get failed\n", __func__, TK_CORE_REGULATOR_NAME);
 		ret = -EIO;
 		goto out;
 	}
@@ -2530,7 +2521,7 @@ static int touchkey_power(void *data, bool on)
 			TK_CORE_REGULATOR_NAME, regulator_is_enabled(regulator_core));
 
 	if (!tkey_i2c->dtdata->ap_io_power) {
-		regulator_io = regulator_get(NULL, TK_IO_REGULATOR_NAME);
+		regulator_io = regulator_get(dev, TK_IO_REGULATOR_NAME);
 		if (IS_ERR_OR_NULL(regulator_io)) {
 			input_err(true, dev,
 					"%s : %s regulator_get failed\n", __func__, TK_IO_REGULATOR_NAME);
@@ -2634,10 +2625,6 @@ static struct touchkey_devicetree_data *cypress_parse_dt(struct i2c_client *clie
 		dtdata->stabilizing_time = 150;
 	}
 
-	if (of_property_read_string(np, "cypress,regulator_avdd", &dtdata->regulator_avdd)) {
-		input_err(true, &client->dev, "Failed to get regulator_avdd name property\n");
-	}
-
 	ret = of_property_read_string(np, "cypress,fw_path", (const char **)&dtdata->fw_path);
 	if (ret) {
 		input_err(true, &client->dev, "failed to read fw_path %d\n", ret);
@@ -2664,9 +2651,7 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 	struct input_dev *input_dev;
 	int i;
 	int ret = 0;
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 	char tmp[2] = {0, };
-#endif
 
 	input_info(true, &client->dev, "%s: start!\n", __func__);
 
@@ -2686,22 +2671,12 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 		dtdata = cypress_parse_dt(client);
 		if (!dtdata) {
 			input_err(true, &client->dev, "%s: no dtdata\n", __func__);
-			ret = -EINVAL;
-			goto err_allocate_input_device;
-		}
-	}
-
-	if (gpio_is_valid(dtdata->sub_det)) {
-		ret = gpio_get_value(dtdata->sub_det);
-		if (!ret) {
-			input_err(true, &client->dev, "Abov touchkey\n");
-			ret = -ENODEV;
-			goto err_allocate_input_device;
+			return -EINVAL;
 		}
 	}
 
 	input_dev = input_allocate_device();
-	if (!input_dev) {
+	if (IS_ERR_OR_NULL(input_dev)) {
 		input_err(true, &client->dev, "Failed to allocate input device\n");
 		ret = -ENOMEM;
 		goto err_allocate_input_device;
@@ -2745,9 +2720,8 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 	INIT_WORK(&tkey_i2c->mode_change_work, touchkey_i2c_mode_change_work);
 	wake_lock_init(&tkey_i2c->fw_wakelock, WAKE_LOCK_SUSPEND, "touchkey");
 
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 	INIT_DELAYED_WORK(&tkey_i2c->efs_open_work, touchkey_efs_open_work);
-#endif
+
 	for (i = 1; i < touchkey_count; i++)
 		set_bit(touchkey_keycode[i], input_dev->keybit);
 
@@ -2783,6 +2757,15 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 	}
 #endif
 
+	if (gpio_is_valid(dtdata->sub_det)) {
+		ret = gpio_get_value(dtdata->sub_det);
+		if (ret) {
+			input_err(true, &client->dev, "Device wasn't connected to board \n");
+			ret = -ENODEV;
+			goto err_i2c_check;
+		}
+	}
+
 	cypress_config_gpio_i2c(tkey_i2c, 1);
 
 	ret = touchkey_i2c_check(tkey_i2c);
@@ -2816,7 +2799,7 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 	}
 #endif
 
-	tkey_i2c->dev = sec_device_create(tkey_i2c, "sec_touchkey");
+	tkey_i2c->dev = device_create(sec_class, NULL, CYPRESS_SYSFS_DEVT_NUM, tkey_i2c, "sec_touchkey");
 
 	ret = IS_ERR(tkey_i2c->dev);
 	if (ret) {
@@ -2833,7 +2816,6 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 			input_err(true, &client->dev, "Failed to connect link\n");
 	}
 
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 	tkey_i2c->light_table_crc = LIGHT_VERSION;
 	sprintf(tkey_i2c->light_version_full_bin, "T%d.", LIGHT_VERSION);
 	for (i = 0; i < LIGHT_TABLE_MAX; i++) {
@@ -2846,10 +2828,8 @@ static int i2c_touchkey_probe(struct i2c_client *client,
 			__func__, tkey_i2c->light_version_full_bin);
 
 	schedule_delayed_work(&tkey_i2c->efs_open_work, msecs_to_jiffies(2000));
-#endif
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
+
 	tkey_info = tkey_i2c;
-#endif
 
 	touchkey_probe = true;
 	input_info(true, &client->dev, "%s: done\n", __func__);
@@ -2862,6 +2842,7 @@ err_firmware_update:
 	free_irq(tkey_i2c->irq, tkey_i2c);
 #endif
 err_request_threaded_irq:
+err_i2c_check:
 #ifdef TK_USE_FWUPDATE_DWORK
 	destroy_workqueue(tkey_i2c->fw_wq);
 err_create_fw_wq:
@@ -2889,9 +2870,8 @@ void touchkey_shutdown(struct i2c_client *client)
 		return;
 
 	input_err(true, &tkey_i2c->client->dev, "%s\n", __func__);
-#ifdef CONFIG_TOUCHKEY_LIGHT_EFS
 	cancel_delayed_work(&tkey_i2c->efs_open_work);
-#endif
+
 	touchkey_stop(tkey_i2c);
 	free_irq(tkey_i2c->irq, tkey_i2c);
 
@@ -2903,9 +2883,7 @@ void touchkey_shutdown(struct i2c_client *client)
 	mutex_destroy(&tkey_i2c->i2c_lock);
 	mutex_destroy(&tkey_i2c->lock);
 	kfree(tkey_i2c);
-#ifdef CONFIG_KEYBOARD_THD_CHANGE_AS_FINGERPRINT
 	tkey_info = NULL;
-#endif
 }
 
 
@@ -2938,17 +2916,12 @@ struct i2c_driver touchkey_i2c_driver = {
 
 static int __init touchkey_init(void)
 {
-#ifdef CONFIG_BATTERY_SAMSUNG
-	if (lpcharge == 1) {
+#ifdef CONFIG_SAMSUNG_LPM_MODE
+	if (poweroff_charging) {
 		pr_err("%s %s: LPM Charging Mode!!\n", SECLOG, __func__);
 		return 0;
 	}
 #endif
-	if (!lcdtype) {
-		pr_err("%s %s: not connected!!\n", SECLOG, __func__);
-		return 0;
-	}
-
 	return i2c_add_driver(&touchkey_i2c_driver);
 }
 

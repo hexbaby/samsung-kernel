@@ -274,6 +274,10 @@ void *radix_tree_delete(struct radix_tree_root *, unsigned long);
 unsigned int
 radix_tree_gang_lookup(struct radix_tree_root *root, void **results,
 			unsigned long first_index, unsigned int max_items);
+unsigned int
+radix_tree_gang_lookup_index(struct radix_tree_root *root, void **results,
+			unsigned long *indices, unsigned long first_index,
+			unsigned int max_items);
 unsigned int radix_tree_gang_lookup_slot(struct radix_tree_root *root,
 			void ***results, unsigned long *indices,
 			unsigned long first_index, unsigned int max_items);
@@ -382,7 +386,6 @@ static inline __must_check
 void **radix_tree_iter_retry(struct radix_tree_iter *iter)
 {
 	iter->next_index = iter->index;
-	iter->tags = 0;
 	return NULL;
 }
 

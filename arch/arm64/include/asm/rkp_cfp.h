@@ -57,17 +57,13 @@ lr	.req	x30		// link register
 	mov	RRX, sp
 	and	RRX, RRX, #~(THREAD_SIZE - 1) // top of stack
 	// load_key from hypervisor
-	stp	x29, x30, [sp, #-16]!
 	stp	x0, x1, [sp, #-16]!
 	mov	x0, #0x3000
 	movk	x0, #0x8389, lsl #16
 	mov	x1, RRX
 	add	x1, x1, #TI_RRK_AGAIN
-	bl	rkp_call
+	hvc	#0
 	ldp	x0, x1, [sp], #16
-	ldp	x29, x30, [sp], #16
-	
-	/*load RRX and RRS*/
 	ldp	RRX, RRS, [sp], #16
 	.endm
 #else //CONFIG_RKP_CFP_ROPP_HYPKEY

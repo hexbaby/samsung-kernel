@@ -164,6 +164,7 @@
 #define CLKSRC_OF_TABLES()	OF_TABLE(CONFIG_CLKSRC_OF, clksrc)
 #define IRQCHIP_OF_MATCH_TABLE() OF_TABLE(CONFIG_IRQCHIP, irqchip)
 #define CLK_OF_TABLES()		OF_TABLE(CONFIG_COMMON_CLK, clk)
+#define IOMMU_OF_TABLES()	OF_TABLE(CONFIG_OF_IOMMU, iommu)
 #define RESERVEDMEM_OF_TABLES()	OF_TABLE(CONFIG_OF_RESERVED_MEM, reservedmem)
 #define CPU_METHOD_OF_TABLES()	OF_TABLE(CONFIG_SMP, cpu_method)
 #define EARLYCON_OF_TABLES()	OF_TABLE(CONFIG_SERIAL_EARLYCON, earlycon)
@@ -226,14 +227,6 @@
 	*(.data..init_task)
 
 /*
- * Allow architectures to handle ro_after_init data on their
- * own by defining an empty RO_AFTER_INIT_DATA.
- */
-#ifndef RO_AFTER_INIT_DATA
-#define RO_AFTER_INIT_DATA *(.data..ro_after_init)
-#endif
-
-/*
  * Read only Data
  */
 #define RO_DATA_SECTION(align)						\
@@ -241,7 +234,6 @@
 	.rodata           : AT(ADDR(.rodata) - LOAD_OFFSET) {		\
 		VMLINUX_SYMBOL(__start_rodata) = .;			\
 		*(.rodata) *(.rodata.*)					\
-		RO_AFTER_INIT_DATA	/* Read only after init */	\
 		*(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*) \
 		*(__vermagic)		/* Kernel version magic */	\
 		. = ALIGN(8);						\
@@ -487,6 +479,7 @@
 #define KERNEL_CTORS()	. = ALIGN(8);			   \
 			VMLINUX_SYMBOL(__ctors_start) = .; \
 			*(.ctors)			   \
+			*(SORT(.init_array.*))		   \
 			*(.init_array)			   \
 			VMLINUX_SYMBOL(__ctors_end) = .;
 #else
@@ -507,6 +500,7 @@
 	CLK_OF_TABLES()							\
 	RESERVEDMEM_OF_TABLES()						\
 	CLKSRC_OF_TABLES()						\
+	IOMMU_OF_TABLES()						\
 	CPU_METHOD_OF_TABLES()						\
 	KERNEL_DTB()							\
 	IRQCHIP_OF_MATCH_TABLE()					\
@@ -660,7 +654,7 @@
 		INIT_CALLS_LEVEL(rootfs)				\
 		INIT_CALLS_LEVEL(6)					\
 		INIT_CALLS_LEVEL(7)					\
-		VMLINUX_SYMBOL(__initcall_end) = .;	\
+		VMLINUX_SYMBOL(__initcall_end) = .;			\
 		DEFERRED_INITCALLS(0)
 #else
 #define INIT_CALLS							\

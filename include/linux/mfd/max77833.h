@@ -29,42 +29,19 @@
 #define __MAX77833_H__
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
-
-#include <linux/battery/charger/max77833_charger.h>
-#include <linux/battery/fuelgauge/max77833_fuelgauge.h>
+#include <linux/battery/sec_charging_common.h>
 
 #define MFD_DEV_NAME "max77833"
 #define M2SH(m) ((m) & 0x0F ? ((m) & 0x03 ? ((m) & 0x01 ? 0 : 1) : ((m) & 0x04 ? 2 : 3)) : \
 		((m) & 0x30 ? ((m) & 0x10 ? 4 : 5) : ((m) & 0x40 ? 6 : 7)))
 
-struct max77833_haptic_platform_data {
-	u16 max_timeout;
-	u16 duty;
-	u16 period;
-	u16 reg2;
-	char *regulator_name;
-	unsigned int pwm_id;
-
-	u8 auto_res_min_low;
-	u8 auto_res_max_low;
-	u8 auto_res_init_low;
-	u8 auto_res_init_low_high_temp;
-	u8 auto_res_init_low_low_temp;
-	u8 auto_res_min_low_high_temp;
-        u8 auto_res_min_low_low_temp;
-	u8 auto_res_max_low_high_temp;
-        u8 auto_res_max_low_low_temp;
-	u8 auto_res_min_high;
-	u8 auto_res_max_high;
-	u8 auto_res_init_high;
-	u8 auto_res_lock_window;
-	u8 auto_res_update_freq;
-	u8 auto_res_enable;
-	u8 nominal_strength;
-
-	void (*init_hw) (void);
-	void (*motor_en) (bool);
+#ifdef CONFIG_SS_VIBRATOR
+struct max77833_haptic_platform_data
+{
+    int mode;
+    int divisor;
 };
+#endif
 
 struct max77833_regulator_data {
 	int id;
@@ -86,8 +63,10 @@ struct max77833_platform_data {
 
 	int num_regulators;
 	struct max77833_regulator_data *regulators;
+#ifdef CONFIG_SS_VIBRATOR
 	/* haptic motor data */
 	struct max77833_haptic_platform_data *haptic_data;
+#endif
 	struct mfd_cell *sub_devices;
 	int num_subdevs;
 };
@@ -97,5 +76,6 @@ struct max77833
 	struct regmap *regmap;
 };
 
+extern struct max77833_haptic_platform_data max77833_haptic_pdata;
 #endif /* __MAX77833_H__ */
 

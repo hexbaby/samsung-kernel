@@ -34,6 +34,7 @@
 
 #if defined(CONFIG_CCIC_NOTIFIER)
 #include <linux/ccic/ccic_notifier.h>
+#include <linux/ccic/ccic_sysfs.h>
 #endif
 
 #define AVAILABLE_VOLTAGE 12000
@@ -339,16 +340,6 @@ typedef enum
 
 } Num_MSG_INDEX;
 
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-typedef enum
-{
-	TYPE_C_DETACH = 0,
-	TYPE_C_ATTACH_DFP = 1, // Host
-	TYPE_C_ATTACH_UFP = 2, // Device
-	TYPE_C_ATTACH_DRP = 3, // Dual role
-} CCIC_OTP_MODE;
-#endif
-
 typedef struct
 {
 	uint16_t	Message_Type:4;
@@ -572,7 +563,6 @@ struct s2mm003_data {
 	struct device *dev;
 	struct i2c_client *i2c;
 	int irq_gpio;
-	int redriver_en;
 	struct mutex i2c_mutex;
 	u8 attach;
 	u8 vbus_detach;
@@ -581,12 +571,7 @@ struct s2mm003_data {
 	int p_prev_rid;
 	int prev_rid;
 	int cur_rid;
-
-	u8 firm_ver[4];
-
-	int func_state;	
-
-	int plug_rprd_sel;
+	
 	uint32_t Pdic_usb_state;
 #if defined(CONFIG_CCIC_ALTERNATE_MODE)
 	uint32_t Pdic_state_machine;
@@ -594,24 +579,16 @@ struct s2mm003_data {
 	uint32_t SVID_1;
 	uint32_t Vendor_ID;
 	uint32_t Product_ID;
-	int acc_type;
-#endif
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-	struct dual_role_phy_instance *dual_role;
-	struct dual_role_phy_desc *desc;
-	struct completion reverse_completion;
-	int power_role;
-	int try_state_change;
 #endif
 };
-
-#define DUAL_ROLE_SET_MODE_WAIT_MS 1500
 
 enum S2MM003_POWER {
 	S2MM003_CPU_RESET,
 	S2MM003_FULL_RESET,
 	S2MM003_START,
 };
+
+struct s2mm003_data *pusbpd_data;
 
 //int irq_times;
 //int wq_times;

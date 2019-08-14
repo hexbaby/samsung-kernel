@@ -247,7 +247,7 @@ static int dbmd2_uart_sbl_search(struct dbmdx_private *p,
 	return ret;
 }
 
-static int dbmd2_uart_load_firmware(const void *fw_data, size_t fw_size,
+static int dbmd2_uart_load_firmware(const struct firmware *fw,
 	struct dbmdx_private *p, const void *checksum,
 	size_t chksum_len)
 {
@@ -255,6 +255,7 @@ static int dbmd2_uart_load_firmware(const void *fw_data, size_t fw_size,
 				(struct dbmdx_uart_private *)p->chip->pdata;
 	int ret;
 	int sbl_len = 0;
+	u8 rx_checksum[6];
 
 	/* serach proper sbl image */
 	sbl_len = dbmd2_uart_sbl_search(p,  p->clk_type);
@@ -297,20 +298,37 @@ static int dbmd2_uart_load_firmware(const void *fw_data, size_t fw_size,
 	}
 
 	/* send firmware */
-	ret = uart_write_data(p, fw_data, fw_size - 4);
-	if (ret != (fw_size - 4)) {
+	ret = uart_write_data(p, fw->data, fw->size - 4);
+	if (ret != (fw->size - 4)) {
 		dev_err(p->dev, "%s: -----------> load firmware error\n",
 			__func__);
 		return -1;
 	}
+
 	/* verify checksum */
 	if (checksum) {
 		msleep(DBMDX_MSLEEP_UART_WAIT_FOR_CHECKSUM);
-		ret = uart_verify_boot_checksum(p, checksum, chksum_len);
+		uart_flush_rx_fifo(uart_p);
+		ret = send_uart_cmd_boot(p, DBMDX_READ_CHECKSUM);
 		if (ret < 0) {
-			dev_err(uart_p->dev,
-				"%s: could not verify checksum\n",
+			dev_err(p->dev,
+				"%s: failed to request checksum\n",
 				__func__);
+			return -1;
+		}
+
+		ret = uart_read_data(p, rx_checksum, 6);
+		if (ret < 0) {
+			dev_err(p->dev,
+				"%s: failed to read checksum\n",
+				__func__);
+			return -1;
+		}
+
+		ret = p->verify_checksum(
+				p, checksum, &rx_checksum[2], 4);
+		if (ret) {
+			dev_err(p->dev, "%s: checksum mismatch\n", __func__);
 			return -1;
 		}
 	}
@@ -320,9 +338,8 @@ static int dbmd2_uart_load_firmware(const void *fw_data, size_t fw_size,
 	return 0;
 }
 
-static int dbmd2_uart_boot(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw)
+static int dbmd2_uart_boot(const struct firmware *fw, struct dbmdx_private *p,
+		     const void *checksum, size_t chksum_len, int load_fw)
 {
 	struct dbmdx_uart_private *uart_p =
 				(struct dbmdx_uart_private *)p->chip->pdata;
@@ -350,7 +367,7 @@ static int dbmd2_uart_boot(const void *fw_data, size_t fw_size,
 		/* stop here if firmware does not need to be reloaded */
 		if (load_fw) {
 
-			ret = dbmd2_uart_load_firmware(fw_data, fw_size, p,
+			ret = dbmd2_uart_load_firmware(fw, p,
 				checksum, chksum_len);
 
 			if (ret != 0) {
@@ -367,11 +384,7 @@ static int dbmd2_uart_boot(const void *fw_data, size_t fw_size,
 			continue;
 		}
 
-		if (p->pdata->uart_low_speed_enabled)
-			ret = uart_set_speed(p, DBMDX_VA_SPEED_NORMAL);
-		else
-			ret = uart_set_speed_host_only(p,
-				DBMDX_VA_SPEED_BUFFERING);
+		ret = uart_set_speed_host_only(p, DBMDX_VA_SPEED_BUFFERING);
 
 		if (ret) {
 			dev_err(p->dev,
@@ -526,68 +539,6 @@ static int dbmd2_uart_finish_amodel_loading(struct dbmdx_private *p)
 	return dbmd2_uart_finish_buffering(p);
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int dbmdx_uart_suspend(struct device *dev)
-{
-	struct chip_interface *ci = dev_get_drvdata(dev);
-	struct dbmdx_uart_private *uart_p =
-		(struct dbmdx_uart_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	uart_interface_suspend(uart_p);
-
-	return 0;
-}
-
-static int dbmdx_uart_resume(struct device *dev)
-{
-	struct chip_interface *ci = dev_get_drvdata(dev);
-	struct dbmdx_uart_private *uart_p =
-		(struct dbmdx_uart_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-	uart_interface_resume(uart_p);
-
-	return 0;
-}
-#endif /* CONFIG_PM_SLEEP */
-
-#ifdef CONFIG_PM_RUNTIME
-static int dbmdx_uart_runtime_suspend(struct device *dev)
-{
-	struct chip_interface *ci = dev_get_drvdata(dev);
-	struct dbmdx_uart_private *uart_p =
-		(struct dbmdx_uart_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	uart_interface_suspend(uart_p);
-
-	return 0;
-}
-
-static int dbmdx_uart_runtime_resume(struct device *dev)
-{
-	struct chip_interface *ci = dev_get_drvdata(dev);
-	struct dbmdx_uart_private *uart_p =
-		(struct dbmdx_uart_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-	uart_interface_resume(uart_p);
-
-	return 0;
-}
-
-#endif /* CONFIG_PM_RUNTIME */
-
-static const struct dev_pm_ops dbmdx_uart_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(dbmdx_uart_suspend, dbmdx_uart_resume)
-	SET_RUNTIME_PM_OPS(dbmdx_uart_runtime_suspend,
-			   dbmdx_uart_runtime_resume, NULL)
-};
-
-
 static int uart_probe(struct platform_device *pdev)
 {
 	int rc;
@@ -627,7 +578,6 @@ static struct platform_driver dbmd2_uart_platform_driver = {
 		.name = "dbmd2-uart",
 		.owner = THIS_MODULE,
 		.of_match_table = dbmd2_uart_of_match,
-		.pm = &dbmdx_uart_pm,
 	},
 	.probe =  uart_probe,
 	.remove = uart_common_remove,

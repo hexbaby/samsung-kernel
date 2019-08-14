@@ -4,7 +4,6 @@
 
 menuconfig MEMORY
 	bool "Memory Controller drivers"
-	default y
 
 if MEMORY
 

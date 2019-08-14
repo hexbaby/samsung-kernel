@@ -32,55 +32,11 @@
 #include "dbmdx-spi.h"
 
 #define DEFAULT_SPI_WRITE_CHUNK_SIZE	8
-#define MAX_SPI_WRITE_CHUNK_SIZE	0x40000
+#define MAX_SPI_WRITE_CHUNK_SIZE	0x20000
 #define DEFAULT_SPI_READ_CHUNK_SIZE	8
 #define MAX_SPI_READ_CHUNK_SIZE		8192
 
 static DECLARE_WAIT_QUEUE_HEAD(dbmdx_wq);
-
-int spi_set_speed(struct dbmdx_private *p, int index)
-{
-	struct dbmdx_spi_private *spi_p =
-				(struct dbmdx_spi_private *)p->chip->pdata;
-	struct spi_device *spi = spi_p->client;
-	int ret = 0;
-	u32 bits_per_word = 0;
-	u32 spi_rate = 0;
-
-	if (index >= DBMDX_VA_NR_OF_SPEEDS) {
-		dev_err(spi_p->dev, "%s: Invalid speed index %x\n",
-			__func__, index);
-		return -EINVAL;
-	}
-
-	spi_rate = p->pdata->va_speed_cfg[index].spi_rate -
-		(p->pdata->va_speed_cfg[index].spi_rate % 100);
-	bits_per_word = p->pdata->va_speed_cfg[index].spi_rate % 100;
-
-	if (bits_per_word != 8 && bits_per_word != 16 && bits_per_word != 32)
-		bits_per_word = 8;
-
-	if (spi->max_speed_hz != spi_rate) {
-
-		spi->max_speed_hz = spi_rate;
-		spi->mode = SPI_MODE_0; /* clk active low */
-
-		spi->bits_per_word = bits_per_word;
-
-		spi_p->pdata->bits_per_word = spi->bits_per_word;
-		spi_p->pdata->bytes_per_word = spi->bits_per_word / 8;
-
-		dev_dbg(spi_p->dev,
-			"%s Update SPI Max Speed to %d Hz, bits_per_word: %d\n",
-			__func__, spi->max_speed_hz, spi->bits_per_word);
-
-		ret = spi_setup(spi);
-		if (ret < 0)
-			dev_err(spi_p->dev, "%s:failed %x\n", __func__, ret);
-	}
-
-	return ret;
-}
 
 ssize_t send_spi_cmd_vqe(struct dbmdx_private *p,
 	u32 command, u16 *response)
@@ -173,20 +129,16 @@ ssize_t send_spi_cmd_va(struct dbmdx_private *p, u32 command,
 	if (response) {
 
 		ret = snprintf(tmp, 3, "%02x", (command >> 16) & 0xff);
-		send[0] = 0;
-		send[1] = tmp[0];
-		send[2] = tmp[1];
-		send[3] = 'r';
+		send[0] = tmp[0];
+		send[1] = tmp[1];
+		send[2] = 'r';
 
-		ret = send_spi_data(p, send, 4);
-		if (ret != 4)
+		ret = send_spi_data(p, send, 3);
+		if (ret != 3)
 			goto out;
 
 		usleep_range(DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND,
 			DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND + 100);
-
-		if (p->va_debug_mode)
-			msleep(DBMDX_MSLEEP_DBG_MODE_CMD_RX);
 
 		ret = 0;
 
@@ -241,12 +193,10 @@ ssize_t send_spi_cmd_va(struct dbmdx_private *p, u32 command,
 out:
 	usleep_range(DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND_2,
 		DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND_2 + 100);
-
-	if (p->va_debug_mode)
-		msleep(DBMDX_MSLEEP_DBG_MODE_CMD_TX);
-
 	return ret;
 }
+
+#define DBMDX_VA_SPI_CMD_PADDED_SIZE 150
 
 ssize_t send_spi_cmd_va_padded(struct dbmdx_private *p,
 				u32 command,
@@ -275,9 +225,6 @@ ssize_t send_spi_cmd_va_padded(struct dbmdx_private *p,
 
 		usleep_range(DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND,
 			DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND + 100);
-
-		if (p->va_debug_mode)
-			msleep(DBMDX_MSLEEP_DBG_MODE_CMD_RX);
 
 		ret = 0;
 
@@ -332,10 +279,6 @@ ssize_t send_spi_cmd_va_padded(struct dbmdx_private *p,
 out:
 	usleep_range(DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND_2,
 		DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND_2 + 100);
-
-	if (p->va_debug_mode)
-		msleep(DBMDX_MSLEEP_DBG_MODE_CMD_TX);
-
 	return ret;
 }
 
@@ -344,43 +287,52 @@ ssize_t read_spi_data(struct dbmdx_private *p, void *buf, size_t len)
 	struct dbmdx_spi_private *spi_p =
 				(struct dbmdx_spi_private *)p->chip->pdata;
 	size_t count = spi_p->pdata->read_chunk_size;
-	u32 bytes_per_word = spi_p->pdata->bytes_per_word;
-	u8 *recv = spi_p->pdata->recv;
 	ssize_t i;
-	size_t pad_size = 0;
 	int ret;
-	u8 *d = (u8 *)buf;
-	/* if stuck for more than 10s, something is wrong */
-	unsigned long timeout = jiffies + msecs_to_jiffies(10000);
 
-	for (i = 0; i < len; i += count) {
-		if ((i + count) > len) {
-			count = len - i;
-			if (count % (size_t)bytes_per_word != 0)
-				pad_size = (size_t)bytes_per_word -
-				(size_t)(count % (size_t)bytes_per_word);
-			count = count + pad_size;
-		}
+	/* We are going to read everything in on chunk */
+	if (len < count) {
 
-		ret =  spi_read(spi_p->client, recv, count);
+		ret =  spi_read(spi_p->client, buf, len);
+
 		if (ret < 0) {
 			dev_err(spi_p->dev, "%s: spi_read failed\n",
 				__func__);
 			i = -EIO;
 			goto out;
 		}
-		memcpy(d + i, recv, count - pad_size);
 
-		if (!time_before(jiffies, timeout)) {
-			dev_err(spi_p->dev,
-				"%s: read data timed out after %zd bytes\n",
-				__func__, i);
-			i = -ETIMEDOUT;
-			goto out;
+		return len;
+	} else {
+
+		u8 *d = (u8 *)buf;
+		/* if stuck for more than 10s, something is wrong */
+		unsigned long timeout = jiffies + msecs_to_jiffies(10000);
+
+		for (i = 0; i < len; i += count) {
+			if ((i + count) > len)
+				count = len - i;
+
+			ret =  spi_read(spi_p->client,
+				spi_p->pdata->read_buf, count);
+			if (ret < 0) {
+				dev_err(spi_p->dev, "%s: spi_read failed\n",
+					__func__);
+				i = -EIO;
+				goto out;
+			}
+			memcpy(d + i, spi_p->pdata->read_buf, count);
+
+			if (!time_before(jiffies, timeout)) {
+				dev_err(spi_p->dev,
+					"%s: read data timed out after %zd bytes\n",
+					__func__, i);
+				i = -ETIMEDOUT;
+				goto out;
+			}
 		}
+		return len;
 	}
-
-	return len;
 out:
 	return i;
 }
@@ -409,59 +361,39 @@ ssize_t send_spi_data(struct dbmdx_private *p, const void *buf,
 {
 	struct dbmdx_spi_private *spi_p =
 				(struct dbmdx_spi_private *)p->chip->pdata;
-	u32 bytes_per_word = spi_p->pdata->bytes_per_word;
 	int ret = 0;
 	const u8 *cmds = (const u8 *)buf;
 	size_t to_copy = len;
 	size_t max_size = (size_t)(spi_p->pdata->write_chunk_size);
-	size_t pad_size = 0;
-	size_t cur_send_size = 0;
-	u8 *send = spi_p->pdata->send;
 
 	while (to_copy > 0) {
-		if (to_copy < max_size) {
-			memset(send, 0, max_size);
-			memcpy(send, cmds, to_copy);
-
-			if (to_copy % (size_t)bytes_per_word != 0)
-				pad_size = (size_t)bytes_per_word -
-				(size_t)(to_copy % (size_t)bytes_per_word);
-
-			cur_send_size = to_copy + pad_size;
-		} else {
-			memcpy(send, cmds, max_size);
-			cur_send_size = max_size;
-		}
-
-		ret = write_spi_data(p, send, cur_send_size);
+		ret = write_spi_data(p, cmds,
+				min_t(size_t, to_copy, max_size));
 		if (ret < 0) {
 			dev_err(spi_p->dev,
 				"%s: send_spi_data failed ret=%d\n",
 				__func__, ret);
 			break;
 		}
-		to_copy -= (ret - pad_size);
-		cmds += (ret - pad_size);
+		to_copy -= ret;
+		cmds += ret;
 	}
 
 	return len - to_copy;
 }
 
-int send_spi_cmd_boot(struct dbmdx_private *p, u32 command)
+int send_spi_cmd_boot(struct dbmdx_spi_private *spi_p, u32 command)
 {
-	struct dbmdx_spi_private *spi_p =
-				(struct dbmdx_spi_private *)p->chip->pdata;
-	u8 send[4];
+	struct spi_device *spi = spi_p->client;
+	u8 send[3];
 	int ret = 0;
 
+	dev_info(spi_p->dev, "%s: send_spi_cmd_boot = %x\n", __func__, command);
 
-	dev_dbg(spi_p->dev, "%s: send_spi_cmd_boot = %x\n", __func__, command);
-	send[0] = 0;
-	send[1] = 0;
-	send[2] = (command >> 16) & 0xff;
-	send[3] = (command >>  8) & 0xff;
+	send[0] = (command >> 16) & 0xff;
+	send[1] = (command >>  8) & 0xff;
 
-	ret = send_spi_data(p, send, 4);
+	ret = spi_write(spi, send, 2);
 	if (ret < 0) {
 		dev_err(spi_p->dev, "%s: send_spi_cmd_boot ret = %d\n",
 			__func__, ret);
@@ -476,46 +408,6 @@ int send_spi_cmd_boot(struct dbmdx_private *p, u32 command)
 	return ret;
 }
 
-int spi_verify_boot_checksum(struct dbmdx_private *p,
-	const void *checksum, size_t chksum_len)
-{
-	struct dbmdx_spi_private *spi_p =
-				(struct dbmdx_spi_private *)p->chip->pdata;
-
-	int ret;
-	u8 rx_checksum[11] = {0};
-
-	if (!checksum)
-		return 0;
-
-	if (chksum_len > 8) {
-		dev_err(spi_p->dev, "%s: illegal checksum length\n", __func__);
-		return -EINVAL;
-	}
-
-	ret = send_spi_cmd_boot(p, DBMDX_READ_CHECKSUM);
-
-	if (ret < 0) {
-		dev_err(spi_p->dev, "%s: could not read checksum\n", __func__);
-		return -EIO;
-	}
-
-	ret = read_spi_data(p, (void *)rx_checksum, chksum_len + 3);
-
-	if (ret < 0) {
-		dev_err(spi_p->dev, "%s: could not read checksum data\n",
-			__func__);
-		return -EIO;
-	}
-
-	ret = p->verify_checksum(p, checksum, &rx_checksum[3], chksum_len);
-	if (ret) {
-		dev_err(spi_p->dev, "%s: checksum mismatch\n", __func__);
-		return -EILSEQ;
-	}
-
-	return 0;
-}
 
 static int spi_can_boot(struct dbmdx_private *p)
 {
@@ -531,11 +423,31 @@ static int spi_prepare_boot(struct dbmdx_private *p)
 	struct dbmdx_spi_private *spi_p =
 				(struct dbmdx_spi_private *)p->chip->pdata;
 
+	struct spi_device *spi = spi_p->client;
 	int ret = 0;
 
 	dev_dbg(spi_p->dev, "%s\n", __func__);
 
-	ret = spi_set_speed(p, DBMDX_VA_SPEED_MAX);
+	/*
+	* setup spi parameters; this makes sure that parameters we request
+	* are acceptable by the spi driver
+	*/
+
+	spi->mode = SPI_MODE_0; /* clk active low */
+	spi->bits_per_word = 8;
+	spi->max_speed_hz = spi_p->pdata->spi_speed;
+
+	ret = spi_setup(spi);
+	if (ret < 0) {
+		dev_err(spi_p->dev, "%s:failed %x\n", __func__, ret);
+		return -EIO;
+	}
+
+	dev_info(spi_p->dev, "%s: speed %u hZ\n",
+		__func__, spi_p->pdata->spi_speed);
+
+	/* send_spi_data(p, sync_spi, sizeof(sync_spi)); */
+	ret = spi_setup(spi);
 
 	return ret;
 }
@@ -545,13 +457,26 @@ static int spi_finish_boot(struct dbmdx_private *p)
 	struct dbmdx_spi_private *spi_p =
 				(struct dbmdx_spi_private *)p->chip->pdata;
 
+
+	struct spi_device *spi = spi_p->client;
 	int ret = 0;
+	/* change to normal operation spi address */
+	dev_dbg(spi_p->dev, "%s\n", __func__);
+	msleep(DBMDX_MSLEEP_SPI_FINISH_BOOT_1);
 
-	ret = spi_set_speed(p, DBMDX_VA_SPEED_NORMAL);
-	if (ret < 0)
-		dev_err(spi_p->dev, "%s:failed %x\n", __func__, ret);
+	/*
+	* setup spi parameters; this makes sure that parameters we request
+	* are acceptable by the spi driver
+	*/
+	spi->mode = SPI_MODE_0; /* clk active low */
+	spi->bits_per_word = 8;
+	/* spi->max_speed_hz = 800000; */
 
-	return ret;
+	ret = spi_setup(spi);
+
+	msleep(DBMDX_MSLEEP_SPI_FINISH_BOOT_2);
+
+	return 0;
 }
 
 static int spi_dump_state(struct dbmdx_private *p, char *buf)
@@ -562,17 +487,13 @@ static int spi_dump_state(struct dbmdx_private *p, char *buf)
 
 	dev_dbg(spi_p->dev, "%s\n", __func__);
 
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\t===SPI Interface  Dump====\n");
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\tSPI Write Chunk Size:\t\t%d\n",
+	off += sprintf(buf + off, "\t===SPI Interface  Dump====\n");
+	off += sprintf(buf + off, "\tSPI Write Chunk Size:\t\t%d\n",
 				spi_p->pdata->write_chunk_size);
-	off += snprintf(buf + off, PAGE_SIZE - off,
-					"\tSPI Read Chunk Size:\t\t%d\n",
+	off += sprintf(buf + off, "\tSPI Read Chunk Size:\t\t%d\n",
 				spi_p->pdata->read_chunk_size);
 
-	off += snprintf(buf + off, PAGE_SIZE - off,
-				"\tSPI DMA Min Buffer Size:\t\t%d\n",
+	off += sprintf(buf + off, "\tSPI DMA Min Buffer Size:\t\t%d\n",
 				spi_p->pdata->dma_min_buffer_size);
 
 	off += snprintf(buf + off, PAGE_SIZE - off,
@@ -611,9 +532,6 @@ static void spi_transport_enable(struct dbmdx_private *p, bool enable)
 
 	if (enable) {
 
-#ifdef CONFIG_PM_WAKELOCKS
-		wake_lock(&spi_p->ps_nosuspend_wl);
-#endif
 		ret = wait_event_interruptible(dbmdx_wq,
 			spi_p->interface_enabled);
 
@@ -629,24 +547,9 @@ static void spi_transport_enable(struct dbmdx_private *p, bool enable)
 	if (enable) {
 		p->wakeup_set(p);
 		msleep(DBMDX_MSLEEP_SPI_WAKEUP);
-	} else {
-#ifdef CONFIG_PM_WAKELOCKS
-		wake_unlock(&spi_p->ps_nosuspend_wl);
-#endif
+	} else
 		p->wakeup_release(p);
-	}
 }
-
-static void spi_resume(struct dbmdx_private *p)
-{
-	struct dbmdx_spi_private *spi_p =
-				(struct dbmdx_spi_private *)p->chip->pdata;
-
-	dev_dbg(spi_p->dev, "%s\n", __func__);
-
-	spi_interface_resume(spi_p);
-}
-
 
 void spi_interface_resume(struct dbmdx_spi_private *spi_p)
 {
@@ -654,16 +557,6 @@ void spi_interface_resume(struct dbmdx_spi_private *spi_p)
 
 	spi_p->interface_enabled = 1;
 	wake_up_interruptible(&dbmdx_wq);
-}
-
-static void spi_suspend(struct dbmdx_private *p)
-{
-	struct dbmdx_spi_private *spi_p =
-				(struct dbmdx_spi_private *)p->chip->pdata;
-
-	dev_dbg(spi_p->dev, "%s\n", __func__);
-
-	spi_interface_suspend(spi_p);
 }
 
 
@@ -700,7 +593,12 @@ static int spi_read_audio_data(struct dbmdx_private *p,
 
 	dev_dbg(spi_p->dev, "%s\n", __func__);
 
-	ret = send_spi_cmd_va(p,
+	if (to_read_metadata && spi_p->pdata->dma_min_buffer_size &&
+		!(p->va_flags.padded_cmds_disabled))
+		ret = send_spi_cmd_va_padded(p,
+			DBMDX_VA_READ_AUDIO_BUFFER | samples, NULL);
+	else
+		ret = send_spi_cmd_va(p,
 			DBMDX_VA_READ_AUDIO_BUFFER | samples, NULL);
 
 	if (ret) {
@@ -797,6 +695,180 @@ static int spi_prepare_amodel_loading(struct dbmdx_private *p)
 	return 0;
 }
 
+static int spi_load_amodel(struct dbmdx_private *p,  const void *data,
+			   size_t size, size_t gram_size, size_t net_size,
+			   const void *checksum, size_t chksum_len,
+			   enum dbmdx_load_amodel_mode load_amodel_mode)
+{
+	int retry = RETRY_COUNT;
+	int ret;
+	ssize_t send_bytes;
+	size_t cur_pos;
+	size_t cur_size;
+	size_t model_size;
+	int model_size_fw;
+	struct dbmdx_spi_private *spi_p =
+				(struct dbmdx_spi_private *)p->chip->pdata;
+	u8 rx_checksum[7];
+
+	dev_dbg(spi_p->dev, "%s\n", __func__);
+
+	model_size = gram_size + net_size + DBMDX_AMODEL_HEADER_SIZE*2;
+	model_size_fw = (int)(model_size / 16) + 1;
+
+	while (retry--) {
+		if (load_amodel_mode == LOAD_AMODEL_PRIMARY) {
+			ret = send_spi_cmd_va(
+					p,
+					DBMDX_VA_PRIMARY_AMODEL_SIZE |
+					model_size_fw,
+					NULL);
+
+			if (ret < 0) {
+				dev_err(p->dev,
+					"%s: failed to set prim. amodel size\n",
+					__func__);
+				continue;
+			}
+		} else if (load_amodel_mode == LOAD_AMODEL_2NDARY) {
+			ret = send_spi_cmd_va(
+					p,
+					DBMDX_VA_SECONDARY_AMODEL_SIZE |
+					model_size_fw,
+					NULL);
+
+			if (ret < 0) {
+				dev_err(p->dev,
+					"%s: failed to set prim. amodel size\n",
+					__func__);
+				continue;
+			}
+		}
+
+		ret = send_spi_cmd_va(
+				p,
+				DBMDX_VA_LOAD_NEW_ACUSTIC_MODEL |
+				load_amodel_mode,
+				NULL);
+
+		if (ret < 0) {
+			dev_err(p->dev,
+				"%s: failed to set fw to receive new amodel\n",
+				__func__);
+			continue;
+		}
+
+		dev_info(p->dev,
+			"%s: ---------> acoustic model download start\n",
+			__func__);
+
+		cur_size = DBMDX_AMODEL_HEADER_SIZE;
+		cur_pos = 0;
+		/* Send Gram Header */
+		send_bytes = send_spi_data(p, data, cur_size);
+
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* wait for FW to process the header */
+		usleep_range(DBMDX_USLEEP_AMODEL_HEADER,
+			DBMDX_USLEEP_AMODEL_HEADER + 1000);
+
+		cur_pos += DBMDX_AMODEL_HEADER_SIZE;
+		cur_size = gram_size;
+
+		/* Send Gram Data */
+		send_bytes = send_spi_data(p, data + cur_pos, cur_size);
+
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		cur_pos += gram_size;
+		cur_size = DBMDX_AMODEL_HEADER_SIZE;
+
+		/* Send Net Header */
+		send_bytes = send_spi_data(p, data + cur_pos, cur_size);
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* wait for FW to process the header */
+		usleep_range(DBMDX_USLEEP_AMODEL_HEADER,
+			DBMDX_USLEEP_AMODEL_HEADER + 1000);
+
+		cur_pos += DBMDX_AMODEL_HEADER_SIZE;
+		cur_size = net_size;
+
+		/* Send Net Data */
+		send_bytes = send_spi_data(p, data + cur_pos, cur_size);
+		if (send_bytes != cur_size) {
+			dev_err(p->dev,
+				"%s: sending of acoustic model data failed\n",
+				__func__);
+			continue;
+		}
+
+		/* verify checksum */
+		if (checksum) {
+			ret = send_spi_cmd_boot(spi_p, DBMDX_READ_CHECKSUM);
+			if (ret < 0) {
+				dev_err(spi_p->dev,
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = spi_read(spi_p->client, (void *)rx_checksum, 7);
+			if (ret < 0) {
+				dev_err(spi_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(p, checksum, &rx_checksum[3],
+						 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
+					__func__);
+				continue;
+			}
+		}
+		break;
+	}
+
+	/* no retries left, failed to load acoustic */
+	if (retry < 0) {
+		dev_err(p->dev, "%s: failed to load acoustic model\n",
+			__func__);
+		return -1;
+	}
+
+	/* send boot command */
+	ret = send_spi_cmd_boot(spi_p, DBMDX_FIRMWARE_BOOT);
+	if (ret < 0) {
+		dev_err(p->dev, "%s: booting the firmware failed\n", __func__);
+		return -1;
+	}
+
+	/* wait some time */
+	usleep_range(DBMDX_USLEEP_SPI_AFTER_LOAD_AMODEL,
+		DBMDX_USLEEP_SPI_AFTER_LOAD_AMODEL + 1000);
+
+	return 0;
+}
+
 static int spi_finish_amodel_loading(struct dbmdx_private *p)
 {
 	struct dbmdx_spi_private *spi_p =
@@ -839,12 +911,12 @@ static int spi_set_read_chunk_size(struct dbmdx_private *p, u32 size)
 		dev_err(spi_p->dev,
 			"%s Error setting SPI read chunk. Max chunk size: %u\n",
 		__func__, MAX_SPI_READ_CHUNK_SIZE);
-		return -EINVAL;
-	} else if ((size % 4) != 0) {
+		return -1;
+	} else if ((size % 2) != 0) {
 		dev_err(spi_p->dev,
-			"%s Error SPI read chunk should be multiply of 4\n",
+			"%s Error setting SPI read chunk. Uneven size\n",
 		__func__);
-		return -EINVAL;
+		return -2;
 	} else if (size == 0)
 		spi_p->pdata->read_chunk_size = DEFAULT_SPI_READ_CHUNK_SIZE;
 	else
@@ -865,12 +937,12 @@ static int spi_set_write_chunk_size(struct dbmdx_private *p, u32 size)
 		dev_err(spi_p->dev,
 			"%s Error setting SPI write chunk. Max chunk size: %u\n",
 		__func__, MAX_SPI_WRITE_CHUNK_SIZE);
-		return -EINVAL;
-	} else if ((size % 4) != 0) {
+		return -1;
+	} else if ((size % 2) != 0) {
 		dev_err(spi_p->dev,
-			"%s Error SPI write chunk should be multiply of 4\n",
+			"%s Error setting SPI write chunk. Uneven size\n",
 		__func__);
-		return -EINVAL;
+		return -2;
 	} else if (size == 0)
 		spi_p->pdata->write_chunk_size = DEFAULT_SPI_WRITE_CHUNK_SIZE;
 	else
@@ -929,7 +1001,7 @@ int spi_common_probe(struct spi_device *client)
 	if (ret && ret != -EINVAL)
 		pdata->spi_speed = 2000000;
 #endif
-	dev_dbg(p->dev, "%s: spi speed is %u\n", __func__, pdata->spi_speed);
+	dev_info(p->dev, "%s: spi speed is %u\n", __func__, pdata->spi_speed);
 
 #ifdef CONFIG_OF
 	ret = of_property_read_u32(np, "read-chunk-size",
@@ -944,9 +1016,6 @@ int spi_common_probe(struct spi_device *client)
 			__func__, pdata->read_chunk_size);
 	}
 #endif
-	if (pdata->read_chunk_size % 4 != 0)
-		pdata->read_chunk_size += (4 - (pdata->read_chunk_size % 4));
-
 	if (pdata->read_chunk_size > MAX_SPI_READ_CHUNK_SIZE)
 		pdata->read_chunk_size = MAX_SPI_READ_CHUNK_SIZE;
 	if (pdata->read_chunk_size == 0)
@@ -968,9 +1037,6 @@ int spi_common_probe(struct spi_device *client)
 			__func__, pdata->write_chunk_size);
 	}
 #endif
-	if (pdata->write_chunk_size % 4 != 0)
-		pdata->write_chunk_size += (4 - (pdata->write_chunk_size % 4));
-
 	if (pdata->write_chunk_size > MAX_SPI_WRITE_CHUNK_SIZE)
 		pdata->write_chunk_size = MAX_SPI_WRITE_CHUNK_SIZE;
 	if (pdata->write_chunk_size == 0)
@@ -1002,27 +1068,6 @@ int spi_common_probe(struct spi_device *client)
 
 	p->pdata = pdata;
 
-	pdata->send = kmalloc(MAX_SPI_WRITE_CHUNK_SIZE, GFP_KERNEL | GFP_DMA);
-	if (!pdata->send) {
-		dev_err(p->dev,
-			"%s: Cannot allocate memory spi send buffer\n",
-			__func__);
-		goto out_err_mem_free;
-	}
-
-	pdata->recv = kmalloc(MAX_SPI_READ_CHUNK_SIZE, GFP_KERNEL | GFP_DMA);
-	if (!pdata->recv) {
-		dev_err(p->dev,
-			"%s: Cannot allocate memory spi recv buffer\n",
-			__func__);
-		goto out_err_mem_free1;
-	}
-
-#ifdef CONFIG_PM_WAKELOCKS
-	wake_lock_init(&p->ps_nosuspend_wl, WAKE_LOCK_SUSPEND,
-		"dbmdx_nosuspend_wakelock_spi");
-#endif
-
 	/* fill in chip interface functions */
 	p->chip.can_boot = spi_can_boot;
 	p->chip.prepare_boot = spi_prepare_boot;
@@ -1035,19 +1080,16 @@ int spi_common_probe(struct spi_device *client)
 	p->chip.write = send_spi_data;
 	p->chip.send_cmd_vqe = send_spi_cmd_vqe;
 	p->chip.send_cmd_va = send_spi_cmd_va;
-	p->chip.send_cmd_boot = send_spi_cmd_boot;
-	p->chip.verify_boot_checksum = spi_verify_boot_checksum;
 	p->chip.prepare_buffering = spi_prepare_buffering;
 	p->chip.read_audio_data = spi_read_audio_data;
 	p->chip.finish_buffering = spi_finish_buffering;
 	p->chip.prepare_amodel_loading = spi_prepare_amodel_loading;
+	p->chip.load_amodel = spi_load_amodel;
 	p->chip.finish_amodel_loading = spi_finish_amodel_loading;
 	p->chip.get_write_chunk_size = spi_get_write_chunk_size;
 	p->chip.get_read_chunk_size = spi_get_read_chunk_size;
 	p->chip.set_write_chunk_size = spi_set_write_chunk_size;
 	p->chip.set_read_chunk_size = spi_set_read_chunk_size;
-	p->chip.resume = spi_resume;
-	p->chip.suspend = spi_suspend;
 
 	p->interface_enabled = 1;
 
@@ -1056,12 +1098,9 @@ int spi_common_probe(struct spi_device *client)
 	dev_info(&client->dev, "%s: successfully probed\n", __func__);
 	ret = 0;
 	goto out;
-out_err_mem_free1:
-	kfree(pdata->send);
 #ifdef CONFIG_OF
 out_err_kfree:
 #endif
-out_err_mem_free:
 	kfree(p);
 out:
 	return ret;
@@ -1072,11 +1111,6 @@ int spi_common_remove(struct spi_device *client)
 	struct chip_interface *ci = spi_get_drvdata(client);
 	struct dbmdx_spi_private *p = (struct dbmdx_spi_private *)ci->pdata;
 
-#ifdef CONFIG_PM_WAKELOCKS
-	wake_lock_destroy(&p->ps_nosuspend_wl);
-#endif
-	kfree(p->pdata->send);
-	kfree(p->pdata->recv);
 	kfree(p);
 
 	spi_set_drvdata(client, NULL);

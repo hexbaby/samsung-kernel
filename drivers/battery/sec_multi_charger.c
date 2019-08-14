@@ -549,7 +549,7 @@ static int sec_multi_charger_parse_dt(struct device *dev,
 }
 #endif
 
-static int __devinit sec_multi_charger_probe(struct platform_device *pdev)
+static int sec_multi_charger_probe(struct platform_device *pdev)
 {
 	struct sec_multi_charger_info *charger;
 	struct sec_multi_charger_platform_data *pdata = NULL;
@@ -614,7 +614,7 @@ err_charger_free:
 	return ret;
 }
 
-static int __devexit sec_multi_charger_remove(struct platform_device *pdev)
+static int sec_multi_charger_remove(struct platform_device *pdev)
 {
 	struct sec_multi_charger_info *charger = platform_get_drvdata(pdev);
 
@@ -666,7 +666,7 @@ static struct platform_driver sec_multi_charger_driver = {
 #endif
 	},
 	.probe = sec_multi_charger_probe,
-	.remove = __devexit_p(sec_multi_charger_remove),
+	.remove = sec_multi_charger_remove,
 };
 
 static int __init sec_multi_charger_init(void)

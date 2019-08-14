@@ -20,54 +20,18 @@
  */
 #include <linux/ccic/s2mm003.h>
 #include <linux/power_supply.h>
-#include <linux/battery/sec_charger.h>
 #if defined(CONFIG_BATTERY_NOTIFIER)
 #include <linux/battery/battery_notifier.h>
 #endif
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-#include <linux/usb/class-dual-role.h>
-#endif
-
-/* switch device header */
-#ifdef CONFIG_SWITCH
-#include <linux/switch.h>
-#endif /* CONFIG_SWITCH */
-
-#ifdef CONFIG_SWITCH
-static struct switch_dev switch_dock = {
-	.name = "ccic_dock",
-};
-#endif /* CONFIG_SWITCH */
-
-/* CCIC Dock Observer Callback parameter */
-enum {
-	CCIC_DOCK_DETACHED	= 0,
-	CCIC_DOCK_HMT		= 105,
-	CCIC_DOCK_ABNORMAL	= 106,
-};
-
+#if defined(CONFIG_CCIC_NOTIFIER)
 extern struct device *ccic_device;
-
-static void ccic_send_dock_intent(int type)
-{
-	pr_info("%s: CCIC dock type(%d)\n", __func__, type);
-#ifdef CONFIG_SWITCH
-	switch_set_state(&switch_dock, type);
 #endif
-}
-
-static int ccic_dock_attach_notify(int type, const char *name)
+static inline struct power_supply *get_power_supply_by_name(char *name)
 {
-	pr_info("%s: %s\n", __func__, name);
-	ccic_send_dock_intent(type);
-	return NOTIFY_OK;
-}
-
-static int ccic_dock_detach_notify(void)
-{
-	pr_info("%s\n", __func__);
-	ccic_send_dock_intent(CCIC_DOCK_DETACHED);
-	return NOTIFY_OK;
+	if (!name)
+		return (struct power_supply *)NULL;
+	else
+		return power_supply_get_by_name(name);
 }
 
 static int s2mm003_read_byte(const struct i2c_client *i2c, u8 reg, u8 *val)
@@ -75,7 +39,7 @@ static int s2mm003_read_byte(const struct i2c_client *i2c, u8 reg, u8 *val)
 	int ret; u8 wbuf;
 	struct i2c_msg msg[2];
 	struct s2mm003_data *usbpd_data = i2c_get_clientdata(i2c);
-
+	int i2c_retry_count = 0;
 	mutex_lock(&usbpd_data->i2c_mutex);
 	msg[0].addr = i2c->addr;
 	msg[0].flags = i2c->flags;
@@ -88,10 +52,21 @@ static int s2mm003_read_byte(const struct i2c_client *i2c, u8 reg, u8 *val)
 
 	wbuf = (reg & 0xFF);
 
-	ret = i2c_transfer(i2c->adapter, msg, 2);
-	if (ret < 0)
-		dev_err(&i2c->dev, "i2c reading fail reg(0x%x), error %d\n",
-			reg, ret);
+	while(i2c_retry_count++ < 3)
+	{
+		ret = i2c_transfer(i2c->adapter, msg, 2);
+		if (ret < 0)
+			dev_err(&i2c->dev, "i2c reading fail reg(0x%x), error %d,retry:%d\n",
+				reg, ret, i2c_retry_count);
+		else
+			break;		
+	}
+	
+	if(i2c_retry_count == 3)
+	{
+		dev_err(&i2c->dev, "[CRITICAL ERROR] i2c reading fail reg(0x%x), error %d\n",reg, ret);
+	}
+	
 	mutex_unlock(&usbpd_data->i2c_mutex);
 
 	return ret;
@@ -102,6 +77,7 @@ static int s2mm003_read_byte_16(const struct i2c_client *i2c, u16 reg, u8 *val)
 	int ret; u8 wbuf[2], rbuf;
 	struct i2c_msg msg[2];
 	struct s2mm003_data *usbpd_data = i2c_get_clientdata(i2c);
+	int i2c_retry_count = 0;
 
 	mutex_lock(&usbpd_data->i2c_mutex);
 	msg[0].addr = 0x43;
@@ -116,10 +92,21 @@ static int s2mm003_read_byte_16(const struct i2c_client *i2c, u16 reg, u8 *val)
 	wbuf[0] = (reg & 0xFF00) >> 8;
 	wbuf[1] = (reg & 0xFF);
 
-	ret = i2c_transfer(i2c->adapter, msg, 2);
-	if (ret < 0)
-		dev_err(&i2c->dev, "i2c read16 fail reg(0x%x), error %d\n",
-			reg, ret);
+	while(i2c_retry_count++ < 3)
+	{
+		ret = i2c_transfer(i2c->adapter, msg, 2);
+		if (ret < 0)
+			dev_err(&i2c->dev, "i2c read16 fail reg(0x%x), error %d, retry:%d\n",
+				reg, ret, i2c_retry_count);
+		else
+			break;
+	}
+
+	if(i2c_retry_count == 3)
+	{
+		dev_err(&i2c->dev, "[CRITICAL ERROR] i2c read16 fail reg(0x%x), error %d\n",reg, ret);
+	}
+	
 	mutex_unlock(&usbpd_data->i2c_mutex);
 
 	*val = rbuf;
@@ -131,6 +118,7 @@ static int s2mm003_write_byte(const struct i2c_client *i2c, u8 reg, u8 val)
 	int ret = 0; u8 wbuf[2];
 	struct i2c_msg msg[1];
 	struct s2mm003_data *usbpd_data = i2c_get_clientdata(i2c);
+	int i2c_retry_count = 0;
 
 	mutex_lock(&usbpd_data->i2c_mutex);
 	msg[0].addr = i2c->addr;
@@ -141,10 +129,21 @@ static int s2mm003_write_byte(const struct i2c_client *i2c, u8 reg, u8 val)
 	wbuf[0] = (reg & 0xFF);
 	wbuf[1] = (val & 0xFF);
 
-	ret = i2c_transfer(i2c->adapter, msg, 1);
-	if (ret < 0)
-		dev_err(&i2c->dev, "i2c write fail reg(0x%x:%x), error %d\n",
-				reg, val, ret);
+	while(i2c_retry_count++ < 3)
+	{
+		ret = i2c_transfer(i2c->adapter, msg, 1);
+		if (ret < 0)
+			dev_err(&i2c->dev, "i2c write fail reg(0x%x:%x), error %d, retry:%d\n",
+				reg, val, ret, i2c_retry_count);
+		else
+			break;
+	}
+
+	if(i2c_retry_count == 3)
+	{
+		dev_err(&i2c->dev, "[CRITICAL ERROR] i2c write fail reg(0x%x), error %d\n",reg, ret);
+	}
+	
 	mutex_unlock(&usbpd_data->i2c_mutex);
 
 	return ret;
@@ -155,6 +154,7 @@ static int s2mm003_write_byte_16(const struct i2c_client *i2c, u16 reg, u8 val)
 	int ret = 0; u8 wbuf[3];
 	struct i2c_msg msg[1];
 	struct s2mm003_data *usbpd_data = i2c_get_clientdata(i2c);
+	int i2c_retry_count = 0;
 
 	mutex_lock(&usbpd_data->i2c_mutex);
 	msg[0].addr = 0x43;
@@ -166,10 +166,20 @@ static int s2mm003_write_byte_16(const struct i2c_client *i2c, u16 reg, u8 val)
 	wbuf[1] = (reg & 0xFF);
 	wbuf[2] = (val & 0xFF);
 
-	ret = i2c_transfer(i2c->adapter, msg, 1);
-	if (ret < 0)
-		dev_err(&i2c->dev, "i2c write fail reg(0x%x:%x), error %d\n",
-				reg, val, ret);
+	while(i2c_retry_count++ < 3)
+	{
+		ret = i2c_transfer(i2c->adapter, msg, 1);
+		if (ret < 0)
+			dev_err(&i2c->dev, "i2c write fail reg(0x%x:%x), error %d, retry:%d\n",
+				reg, val, ret, i2c_retry_count);
+		else
+			break;
+	}
+
+	if(i2c_retry_count == 3)
+	{
+		dev_err(&i2c->dev, "[CRITICAL ERROR] i2c write fail reg(0x%x), error %d\n",reg, ret);
+	}
 	mutex_unlock(&usbpd_data->i2c_mutex);
 
 	return ret;
@@ -212,7 +222,7 @@ static void s2mm003_indirect_write(struct s2mm003_data *usbpd_data, u8 address, 
 	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x0);
 }
 
-static int s2mm003_src_capacity_information(const struct i2c_client *i2c, uint32_t *RX_SRC_CAPA_MSG,
+int s2mm003_src_capacity_information(const struct i2c_client *i2c, uint32_t *RX_SRC_CAPA_MSG,
 		PDIC_SINK_STATUS * pd_sink_status)
 {
 	uint32_t RdCnt;
@@ -225,65 +235,68 @@ static int s2mm003_src_capacity_information(const struct i2c_client *i2c, uint32
 	SRC_VAR_SUPPLY_Typedef  *MSG_VAR_SUPPLY;
 	SRC_BAT_SUPPLY_Typedef  *MSG_BAT_SUPPLY;
 
+	dev_info(&i2c->dev, "\n\r");
 	for(RdCnt=0;RdCnt<8;RdCnt++)
 	{
-		dev_info(&i2c->dev, "Rd_SRC_CAPA_%d : 0x%X\n", RdCnt, RX_SRC_CAPA_MSG[RdCnt]);
+		dev_info(&i2c->dev, "Rd_SRC_CAPA_%d : 0x%X\n\r", RdCnt, RX_SRC_CAPA_MSG[RdCnt]);
 	}
 
 	MSG_HDR = (MSG_HEADER_Type *)&RX_SRC_CAPA_MSG[0];
-	dev_info(&i2c->dev, "=======================================\n");
-	dev_info(&i2c->dev, "    MSG Header\n");
-	dev_info(&i2c->dev, "    Rsvd_msg_header         : %d\n",MSG_HDR->Rsvd_msg_header );
-	dev_info(&i2c->dev, "    Number_of_obj           : %d\n",MSG_HDR->Number_of_obj );
-	dev_info(&i2c->dev, "    Message_ID              : %d\n",MSG_HDR->Message_ID );
-	dev_info(&i2c->dev, "    Port_Power_Role         : %d\n",MSG_HDR->Port_Power_Role );
-	dev_info(&i2c->dev, "    Specification_Revision  : %d\n",MSG_HDR->Specification_Revision );
-	dev_info(&i2c->dev, "    Port_Data_Role          : %d\n",MSG_HDR->Port_Data_Role );
-	dev_info(&i2c->dev, "    Rsvd2_msg_header        : %d\n",MSG_HDR->Rsvd2_msg_header );
-	dev_info(&i2c->dev, "    Message_Type            : %d\n",MSG_HDR->Message_Type );
+	dev_info(&i2c->dev, "\n\r");
+	dev_info(&i2c->dev, "=======================================\n\r");
+	dev_info(&i2c->dev, "    MSG Header\n\r");
+
+	dev_info(&i2c->dev, "    Rsvd_msg_header         : %d\n\r",MSG_HDR->Rsvd_msg_header );
+	dev_info(&i2c->dev, "    Number_of_obj           : %d\n\r",MSG_HDR->Number_of_obj );
+	dev_info(&i2c->dev, "    Message_ID              : %d\n\r",MSG_HDR->Message_ID );
+	dev_info(&i2c->dev, "    Port_Power_Role         : %d\n\r",MSG_HDR->Port_Power_Role );
+	dev_info(&i2c->dev, "    Specification_Revision  : %d\n\r",MSG_HDR->Specification_Revision );
+	dev_info(&i2c->dev, "    Port_Data_Role          : %d\n\r",MSG_HDR->Port_Data_Role );
+	dev_info(&i2c->dev, "    Rsvd2_msg_header        : %d\n\r",MSG_HDR->Rsvd2_msg_header );
+	dev_info(&i2c->dev, "    Message_Type            : %d\n\r",MSG_HDR->Message_Type );
 
 	for(PDO_cnt = 0;PDO_cnt < MSG_HDR->Number_of_obj;PDO_cnt++)
 	{
 		PDO_sel = (RX_SRC_CAPA_MSG[PDO_cnt + 1] >> 30) & 0x3;
-		dev_info(&i2c->dev, "    =================\n");
-		dev_info(&i2c->dev, "    PDO_Num : %d\n", (PDO_cnt + 1));
+		dev_info(&i2c->dev, "    =================\n\r");
+		dev_info(&i2c->dev, "    PDO_Num : %d\n\r", (PDO_cnt + 1));
 
 		if(PDO_sel == 0)        // *MSG_FIXED_SUPPLY
 		{
 			MSG_FIXED_SUPPLY = (SRC_FIXED_SUPPLY_Typedef *)&RX_SRC_CAPA_MSG[PDO_cnt + 1];
 			if(MSG_FIXED_SUPPLY->Voltage_Unit <= (AVAILABLE_VOLTAGE/UNIT_FOR_VOLTAGE)) 
-					available_pdo_num = PDO_cnt + 1;
+				available_pdo_num = PDO_cnt + 1;
 			pd_sink_status->power_list[PDO_cnt+1].max_voltage = MSG_FIXED_SUPPLY->Voltage_Unit * UNIT_FOR_VOLTAGE;
 			pd_sink_status->power_list[PDO_cnt+1].max_current = MSG_FIXED_SUPPLY->Maximum_Current * UNIT_FOR_CURRENT;
 
-			dev_info(&i2c->dev, "    PDO_Parameter(FIXED_SUPPLY) : %d\n",MSG_FIXED_SUPPLY->PDO_Parameter );
-			dev_info(&i2c->dev, "    Dual_Role_Power         : %d\n",MSG_FIXED_SUPPLY->Dual_Role_Power );
-			dev_info(&i2c->dev, "    USB_Suspend_Support     : %d\n",MSG_FIXED_SUPPLY->USB_Suspend_Support );
-			dev_info(&i2c->dev, "    Externally_POW          : %d\n",MSG_FIXED_SUPPLY->Externally_POW );
-			dev_info(&i2c->dev, "    USB_Comm_Capable        : %d\n",MSG_FIXED_SUPPLY->USB_Comm_Capable );
-			dev_info(&i2c->dev, "    Data_Role_Swap          : %d\n",MSG_FIXED_SUPPLY->Data_Role_Swap );
-			dev_info(&i2c->dev, "    Reserved                : %d\n",MSG_FIXED_SUPPLY->Reserved );
-			dev_info(&i2c->dev, "    Peak_Current            : %d\n",MSG_FIXED_SUPPLY->Peak_Current );
-			dev_info(&i2c->dev, "    Voltage_Unit            : %d\n",MSG_FIXED_SUPPLY->Voltage_Unit );
-			dev_info(&i2c->dev, "    Maximum_Current         : %d\n",MSG_FIXED_SUPPLY->Maximum_Current );
+			dev_info(&i2c->dev, "    PDO_Parameter(FIXED_SUPPLY) : %d\n\r",MSG_FIXED_SUPPLY->PDO_Parameter );
+			dev_info(&i2c->dev, "    Dual_Role_Power         : %d\n\r",MSG_FIXED_SUPPLY->Dual_Role_Power );
+			dev_info(&i2c->dev, "    USB_Suspend_Support     : %d\n\r",MSG_FIXED_SUPPLY->USB_Suspend_Support );
+			dev_info(&i2c->dev, "    Externally_POW          : %d\n\r",MSG_FIXED_SUPPLY->Externally_POW );
+			dev_info(&i2c->dev, "    USB_Comm_Capable        : %d\n\r",MSG_FIXED_SUPPLY->USB_Comm_Capable );
+			dev_info(&i2c->dev, "    Data_Role_Swap          : %d\n\r",MSG_FIXED_SUPPLY->Data_Role_Swap );
+			dev_info(&i2c->dev, "    Reserved                : %d\n\r",MSG_FIXED_SUPPLY->Reserved );
+			dev_info(&i2c->dev, "    Peak_Current            : %d\n\r",MSG_FIXED_SUPPLY->Peak_Current );
+			dev_info(&i2c->dev, "    Voltage_Unit            : %d\n\r",MSG_FIXED_SUPPLY->Voltage_Unit );
+			dev_info(&i2c->dev, "    Maximum_Current         : %d\n\r",MSG_FIXED_SUPPLY->Maximum_Current );
 		}
 		else if(PDO_sel == 2)   // *MSG_VAR_SUPPLY
 		{
 			MSG_VAR_SUPPLY = (SRC_VAR_SUPPLY_Typedef *)&RX_SRC_CAPA_MSG[PDO_cnt + 1];
 
-			dev_info(&i2c->dev, "    PDO_Parameter(VAR_SUPPLY) : %d\n",MSG_VAR_SUPPLY->PDO_Parameter );
-			dev_info(&i2c->dev, "    Maximum_Voltage          : %d\n",MSG_VAR_SUPPLY->Maximum_Voltage );
-			dev_info(&i2c->dev, "    Minimum_Voltage          : %d\n",MSG_VAR_SUPPLY->Minimum_Voltage );
-			dev_info(&i2c->dev, "    Maximum_Current          : %d\n",MSG_VAR_SUPPLY->Maximum_Current );
+			dev_info(&i2c->dev, "    PDO_Parameter(VAR_SUPPLY) : %d\n\r",MSG_VAR_SUPPLY->PDO_Parameter );
+			dev_info(&i2c->dev, "    Maximum_Voltage          : %d\n\r",MSG_VAR_SUPPLY->Maximum_Voltage );
+			dev_info(&i2c->dev, "    Minimum_Voltage          : %d\n\r",MSG_VAR_SUPPLY->Minimum_Voltage );
+			dev_info(&i2c->dev, "    Maximum_Current          : %d\n\r",MSG_VAR_SUPPLY->Maximum_Current );
 		}
 		else if(PDO_sel == 1)   // *MSG_BAT_SUPPLY
 		{
 			MSG_BAT_SUPPLY = (SRC_BAT_SUPPLY_Typedef *)&RX_SRC_CAPA_MSG[PDO_cnt + 1];
 
-			dev_info(&i2c->dev, "    PDO_Parameter(BAT_SUPPLY)  : %d\n",MSG_BAT_SUPPLY->PDO_Parameter );
-			dev_info(&i2c->dev, "    Maximum_Voltage            : %d\n",MSG_BAT_SUPPLY->Maximum_Voltage );
-			dev_info(&i2c->dev, "    Minimum_Voltage            : %d\n",MSG_BAT_SUPPLY->Minimum_Voltage );
-			dev_info(&i2c->dev, "    Maximum_Allow_Power        : %d\n",MSG_BAT_SUPPLY->Maximum_Allow_Power );
+			dev_info(&i2c->dev, "    PDO_Parameter(BAT_SUPPLY)  : %d\n\r",MSG_BAT_SUPPLY->PDO_Parameter );
+			dev_info(&i2c->dev, "    Maximum_Voltage            : %d\n\r",MSG_BAT_SUPPLY->Maximum_Voltage );
+			dev_info(&i2c->dev, "    Minimum_Voltage            : %d\n\r",MSG_BAT_SUPPLY->Minimum_Voltage );
+			dev_info(&i2c->dev, "    Maximum_Allow_Power        : %d\n\r",MSG_BAT_SUPPLY->Maximum_Allow_Power );
 		}
 
 	}
@@ -294,8 +307,8 @@ static int s2mm003_src_capacity_information(const struct i2c_client *i2c, uint32
 	dev_info(&i2c->dev, "\n\r");
 	return available_pdo_num;
 }
-#if 0
-static void s2mm003_request_select_type(uint32_t * REQ_MSG , int num)
+
+void s2mm003_request_select_type(uint32_t * REQ_MSG , int num)
 {
 	REQUEST_FIXED_SUPPLY_STRUCT_Typedef *REQ_FIXED_SPL;
 
@@ -311,7 +324,7 @@ static void s2mm003_request_select_type(uint32_t * REQ_MSG , int num)
 	REQ_FIXED_SPL->OP_Current                   = 200;    // 10mA
 	REQ_FIXED_SPL->Maximum_OP_Current   = 200;    // 10mA
 }
-#endif
+
 static void Modify_TX_SRC_CAPA(struct s2mm003_data *usbpd_data)
 {
 	uint32_t i;
@@ -345,13 +358,198 @@ static void Modify_TX_SRC_CAPA(struct s2mm003_data *usbpd_data)
 	return;
 }
 
+/* for alternate mode */
+#if defined(CONFIG_CCIC_ALTERNATE_MODE)
+void Msg_Read_Discover_Identity(struct s2mm003_data *usbpd_data)
+{
+    uint32_t                i;
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+    U_DATA_MSG_ID_HEADER_Type     *DATA_MSG_ID;
+	U_CERT_STAT_VDO_Type		  *DATA_MSG_CERT;
+	U_PRODUCT_VDO_Type			  *DATA_MSG_PRODUCT;
+	uint8_t data_arr[32]={0,};
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	DATA_MSG_ID = (U_DATA_MSG_ID_HEADER_Type *)&data_arr[8];
+	DATA_MSG_CERT = (U_CERT_STAT_VDO_Type *)&data_arr[12];
+	DATA_MSG_PRODUCT = (U_PRODUCT_VDO_Type *)&data_arr[16];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_ID_RESP);
+	for(i=0; i<32; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	usbpd_data->Vendor_ID = DATA_MSG_ID->BITS.USB_Vendor_ID;
+	usbpd_data->Product_ID = DATA_MSG_PRODUCT->BITS.Product_ID;
+	printk(KERN_ERR "[%s] Vendor_ID : 0x%X, Product_ID : 0x%X\n", __func__, usbpd_data->Vendor_ID, usbpd_data->Product_ID);
+	usbpd_data->Pdic_state_machine = b_Cmd_Discover_Identity;
+}
+
+void Msg_Read_Discover_SVIDs(struct s2mm003_data *usbpd_data)
+{
+    uint32_t i;
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+    U_VDO1_Type                   *DATA_MSG_VDO1;
+	uint8_t data_arr[32]={0,};
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	DATA_MSG_VDO1 = (U_VDO1_Type *)&data_arr[8];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_SVIDs_RESP);
+	for(i=0; i<32; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	usbpd_data->SVID_0 = DATA_MSG_VDO1->BITS.SVID_0;
+	usbpd_data->SVID_1 = DATA_MSG_VDO1->BITS.SVID_1;
+	printk(KERN_ERR "[%s] SVID_0 : 0x%X, SVID_1 : 0x%X\n", __func__, usbpd_data->SVID_0, usbpd_data->SVID_1); 
+	usbpd_data->Pdic_state_machine = b_Cmd_Discover_SVIDs;
+}
+
+void Msg_Read_Discover_Modes(struct s2mm003_data *usbpd_data)
+{
+    uint32_t i;
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+	uint8_t data_arr[32]={0,};
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_MODE_RESP);
+	for(i=0; i<32; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	printk(KERN_ERR "[%s]\n", __func__);
+	usbpd_data->Pdic_state_machine = b_Cmd_Discover_Modes;
+}
+
+void Msg_Read_Enter_Mode(struct s2mm003_data *usbpd_data)
+{
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+	int i;
+	uint8_t data_arr[32]={0,};
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_ENTER_MODE_RESP);
+	for(i=0; i<32; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	if(DATA_MSG_VDM->BITS.VDM_command_type == 1)
+		printk(KERN_ERR "[%s] --> EnterMode Ack\n", __func__);
+	else
+		printk(KERN_ERR "[%s] --> EnterMode Nak\n", __func__);
+	usbpd_data->Pdic_state_machine = b_Cmd_Enter_Mode;
+}
+
+void Msg_Send_Discover_Idendity(struct s2mm003_data *usbpd_data)
+{
+	uint32_t i=0;
+	U_MSG_HEADER_Type             *MSG_HEADER;
+	U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+	uint8_t data_arr[32]={0,};
+
+	printk(KERN_ERR "[%s]\n", __func__);
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
+	for(i=0; i<8; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	MSG_HEADER->BITS.Number_of_obj = 1;
+	DATA_MSG_VDM->BITS.Standard_Vendor_ID = 0xFF00;
+	DATA_MSG_VDM->BITS.Object_Position = 0;
+	for(i = 0; i < 8; i++)
+		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
+	s2mm003_indirect_write(usbpd_data, 0x4E, 1);
+}
+
+void Msg_Send_Discover_SVIDs(struct s2mm003_data *usbpd_data)
+{
+    uint32_t i;
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+	uint8_t data_arr[32]={0,};
+
+	printk(KERN_ERR "[%s]\n", __func__);
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
+	for(i=0; i<8; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	MSG_HEADER->BITS.Number_of_obj = 1;
+	DATA_MSG_VDM->BITS.Standard_Vendor_ID = 0xFF00;
+	DATA_MSG_VDM->BITS.Object_Position = 0;
+	for(i=0; i<8; i++)
+		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
+	s2mm003_indirect_write(usbpd_data, 0x4E, 2);
+}
+
+void Msg_Send_Discover_Modes(struct s2mm003_data *usbpd_data)
+{
+    uint32_t i;
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+	uint8_t data_arr[32]={0,};
+
+	printk(KERN_ERR "[%s]\n", __func__);
+	
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
+	for(i=0; i<8; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	MSG_HEADER->BITS.Number_of_obj = 1;
+	DATA_MSG_VDM->BITS.Standard_Vendor_ID = usbpd_data->SVID_1;
+	DATA_MSG_VDM->BITS.Object_Position = 0;
+	for(i=0; i<8; i++)
+		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
+	s2mm003_indirect_write(usbpd_data, 0x4E, 3);
+}
+
+void Msg_Send_Enter_Mode(struct s2mm003_data *usbpd_data)
+{
+    uint32_t    i;
+    U_MSG_HEADER_Type             *MSG_HEADER;
+    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
+	uint8_t data_arr[32]={0,};
+
+	printk(KERN_ERR "[%s]\n", __func__);
+
+	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
+	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
+	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
+	for(i=0; i<8; i++)
+		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
+	MSG_HEADER->BITS.Number_of_obj = 1;
+	DATA_MSG_VDM->BITS.Standard_Vendor_ID = usbpd_data->SVID_1;
+	DATA_MSG_VDM->BITS.Object_Position = 1;
+	for(i=0; i<8; i++)
+		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
+	s2mm003_indirect_write(usbpd_data, 0x4E, 4);
+}
+#endif
+
 static void VBUS_TURN_ON_CTRL(bool enable)
 {
+	struct power_supply *psy_otg;
 	union power_supply_propval val;
-	printk(KERN_ERR "%s -> enable : %d\n", __func__, enable);
-	val.intval = enable;
-	psy_do_property("otg", set,
-			POWER_SUPPLY_PROP_ONLINE, val);
+	int on = !!enable;
+	int ret = 0;
+
+	pr_info("%s %d, enable=%d\n", __func__, __LINE__, enable);
+	psy_otg = get_power_supply_by_name("otg");
+	if (psy_otg) {
+		val.intval = enable;
+		ret = psy_otg->set_property(psy_otg, POWER_SUPPLY_PROP_ONLINE, &val);
+	} else {
+		pr_err("%s: Fail to get psy battery\n", __func__);
+	}
+	if (ret) {
+		pr_err("%s: fail to set power_suppy ONLINE property(%d)\n",
+			__func__, ret);
+	} else {
+		pr_info("otg accessory power = %d\n", on);
+	}
+
 }
 
 static void PDIC_Function_State_for_VBUS(u8 val)
@@ -460,228 +658,19 @@ static void PDIC_Function_State_for_VBUS(u8 val)
 
 static struct pdic_notifier_struct pd_noti;
 
-
-static void send_usb_notify_message(struct s2mm003_data *usbpd_data, u8 mode)
-{
-	CC_NOTI_USB_STATUS_TYPEDEF usb_status_notifier;
-	usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
-	usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
-	usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
-	if(mode == USB_STATUS_NOTIFY_DETACH)
-		usb_status_notifier.attach = CCIC_NOTIFY_DETACH;
-	else
-		usb_status_notifier.attach = CCIC_NOTIFY_ATTACH;
-	usb_status_notifier.drp = mode;
-	usbpd_data->Pdic_usb_state = mode;
-	ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, 0);
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-	if (usbpd_data->try_state_change && (usbpd_data->Pdic_usb_state != USB_STATUS_NOTIFY_DETACH))
-	{
-		// Role change try and new mode detected
-		complete(&usbpd_data->reverse_completion);
-	}
-	dual_role_instance_changed(usbpd_data->dual_role);
-#endif
-}
-
-/* for alternate mode */
-#if defined(CONFIG_CCIC_ALTERNATE_MODE)
-static void Msg_Read_Discover_Identity(struct s2mm003_data *usbpd_data)
-{
-    uint32_t                i;
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-    U_DATA_MSG_ID_HEADER_Type     *DATA_MSG_ID;
-	U_CERT_STAT_VDO_Type		  *DATA_MSG_CERT;
-	U_PRODUCT_VDO_Type			  *DATA_MSG_PRODUCT;
-	uint8_t data_arr[32]={0,};
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	DATA_MSG_ID = (U_DATA_MSG_ID_HEADER_Type *)&data_arr[8];
-	DATA_MSG_CERT = (U_CERT_STAT_VDO_Type *)&data_arr[12];
-	DATA_MSG_PRODUCT = (U_PRODUCT_VDO_Type *)&data_arr[16];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_ID_RESP);
-	for(i=0; i<32; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	usbpd_data->Vendor_ID = DATA_MSG_ID->BITS.USB_Vendor_ID;
-	usbpd_data->Product_ID = DATA_MSG_PRODUCT->BITS.Product_ID;
-	printk(KERN_ERR "[%s] Vendor_ID : 0x%X, Product_ID : 0x%X\n", __func__, usbpd_data->Vendor_ID, usbpd_data->Product_ID);
-	if(usbpd_data->Vendor_ID ==0x04E8 && usbpd_data->Product_ID==0xA500) // Gear VR VID, PID
-		usbpd_data->acc_type = CCIC_DOCK_HMT;
-    if( (DATA_MSG_ID->BITS.Data_Capable_USB_Host == 0x01)
-        && (DATA_MSG_ID->BITS.Data_Capable_USB_Device == 0x00)
-        && (DATA_MSG_ID->BITS.Product_Type == 0x02)
-        ){
-    	printk(KERN_ERR "[%s] Working with USB Host Device.\n", __func__);
-        s2mm003_indirect_write(usbpd_data, 0x4C, 0x10); // Detach and re-attach
-        VBUS_TURN_ON_CTRL(0);
-        usbpd_data->Pdic_state_machine = b_Cmd_Intial_State;
-        usbpd_data->func_state = FUNCTION_STATUS_INITIAL_DETACH;
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_DETACH);
-    }
-    else
-	    usbpd_data->Pdic_state_machine = b_Cmd_Discover_Identity;
-}
-
-static void Msg_Read_Discover_SVIDs(struct s2mm003_data *usbpd_data)
-{
-    uint32_t i;
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-    U_VDO1_Type                   *DATA_MSG_VDO1;
-	uint8_t data_arr[32]={0,};
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	DATA_MSG_VDO1 = (U_VDO1_Type *)&data_arr[8];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_SVIDs_RESP);
-	for(i=0; i<32; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	usbpd_data->SVID_0 = DATA_MSG_VDO1->BITS.SVID_0;
-	usbpd_data->SVID_1 = DATA_MSG_VDO1->BITS.SVID_1;
-	printk(KERN_ERR "[%s] SVID_0 : 0x%X, SVID_1 : 0x%X\n", __func__, usbpd_data->SVID_0, usbpd_data->SVID_1); 
-	usbpd_data->Pdic_state_machine = b_Cmd_Discover_SVIDs;
-}
-
-static void Msg_Read_Discover_Modes(struct s2mm003_data *usbpd_data)
-{
-    uint32_t i;
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-	uint8_t data_arr[32]={0,};
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_MODE_RESP);
-	for(i=0; i<32; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	printk(KERN_ERR "[%s]\n", __func__);
-	usbpd_data->Pdic_state_machine = b_Cmd_Discover_Modes;
-}
-
-static void Msg_Read_Enter_Mode(struct s2mm003_data *usbpd_data)
-{
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-	int i;
-	uint8_t data_arr[32]={0,};
-	const char name[11] = "HMT Attach";
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_DISC_ENTER_MODE_RESP);
-	for(i=0; i<32; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	if(DATA_MSG_VDM->BITS.VDM_command_type == 1)
-		printk(KERN_ERR "[%s] --> EnterMode Ack\n", __func__);
-	else
-		printk(KERN_ERR "[%s] --> EnterMode Nak\n", __func__);
-	usbpd_data->Pdic_state_machine = b_Cmd_Enter_Mode;
-	if (usbpd_data->acc_type != CCIC_DOCK_DETACHED)
-		ccic_dock_attach_notify(usbpd_data->acc_type, name);
-}
-
-static void Msg_Send_Discover_Idendity(struct s2mm003_data *usbpd_data)
-{
-	uint32_t i=0;
-	U_MSG_HEADER_Type             *MSG_HEADER;
-	U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-	uint8_t data_arr[32]={0,};
-
-	printk(KERN_ERR "[%s]\n", __func__);
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
-	for(i=0; i<8; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	MSG_HEADER->BITS.Number_of_obj = 1;
-	DATA_MSG_VDM->BITS.Standard_Vendor_ID = 0xFF00;
-	DATA_MSG_VDM->BITS.Object_Position = 0;
-	for(i = 0; i < 8; i++)
-		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
-	s2mm003_indirect_write(usbpd_data, 0x4E, 1);
-}
-
-static void Msg_Send_Discover_SVIDs(struct s2mm003_data *usbpd_data)
-{
-    uint32_t i;
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-	uint8_t data_arr[32]={0,};
-
-	printk(KERN_ERR "[%s]\n", __func__);
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
-	for(i=0; i<8; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	MSG_HEADER->BITS.Number_of_obj = 1;
-	DATA_MSG_VDM->BITS.Standard_Vendor_ID = 0xFF00;
-	DATA_MSG_VDM->BITS.Object_Position = 0;
-	for(i=0; i<8; i++)
-		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
-	s2mm003_indirect_write(usbpd_data, 0x4E, 2);
-}
-
-static void Msg_Send_Discover_Modes(struct s2mm003_data *usbpd_data)
-{
-    uint32_t i;
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-	uint8_t data_arr[32]={0,};
-
-	printk(KERN_ERR "[%s]\n", __func__);
-	
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
-	for(i=0; i<8; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	MSG_HEADER->BITS.Number_of_obj = 1;
-	DATA_MSG_VDM->BITS.Standard_Vendor_ID = usbpd_data->SVID_1;
-	DATA_MSG_VDM->BITS.Object_Position = 0;
-	for(i=0; i<8; i++)
-		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
-	s2mm003_indirect_write(usbpd_data, 0x4E, 3);
-}
-
-static void Msg_Send_Enter_Mode(struct s2mm003_data *usbpd_data)
-{
-    uint32_t    i;
-    U_MSG_HEADER_Type             *MSG_HEADER;
-    U_DATA_MSG_VDM_HEADER_Type    *DATA_MSG_VDM;
-	uint8_t data_arr[32]={0,};
-
-	printk(KERN_ERR "[%s]\n", __func__);
-
-	MSG_HEADER = (U_MSG_HEADER_Type *)&data_arr[0];
-	DATA_MSG_VDM = (U_DATA_MSG_VDM_HEADER_Type *)&data_arr[4];
-	s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_VDM_MSG_REQUEST);
-	for(i=0; i<8; i++)
-		data_arr[i] = s2mm003_indirect_read(usbpd_data, i+0x50);
-	MSG_HEADER->BITS.Number_of_obj = 1;
-	DATA_MSG_VDM->BITS.Standard_Vendor_ID = usbpd_data->SVID_1;
-	DATA_MSG_VDM->BITS.Object_Position = 1;
-	for(i=0; i<8; i++)
-		s2mm003_indirect_write(usbpd_data, i+0x50, data_arr[i]);
-	s2mm003_indirect_write(usbpd_data, 0x4E, 4);
-}
-#endif
-
 static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 {
 	struct s2mm003_data *usbpd_data = data;
 	struct i2c_client *i2c = usbpd_data->i2c;
 	unsigned char rid, plug_state_monitor;
-	int cc1_valid, cc2_valid, plug_attach_done;
+	int cc1_valid, cc2_valid, plug_rprd_sel_monitor, plug_attach_done;
 	int value, usbpd_state;
+	static int func_state;
 	int pdic_attach = 0;
 	int is_dr_swap = 0;
-	static CC_NOTI_ATTACH_TYPEDEF attach_notifier;
-	static CC_NOTI_RID_TYPEDEF rid_notifier;
+	CC_NOTI_ATTACH_TYPEDEF attach_notifier;
+	CC_NOTI_RID_TYPEDEF rid_notifier;
+	CC_NOTI_USB_STATUS_TYPEDEF usb_status_notifier;
 	REQUEST_FIXED_SUPPLY_STRUCT_Typedef *request_power_number;
 
 	dev_err(&i2c->dev, "%d times\n", ++usbpd_data->wq_times);
@@ -691,12 +680,12 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 	plug_state_monitor = s2mm003_indirect_read(usbpd_data, IND_REG_PDIC_PLUG_STATE);
 	cc1_valid = S2MM003_REG_MASK(plug_state_monitor, S_CC1_VALID);
 	cc2_valid = S2MM003_REG_MASK(plug_state_monitor, S_CC2_VALID);
-	usbpd_data->plug_rprd_sel = S2MM003_REG_MASK(plug_state_monitor, PLUG_RPRD_SEL_MONITOR);
+	plug_rprd_sel_monitor = S2MM003_REG_MASK(plug_state_monitor, PLUG_RPRD_SEL_MONITOR);
 	plug_attach_done = S2MM003_REG_MASK(plug_state_monitor, PLUG_ATTACH_DONE);
 	dev_info(&i2c->dev, "PLUG_STATE_MONITOR	I2C read:%x\n"
 		 "CC1:%x CC2:%x rprd:%x attach:%x\n",
 		 plug_state_monitor,
-		 cc1_valid, cc2_valid, usbpd_data->plug_rprd_sel, plug_attach_done);
+		 cc1_valid, cc2_valid, plug_rprd_sel_monitor, plug_attach_done);
 
 	/* To confirm whether PD charger is attached or not */
 	value = s2mm003_indirect_read(usbpd_data, IND_REG_PDIC_MAIN_INT_NUM);
@@ -706,30 +695,26 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 	{
 		dev_err(&i2c->dev, "START\n");
 		s2mm003_indirect_write(usbpd_data, IND_REG_HOST_CMD_ON, 0x01);
-		return IRQ_HANDLED;
+		/* 160411 by jjunh79.kim/ym.bak : 
+		 * not to miss the detecting USB connection 
+		 * when device is booted with connecting USB */
+//		return IRQ_HANDLED;
 	}
 
 	if( (value & b_PD_FUNC_FLAG) != 0x00) { // Need PD Function State Read
 		int address = IND_REG_PDIC_PD_FUNC_STATE; // Function State Number Read
 		int ret = 0x00;
 		ret = s2mm003_indirect_read(usbpd_data, address);
-		usbpd_data->func_state = ret; // store the function status
+		func_state = ret; // store the function status
 
-		PDIC_Function_State_for_VBUS(usbpd_data->func_state);   // For VBUS control
+		PDIC_Function_State_for_VBUS(func_state);   // For VBUS control
 
 		/* If it isn't PD charger, return value is 29*/
-		dev_info(&i2c->dev, " %s : func_state = %d\n", __func__, usbpd_data->func_state);
+		dev_info(&i2c->dev, " %s : func_state = %d\n", __func__, ret);
 #if defined(CONFIG_CCIC_ALTERNATE_MODE)
-		if(usbpd_data->func_state == FUNCTION_STATUS_INITIAL_DETACH)
-		{
+		if(func_state == FUNCTION_STATUS_INITIAL_DETACH)
 			usbpd_data->Pdic_state_machine = b_Cmd_Intial_State;
-			if(usbpd_data->acc_type != CCIC_DOCK_DETACHED)
-			{
-				ccic_dock_detach_notify();
-				usbpd_data->acc_type = CCIC_DOCK_DETACHED;
-			}
-		}
-#endif
+#endif		
 	}
 
 	if( (value & b_INT_1_FLAG) != 0x00)
@@ -764,9 +749,6 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 			//  msleep(300);
 			s2mm003_indirect_write(usbpd_data, 0x4C, 6);    // Call PS_RDY Command
 			VBUS_TURN_ON_CTRL(0);
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-			usbpd_data->power_role = DUAL_ROLE_PROP_PR_SNK;
-#endif
 		}
 		else if(INT_2_value & b_Msg_DR_SWAP)
 		{
@@ -774,10 +756,18 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 			is_dr_swap = 1;
 			// toggling the state for usb host and device
 #if defined(CONFIG_CCIC_NOTIFIER)
-	if(usbpd_data->Pdic_usb_state == USB_STATUS_NOTIFY_ATTACH_DFP)
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_UFP);
-	else if(usbpd_data->Pdic_usb_state == USB_STATUS_NOTIFY_ATTACH_UFP)
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_DFP);
+			usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
+			usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
+			usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
+			usb_status_notifier.attach = CCIC_NOTIFY_ATTACH;
+			if(usbpd_data->Pdic_usb_state == USB_STATUS_NOTIFY_ATTACH_DFP){
+				usb_status_notifier.drp = USB_STATUS_NOTIFY_ATTACH_UFP;
+				usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_ATTACH_UFP;
+			}else if(usbpd_data->Pdic_usb_state == USB_STATUS_NOTIFY_ATTACH_UFP){
+				usb_status_notifier.drp = USB_STATUS_NOTIFY_ATTACH_DFP;
+				usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_ATTACH_DFP;
+			}
+			ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, pdic_attach);
 #endif
 
 		}
@@ -791,7 +781,7 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 		if((INT_3_value & b_RID_Detect_done) != 0x00)  // RID Message Detect
 		{
 			rid = s2mm003_indirect_read(usbpd_data, IND_REG_PDIC_RID); // RID Value Read
-			dev_info(&i2c->dev, "\nRID_Value = 0x%X\n", rid);
+			dev_info(&i2c->dev, "\n\rRID_Value = 0x%X\n\r", rid);
 			usbpd_data->cur_rid = rid;
 			if (usbpd_data->cur_rid == usbpd_data->prev_rid) {
 				dev_err(&i2c->dev, "same rid detected, -ignore-\n");
@@ -807,13 +797,21 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 			ccic_notifier_notify((CC_NOTI_TYPEDEF*)&rid_notifier, NULL, pdic_attach);
 			if(rid == RID_000K)
 			{
-				VBUS_TURN_ON_CTRL(1);
-				send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_DFP);
-			}
-			else if(rid == RID_OPEN || rid == RID_UNDEFINED || rid == RID_523K || rid == RID_619K)
-			{
-				VBUS_TURN_ON_CTRL(0);
-				send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_DETACH);
+				usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
+				usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
+				usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
+				usb_status_notifier.attach = CCIC_NOTIFY_ATTACH;
+				usb_status_notifier.drp = USB_STATUS_NOTIFY_ATTACH_DFP;
+				ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, pdic_attach);
+				usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_ATTACH_DFP;
+			} else if(rid == RID_OPEN || rid == RID_UNDEFINED || rid == RID_523K || rid == RID_619K) {
+				usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
+				usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
+				usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
+				usb_status_notifier.attach = CCIC_NOTIFY_DETACH;
+				usb_status_notifier.drp = USB_STATUS_NOTIFY_DETACH;
+				ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, pdic_attach);
+				usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_DETACH;
 			}
 #endif
 		}
@@ -827,7 +825,7 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 
 			s2mm003_indirect_write(usbpd_data, IND_REG_READ_MSG_INDEX, MSG_Idx_RX_SRC_CAPA);// Idx Transceiver Request
 			// Select PDO
-			if(usbpd_data->func_state == FUNCTION_STATUS_SINK_READY)
+			if(func_state == FUNCTION_STATUS_SINK_READY)
 			{
 				p_MSG_BUF = (u8 *)ReadMSG;
 				for(cnt = 0; cnt < 32; cnt++)
@@ -881,7 +879,7 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 		dev_info(&i2c->dev, "INT_State5 = 0x%X\n", INT_5_value);
 	}
 #if defined(CONFIG_CCIC_ALTERNATE_MODE)
-		if (usbpd_data->func_state == FUNCTION_STATUS_SRC_READY && usbpd_data->Pdic_state_machine == b_Cmd_Intial_State){
+		if (func_state == FUNCTION_STATUS_SRC_READY && usbpd_data->Pdic_state_machine == b_Cmd_Intial_State) {
 			Msg_Send_Discover_Idendity(usbpd_data);
 		}
 #endif
@@ -891,50 +889,45 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 #ifdef CONFIG_USB_TYPEC_MANAGER_NOTIFIER
 	if(pdic_attach)
 		attach_notifier.id = CCIC_NOTIFY_ID_POWER_STATUS;
-	else
-		attach_notifier.id = CCIC_NOTIFY_ID_ATTACH;
+	else 
+	attach_notifier.id = CCIC_NOTIFY_ID_ATTACH;
 #else
 	attach_notifier.id = CCIC_NOTIFY_ID_ATTACH;
 #endif
 	attach_notifier.src = CCIC_NOTIFY_DEV_CCIC;
 	attach_notifier.dest = CCIC_NOTIFY_DEV_MUIC;
-	attach_notifier.rprd = usbpd_data->plug_rprd_sel;
-
+	attach_notifier.rprd = plug_rprd_sel_monitor;
 #ifdef CONFIG_USB_TYPEC_MANAGER_NOTIFIER
 	ccic_notifier_notify((CC_NOTI_TYPEDEF*)&attach_notifier, &pd_noti, pdic_attach);
 #else
 	ccic_notifier_notify((CC_NOTI_TYPEDEF*)&attach_notifier, NULL, pdic_attach);
 #endif
 
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-	if(usbpd_data->func_state == FUNCTION_STATUS_SRC_SEND_CAPABILITY && !is_dr_swap)
-	{	
-		usbpd_data->power_role = DUAL_ROLE_PROP_PR_SRC;
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_DFP);
+	if(func_state == FUNCTION_STATUS_SRC_SEND_CAPABILITY && !is_dr_swap){
+		usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
+		usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
+		usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
+		usb_status_notifier.attach = CCIC_NOTIFY_ATTACH;
+		usb_status_notifier.drp = USB_STATUS_NOTIFY_ATTACH_DFP;
+		ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, pdic_attach);
+		usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_ATTACH_DFP;
+	} else if(func_state == FUNCTION_STATUS_SINK_DISCOVERY && !is_dr_swap){
+		usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
+		usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
+		usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
+		usb_status_notifier.attach = CCIC_NOTIFY_ATTACH;
+		usb_status_notifier.drp = USB_STATUS_NOTIFY_ATTACH_UFP;
+		ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, pdic_attach);
+		usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_ATTACH_UFP;
+	} else if(func_state == FUNCTION_STATUS_INITIAL_DETACH) {
+		usb_status_notifier.id = CCIC_NOTIFY_ID_USB;
+		usb_status_notifier.src = CCIC_NOTIFY_DEV_CCIC;
+		usb_status_notifier.dest = CCIC_NOTIFY_DEV_USB;
+		usb_status_notifier.attach = CCIC_NOTIFY_DETACH;
+		usb_status_notifier.drp = USB_STATUS_NOTIFY_DETACH;
+		ccic_notifier_notify((CC_NOTI_TYPEDEF*)&usb_status_notifier, NULL, pdic_attach);
+		usbpd_data->Pdic_usb_state = USB_STATUS_NOTIFY_DETACH;
 	}
-	else if(usbpd_data->func_state == FUNCTION_STATUS_SINK_DISCOVERY && !is_dr_swap)
-	{
-		usbpd_data->power_role = DUAL_ROLE_PROP_PR_SNK;
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_UFP);
-	}
-	else if(usbpd_data->func_state == FUNCTION_STATUS_INITIAL_DETACH)
-	{
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_DETACH);
-
-		// OTP mode set to DRP when capble pluged out 
-		if (!usbpd_data->try_state_change)
-		{
-			s2mm003_indirect_write(usbpd_data, IND_REG_PDIC_MODE, TYPE_C_ATTACH_DRP);
-		}
-	}
-#else
-	if(usbpd_data->func_state == FUNCTION_STATUS_SRC_SEND_CAPABILITY && !is_dr_swap)
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_DFP);
-	else if(usbpd_data->func_state == FUNCTION_STATUS_SINK_DISCOVERY && !is_dr_swap)
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_ATTACH_UFP);
-	else if(usbpd_data->func_state == FUNCTION_STATUS_INITIAL_DETACH)
-		send_usb_notify_message(usbpd_data, USB_STATUS_NOTIFY_DETACH);
-#endif
 
 #ifndef CONFIG_USB_TYPEC_MANAGER_NOTIFIER
 	if(plug_attach_done) {
@@ -949,8 +942,10 @@ static irqreturn_t s2mm003_usbpd_irq_thread(int irq, void *data)
 	}
 	pdic_notifier_call(&pd_noti);
 #endif
+		
 #endif
 	s2mm003_int_clear(usbpd_data);
+
 	return IRQ_HANDLED;
 }
 
@@ -961,9 +956,7 @@ static int of_s2mm003_usbpd_dt(struct device *dev,
 	struct device_node *np_usbpd = dev->of_node;
 
 	usbpd_data->irq_gpio = of_get_named_gpio(np_usbpd, "usbpd,usbpd_int", 0);
-	usbpd_data->redriver_en = of_get_named_gpio(np_usbpd, "usbpd,redriver_en", 0);
-	dev_err(dev, "usbpd_irq = %d redriver_en = %d\n",
-		usbpd_data->irq_gpio, usbpd_data->redriver_en);
+	dev_err(dev, "usbpd_irq = %d\n", usbpd_data->irq_gpio);
 
 	return 0;
 }
@@ -972,15 +965,7 @@ static int of_s2mm003_usbpd_dt(struct device *dev,
 #if defined(CONFIG_SEC_CCIC_FW_FIX)
 void s2mm003_firmware_ver_check(struct s2mm003_data *usbpd_data, char *name)
 {
-	struct i2c_client *i2c = usbpd_data->i2c;
-
-	usbpd_data->firm_ver[0] = (u8)s2mm003_indirect_read(usbpd_data, 0x01);
-	usbpd_data->firm_ver[1] = (u8)s2mm003_indirect_read(usbpd_data, 0x02);
-	usbpd_data->firm_ver[2] = (u8)s2mm003_indirect_read(usbpd_data, 0x03);
-	usbpd_data->firm_ver[3] = (u8)s2mm003_indirect_read(usbpd_data, 0x04);
-	dev_err(&i2c->dev, "%s %s version %02x %02x %02x %02x\n",
-		USBPD_DEV_NAME, name, usbpd_data->firm_ver[0], usbpd_data->firm_ver[1],
-		usbpd_data->firm_ver[2], usbpd_data->firm_ver[3]);
+	return;
 }
 #endif
 
@@ -988,9 +973,12 @@ static int s2mm003_firmware_update(struct s2mm003_data *usbpd_data)
 {
 	const struct firmware *fw_entry;
 	const unsigned char *p;
-	int ret, i;
+	int ret, i, usbpd_state;
 	struct i2c_client *i2c = usbpd_data->i2c;
 	u8 test, reg_check[3] = { 0, };
+
+ 	u8 FW_CheckSum = 0;
+	u8 Read_CheckSum = 0;
 
 	ret = s2mm003_read_byte(i2c, I2C_SYSREG_SET, &reg_check[0]);
 	ret = s2mm003_read_byte(i2c, I2C_SRAM_SET, &reg_check[1]);
@@ -1007,13 +995,19 @@ static int s2mm003_firmware_update(struct s2mm003_data *usbpd_data)
 	s2mm003_write_byte(i2c, I2C_SRAM_SET, 0x1);	/* 32 */
 	s2mm003_read_byte_16(i2c, 0x1854, &test);
 	s2mm003_write_byte(i2c, I2C_SRAM_SET, 0x0);	/* 32 */
+
+	dev_info(&i2c->dev, "%s: rid:%d\n", __func__, test);
+
 	if (test > 7 || test < 0)
 		dev_err(&usbpd_data->i2c->dev, "fw update err rid : %02x\n", test);
 
 	ret = request_firmware(&fw_entry,
 			       FIRMWARE_PATH, usbpd_data->dev);
 	if (ret < 0)
+	{
+		dev_err(&usbpd_data->i2c->dev, "fw request err\n");
 		goto done;
+	}
 
 	msleep(5);
 	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x1);	/* 31 */
@@ -1027,8 +1021,23 @@ static int s2mm003_firmware_update(struct s2mm003_data *usbpd_data)
 	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x0);	/* 31 */
 
 /* update firmware */
+	FW_CheckSum = 0;
+
 	for(p = fw_entry->data, i=0; i < fw_entry->size; p++, i++)
+	{
 		s2mm003_write_byte_16(i2c,(u16)i, *p);
+		if(i >= 0x160)
+		{
+			FW_CheckSum ^= *p;
+		}
+	}
+	
+	for(i=fw_entry->size; i < 5968; i++)
+	{
+		s2mm003_write_byte_16(i2c,(u16)i, 0x00);
+		FW_CheckSum ^= 0x00;
+	}
+
 
 	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x1);	/* 31 */
 	s2mm003_write_byte(i2c, IF_S_CODE_E, 0x0);
@@ -1036,7 +1045,7 @@ static int s2mm003_firmware_update(struct s2mm003_data *usbpd_data)
 
 	s2mm003_write_byte(i2c, I2C_SRAM_SET, 0x0);	/* 32 */
 	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x1);	/* 31 */
-	s2mm003_write_byte(i2c, USB_PD_RST, 0x80);	/* 0D */
+//lse2	s2mm003_write_byte(i2c, USB_PD_RST, 0x80);	/* 0D */
 	s2mm003_write_byte(i2c, OTP_BLK_RST, 0x1);	/* 0C OTP controller
 							   system register reset
 							   to stop otp copy */
@@ -1044,6 +1053,26 @@ static int s2mm003_firmware_update(struct s2mm003_data *usbpd_data)
 	s2mm003_write_byte(i2c, USB_PD_RST, 0x80);	/* 0D */
 	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x0);	/* 31 */
 
+	msleep(5);
+	Read_CheckSum = s2mm003_indirect_read(usbpd_data, 0x06);
+	dev_info(&i2c->dev, "FW checksum read:0x%x \n", Read_CheckSum);
+
+	if(FW_CheckSum == Read_CheckSum)
+	{
+		// FW check sum OK
+		dev_info(&i2c->dev, "%s:CCIC FW checksum OK!!\n", __func__);
+	}
+	else
+	{
+		// for debugig ccic issue
+		panic("CCIC FW checksum fail!!");
+	}
+
+	s2mm003_indirect_write(usbpd_data, 0x13,1);	//DFP Rp
+	s2mm003_indirect_write(usbpd_data, 0x13,3);	//DRP
+
+	usbpd_state = s2mm003_indirect_read(usbpd_data, IND_REG_PDIC_PD_FUNC_STATE);
+	dev_info(&i2c->dev, "USBPD_STATE I2C read: 0x%02d\n", usbpd_state);
 done:
 	dev_err(&usbpd_data->i2c->dev, "firmware size: %d, error %d\n",
 		(int)fw_entry->size, ret);
@@ -1051,204 +1080,22 @@ done:
 		release_firmware(fw_entry);
 	return ret;
 }
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
 
-static enum dual_role_property fusb_drp_properties[] = {
-	DUAL_ROLE_PROP_MODE,
-	DUAL_ROLE_PROP_PR,
-	DUAL_ROLE_PROP_DR,
-};
-
- /* Callback for "cat /sys/class/dual_role_usb/otg_default/<property>" */
-static int dual_role_get_local_prop(struct dual_role_phy_instance *dual_role,
-				    enum dual_role_property prop,
-				    unsigned int *val)
+/* S2MM003 MCU Reset control , given by l.s.i */
+static void s2mm003_MCU_reset(struct s2mm003_data *usbpd_data)
 {
-	struct s2mm003_data *usbpd_data = dual_role_get_drvdata(dual_role);
-	USB_STATUS attached_state;
-	int power_role;
-
-	if (!usbpd_data) {
-		pr_err("%s : usbpd_data is null : request prop = %d \n",\
-								__func__, prop);
-		return -EINVAL;
-	}
-	attached_state = usbpd_data->Pdic_usb_state;
-	power_role = usbpd_data->power_role;
-	pr_info("%s : request prop = %d , attached_state = %d, prop_mode =%d, prop_pr = %d \n",\
-		__func__, prop, attached_state,usbpd_data->Pdic_usb_state, power_role);
-
-	if (attached_state == USB_STATUS_NOTIFY_ATTACH_DFP) {
-		if (prop == DUAL_ROLE_PROP_MODE)
-			*val = DUAL_ROLE_PROP_MODE_DFP;
-		else if (prop == DUAL_ROLE_PROP_PR) {
-			if (power_role)
-				*val = DUAL_ROLE_PROP_PR_SNK;
-			else
-				*val = DUAL_ROLE_PROP_PR_SRC;
-		}
-		else if (prop == DUAL_ROLE_PROP_DR)
-			*val = DUAL_ROLE_PROP_DR_HOST;
-		else
-			return -EINVAL;
-	} else if (attached_state == USB_STATUS_NOTIFY_ATTACH_UFP) {
-		if (prop == DUAL_ROLE_PROP_MODE)
-			*val = DUAL_ROLE_PROP_MODE_UFP;
-		else if (prop == DUAL_ROLE_PROP_PR) {
-			if (power_role)
-				*val = DUAL_ROLE_PROP_PR_SNK;
-			else
-				*val = DUAL_ROLE_PROP_PR_SRC;
-		}
-		else if (prop == DUAL_ROLE_PROP_DR)
-			*val = DUAL_ROLE_PROP_DR_DEVICE;
-		else
-			return -EINVAL;
-	} else {
-		if (prop == DUAL_ROLE_PROP_MODE)
-			*val = DUAL_ROLE_PROP_MODE_NONE;
-		else if (prop == DUAL_ROLE_PROP_PR)
-			*val = DUAL_ROLE_PROP_PR_NONE;
-		else if (prop == DUAL_ROLE_PROP_DR)
-			*val = DUAL_ROLE_PROP_DR_NONE;
-		else
-			return -EINVAL;
-	}
-
-	return 0;
-}
-
-/* Decides whether userspace can change a specific property */
-static int dual_role_is_writeable(struct dual_role_phy_instance *drp,
-				  enum dual_role_property prop)
-{
-	if (prop == DUAL_ROLE_PROP_MODE)
-		return 1;
-	else
-		return 0;
-}
-
-
-int set_data_role(struct dual_role_phy_instance *dual_role,
-				   enum dual_role_property prop,
-				   const unsigned int *val)
-{
-	struct s2mm003_data *usbpd_data = dual_role_get_drvdata(dual_role);
 	struct i2c_client *i2c = usbpd_data->i2c;
+	int usbpd_state;
 
-	USB_STATUS attached_state;
-	int mode;
-	int timeout = 0;
-	int ret = 0;
+	dev_err(&i2c->dev, "MCU reset\n");
+	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x1); /* 31 */
+	s2mm003_write_byte(i2c, USB_PD_RST, 0x80);    /* 0D */
+	s2mm003_write_byte(i2c, I2C_SYSREG_SET, 0x0); /* 31 */
+	msleep(20);
 
-	if (!usbpd_data) {
-		pr_err("%s : usbpd_data is null \n", __func__);
-		return -EINVAL;
-	}
-	attached_state = usbpd_data->Pdic_usb_state;
-	pr_info("%s: request prop = %d , attached_state = %d , %d \n",__func__,\
-	       prop, attached_state, usbpd_data->Pdic_usb_state);
-
-	if (attached_state != USB_STATUS_NOTIFY_ATTACH_DFP
-	    && attached_state != USB_STATUS_NOTIFY_ATTACH_UFP) {
-		pr_info("%s : current mode : %d - just return \n",__func__,\
-		       attached_state);
-		return 0;
-	}
-
-	if (attached_state == USB_STATUS_NOTIFY_ATTACH_DFP
-	    && *val == DUAL_ROLE_PROP_MODE_DFP) {
-		pr_info("%s : current mode : %d - request mode : %d just return \n",__func__, attached_state, *val);
-		return 0;
-	}
-
-	if (attached_state == USB_STATUS_NOTIFY_ATTACH_UFP
-	    && *val == DUAL_ROLE_PROP_MODE_UFP)	{
-		pr_info("%s : current mode : %d - request mode : %d just return \n",__func__, attached_state, *val);
-		return 0;
-	}
-
-	/* Current mode DFP and Source  */
-	if ( attached_state == USB_STATUS_NOTIFY_ATTACH_DFP)
-	{
-		pr_info("%s: try reversing, form Source to Sink\n", __func__);
-
-		disable_irq(usbpd_data->irq_gpio);
-		/* turns off VBUS first */
-		VBUS_TURN_ON_CTRL(0);
-
-		usbpd_data->power_role = 0;
-		/* exit from Disabled state and set mode to UFP */
-		mode =  TYPE_C_ATTACH_UFP;
-		s2mm003_indirect_write(usbpd_data, IND_REG_PDIC_MODE, mode);
-		usbpd_data->try_state_change = TYPE_C_ATTACH_UFP;
-
-		enable_irq(usbpd_data->irq_gpio);
-	}
-	/* Current mode UFP and Sink  */
-	else
-	{
-		pr_info("%s: try reversing, form Sink to Source\n", __func__);
-		/* transition to Disabled state */
-		disable_irq(usbpd_data->irq_gpio);
-		/* exit from Disabled state and set mode to UFP */
-		mode =  TYPE_C_ATTACH_DFP;
-		s2mm003_indirect_write(usbpd_data, IND_REG_PDIC_MODE, mode);
-		usbpd_data->try_state_change = TYPE_C_ATTACH_DFP;
-
-		enable_irq(usbpd_data->irq_gpio);
-	}
-
-	reinit_completion(&usbpd_data->reverse_completion);
-	timeout =
-	    wait_for_completion_timeout(&usbpd_data->reverse_completion,
-					msecs_to_jiffies
-					(DUAL_ROLE_SET_MODE_WAIT_MS));
-	// clear try_state_change 
-	usbpd_data->try_state_change = 0;
-	if (!timeout) {
-		pr_err("%s: reverse failed, set mode to DRP\n", __func__);
-		disable_irq(usbpd_data->irq_gpio);
-
-		/* exit from Disabled state and set mode to DRP */
-		mode =  TYPE_C_ATTACH_DRP;
-		s2mm003_indirect_write(usbpd_data, IND_REG_PDIC_MODE, mode);
-		usbpd_data->try_state_change = TYPE_C_ATTACH_DRP;
-		
-		enable_irq(usbpd_data->irq_gpio);
-
-		pr_info("%s: wait for the attached state\n", __func__);
-		reinit_completion(&usbpd_data->reverse_completion);
-		wait_for_completion_timeout(&usbpd_data->reverse_completion,
-					    msecs_to_jiffies
-					    (DUAL_ROLE_SET_MODE_WAIT_MS));
-		usbpd_data->try_state_change = 0;
-		ret = -EIO;
-	}
-	dev_info(&i2c->dev, "%s -> data role : %d\n", __func__, *val);
-	return ret;
+	usbpd_state = s2mm003_indirect_read(usbpd_data, IND_REG_PDIC_PD_FUNC_STATE);
+	dev_info(&i2c->dev, "USBPD_STATE I2C read: 0x%02d\n", usbpd_state);
 }
-
-/* Callback for "echo <value> >
- *                      /sys/class/dual_role_usb/<name>/<property>"
- * Block until the entire final state is reached.
- * Blocking is one of the better ways to signal when the operation
- * is done.
- * This function tries to switch to Attached.SRC or Attached.SNK
- * by forcing the mode into SRC or SNK.
- * On failure, we fall back to Try.SNK state machine.
- */
-static int dual_role_set_prop(struct dual_role_phy_instance *dual_role,
-			      enum dual_role_property prop,
-			      const unsigned int *val)
-{
-	if (prop == DUAL_ROLE_PROP_MODE)
-		return set_data_role(dual_role, prop, val);
-	else
-		return -EINVAL;
-}
-
-#endif
 
 static int s2mm003_usbpd_probe(struct i2c_client *i2c,
 			       const struct i2c_device_id *id)
@@ -1256,10 +1103,7 @@ static int s2mm003_usbpd_probe(struct i2c_client *i2c,
 	struct i2c_adapter *adapter = to_i2c_adapter(i2c->dev.parent);
 	struct s2mm003_data *usbpd_data;
 	int ret = 0;
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-	struct dual_role_phy_desc *desc;
-	struct dual_role_phy_instance *dual_role;
-#endif
+
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA)) {
 		dev_err(&i2c->dev, "i2c functionality check error\n");
 		return -EIO;
@@ -1279,24 +1123,14 @@ static int s2mm003_usbpd_probe(struct i2c_client *i2c,
 	ret = gpio_request(usbpd_data->irq_gpio, "s2mm003_irq");
 	if (ret)
 		goto err_free_irq_gpio;
-	ret = gpio_request(usbpd_data->redriver_en, "s2mm003_redriver_en");
-	if (ret)
-		goto err_free_redriver_gpio;
 
 	gpio_direction_input(usbpd_data->irq_gpio);
 	i2c->irq = gpio_to_irq(usbpd_data->irq_gpio);
 	dev_info(&i2c->dev, "%s:IRQ NUM %d\n", __func__, i2c->irq);
 
-	/* TODO REMOVE redriver always enable, Add sleep/resume */
-	ret = gpio_direction_output(usbpd_data->redriver_en, 1);
-	if (ret) {
-		dev_err(&i2c->dev, "Unable to set input gpio direction, error %d\n", ret);
-		goto err_free_redriver_gpio;
-	}
-
+	pusbpd_data = usbpd_data;
 	usbpd_data->i2c = i2c;
 	i2c_set_clientdata(i2c, usbpd_data);
-	dev_set_drvdata(ccic_device, usbpd_data);
 	device_init_wakeup(&i2c->dev, 1);
 	mutex_init(&usbpd_data->i2c_mutex);
 
@@ -1306,35 +1140,17 @@ static int s2mm003_usbpd_probe(struct i2c_client *i2c,
 	usbpd_data->cur_rid = -1;
 #if defined(CONFIG_CCIC_ALTERNATE_MODE)
 	usbpd_data->Pdic_state_machine = 0;
-	usbpd_data->acc_type = 0;
 #endif
-	usbpd_data->func_state = 0;
 	usbpd_data->Pdic_usb_state = 0;
 
 #if defined(CONFIG_SEC_CCIC_FW_FIX)
 	s2mm003_firmware_ver_check(usbpd_data, "otp");
-#else
-	usbpd_data->firm_ver[0] = s2mm003_indirect_read(usbpd_data, 0x01);
-	usbpd_data->firm_ver[1] = s2mm003_indirect_read(usbpd_data, 0x02);
-	usbpd_data->firm_ver[2] = s2mm003_indirect_read(usbpd_data, 0x03);
-	usbpd_data->firm_ver[3] = s2mm003_indirect_read(usbpd_data, 0x04);
-	dev_err(&i2c->dev, "%s otp version %02x %02x %02x %02x\n",
-		USBPD_DEV_NAME, usbpd_data->firm_ver[0], usbpd_data->firm_ver[1],
-		usbpd_data->firm_ver[2], usbpd_data->firm_ver[3]);
 #endif
 
 	s2mm003_firmware_update(usbpd_data);
 
 #if defined(CONFIG_SEC_CCIC_FW_FIX)
 	s2mm003_firmware_ver_check(usbpd_data, "fw");
-#else
-	usbpd_data->firm_ver[0] = s2mm003_indirect_read(usbpd_data, 0x01);
-	usbpd_data->firm_ver[1] = s2mm003_indirect_read(usbpd_data, 0x02);
-	usbpd_data->firm_ver[2] = s2mm003_indirect_read(usbpd_data, 0x03);
-	usbpd_data->firm_ver[3] = s2mm003_indirect_read(usbpd_data, 0x04);
-	dev_err(&i2c->dev, "%s fw version %02x %02x %02x %02x\n",
-		USBPD_DEV_NAME, usbpd_data->firm_ver[0], usbpd_data->firm_ver[1],
-		usbpd_data->firm_ver[2], usbpd_data->firm_ver[3]);
 #endif
 	Modify_TX_SRC_CAPA(usbpd_data);
 
@@ -1344,50 +1160,19 @@ static int s2mm003_usbpd_probe(struct i2c_client *i2c,
 		dev_err(&i2c->dev, "Failed to request IRQ %d, error %d\n", i2c->irq, ret);
 		goto err_init_irq;
 	}
+	/* 160308 by jjunh79.kim/ym.bak : not to miss the interrupt before registering irq handler */
+	s2mm003_MCU_reset(usbpd_data); 
 
+	s2mm003_indirect_write(usbpd_data, 0x13,1);	//DFP Rp
+	s2mm003_indirect_write(usbpd_data, 0x13,3);	//DRP	
 
 	dev_err(&i2c->dev, "probed, irq %d\n", usbpd_data->irq_gpio);
-
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-	desc =
-		devm_kzalloc(&i2c->dev,
-			     sizeof(struct dual_role_phy_desc), GFP_KERNEL);
-	if (!desc) {
-		pr_err("unable to allocate dual role descriptor\n");
-		goto err_init_irq;
-	}
-
-	desc->name = "otg_default";
-	desc->supported_modes = DUAL_ROLE_SUPPORTED_MODES_DFP_AND_UFP;
-	desc->get_property = dual_role_get_local_prop;
-	desc->set_property = dual_role_set_prop;
-	desc->properties = fusb_drp_properties;
-	desc->num_properties = ARRAY_SIZE(fusb_drp_properties);
-	desc->property_is_writeable = dual_role_is_writeable;
-	dual_role =
-		devm_dual_role_instance_register(&i2c->dev, desc);
-	dual_role->drv_data = usbpd_data;
-	usbpd_data->dual_role = dual_role;
-	usbpd_data->desc = desc;
-	init_completion(&usbpd_data->reverse_completion);
-#endif
-#ifdef CONFIG_SWITCH
-		/* for DockObserver */
-		ret = switch_dev_register(&switch_dock);
-		if (ret < 0) {
-			pr_err("%s: Failed to register dock switch(%d)\n",
-				__func__, ret);
-			return -ENODEV;
-		}
-#endif /* CONFIG_SWITCH */
 
 	return ret;
 
 err_init_irq:
 	if (i2c->irq)
 		free_irq(i2c->irq, usbpd_data);
-err_free_redriver_gpio:
-	gpio_free(usbpd_data->redriver_en);
 err_free_irq_gpio:
 	gpio_free(usbpd_data->irq_gpio);
 	kfree(usbpd_data);
@@ -1396,16 +1181,6 @@ err_free_irq_gpio:
 
 static int s2mm003_usbpd_remove(struct i2c_client *i2c)
 {
-#if defined(CONFIG_DUAL_ROLE_USB_INTF)
-	struct s2mm003_data *usbpd_data = dev_get_drvdata(ccic_device);
-
-	devm_dual_role_instance_unregister(usbpd_data->dev, usbpd_data->dual_role);
-	devm_kfree(usbpd_data->dev, usbpd_data->desc);
-#endif
-#ifdef CONFIG_SWITCH
-		/* for DockObserver */
-		switch_dev_unregister(&switch_dock);
-#endif /* CONFIG_SWITCH */
 	return 0;
 }
 

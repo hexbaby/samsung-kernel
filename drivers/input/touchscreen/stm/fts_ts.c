@@ -51,32 +51,29 @@
 #include <linux/power_supply.h>
 #include <linux/firmware.h>
 #include <linux/regulator/consumer.h>
-#include <linux/of_gpio.h>
-#include <linux/sec_sysfs.h>
-
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-#include <linux/trustedui.h>
-extern int tui_force_close(uint32_t arg);
-#endif
-
-#ifdef CONFIG_OF
-#ifndef USE_OPEN_CLOSE
-#define USE_OPEN_CLOSE
-#undef CONFIG_HAS_EARLYSUSPEND
-#undef CONFIG_PM
-#endif
-#endif
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-#include <linux/earlysuspend.h>
-#endif
 #include <linux/input/mt.h>
+#ifdef CONFIG_OF
+#include <linux/of_gpio.h>
+#endif
 #include "fts_ts.h"
 
-static struct i2c_driver fts_i2c_driver;
+#if defined(CONFIG_SECURE_TOUCH)
+#include <linux/pm_runtime.h>
+#include <linux/errno.h>
+#include <linux/atomic.h>
+/*#include <asm/system.h>*/
+
+#include <soc/qcom/scm.h>
+enum subsystem {
+	TZ = 1,
+	APSS = 3
+};
+
+#define TZ_BLSP_MODIFY_OWNERSHIP_ID 3
+#endif
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-struct fts_touchkey fts_touchkeys[] = {
+static struct fts_touchkey fts_touchkeys[] = {
 	{
 		.value = 0x01,
 		.keycode = KEY_RECENT,
@@ -90,12 +87,8 @@ struct fts_touchkey fts_touchkeys[] = {
 };
 #endif
 
-#ifdef CONFIG_GLOVE_TOUCH
-enum TOUCH_MODE {
-	FTS_TM_NORMAL = 0,
-	FTS_TM_GLOVE,
-};
-#endif
+bool tsp_init_done = false;
+EXPORT_SYMBOL(tsp_init_done);
 
 #ifdef USE_OPEN_CLOSE
 static int fts_input_open(struct input_dev *dev);
@@ -105,66 +98,292 @@ static void fts_open_work(struct work_struct *work);
 #endif
 #endif
 
+#if defined(USE_RESET_WORK_EXIT_LOWPOWERMODE) || defined(FTS_SUPPORT_ESD_CHECK)
+static void fts_reset_work(struct work_struct *work);
+#endif
+static void fts_recovery_cx(struct fts_ts_info *info);
 static int fts_stop_device(struct fts_ts_info *info);
 static int fts_start_device(struct fts_ts_info *info);
-static int fts_irq_enable(struct fts_ts_info *info, bool enable);
-static void fts_reset_work(struct work_struct *work);
-void fts_recovery_cx(struct fts_ts_info *info);
-void fts_release_all_finger(struct fts_ts_info *info);
+static void fts_release_all_finger(struct fts_ts_info *info);
+static void fts_delay(unsigned int ms);
 
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-static void dump_tsp_rawdata(struct work_struct *work);
-struct delayed_work * p_debug_work;
-#endif
+#if defined(CONFIG_SECURE_TOUCH)
+static void fts_secure_touch_notify(struct fts_ts_info *info);
 
-#if (!defined(CONFIG_HAS_EARLYSUSPEND)) && (!defined(CONFIG_PM)) && !defined(USE_OPEN_CLOSE)
-static int fts_suspend(struct i2c_client *client, pm_message_t mesg);
-static int fts_resume(struct i2c_client *client);
-#endif
+static irqreturn_t fts_filter_interrupt(struct fts_ts_info *info);
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-static void fts_early_suspend(struct early_suspend *h)
+static irqreturn_t fts_interrupt_handler(int irq, void *handle);
+
+static ssize_t fts_secure_touch_enable_show(struct device *dev,
+			struct device_attribute *attr, char *buf);
+
+static ssize_t fts_secure_touch_enable_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+
+static ssize_t fts_secure_touch_show(struct device *dev,
+			struct device_attribute *attr, char *buf);
+
+static ssize_t secure_ownership_show(struct device *dev,
+			struct device_attribute *attr, char *buf);
+
+static struct device_attribute attrs[] = {
+	__ATTR(secure_touch_enable, (S_IRUGO | S_IWUSR | S_IWGRP),
+			fts_secure_touch_enable_show,
+			fts_secure_touch_enable_store),
+	__ATTR(secure_touch, (S_IRUGO),
+			fts_secure_touch_show,
+			NULL),
+	__ATTR(secure_ownership, (S_IRUGO),
+			secure_ownership_show,
+			NULL),
+};
+
+static int fts_change_pipe_owner(struct fts_ts_info *info, enum subsystem subsystem)
 {
-	struct fts_ts_info *info;
-	info = container_of(h, struct fts_ts_info, early_suspend);
-	fts_suspend(info->client, PMSG_SUSPEND);
+	/* scm call disciptor */
+	struct scm_desc desc;
+	int ret = 0;
+
+	/* number of arguments */
+	desc.arginfo = SCM_ARGS(2);
+	/* BLSPID (1 - 12) */
+	desc.args[0] = info->client->adapter->nr - 1;
+	/* Owner if TZ or APSS */
+	desc.args[1] = subsystem;
+
+	ret = scm_call2(SCM_SIP_FNID(SCM_SVC_TZ, TZ_BLSP_MODIFY_OWNERSHIP_ID), &desc);
+
+	dev_err(&info->client->dev, "%s: return1: %d\n", __func__, ret);
+	if (ret)
+		return ret;
+
+	dev_err(&info->client->dev, "%s: return2: %llu\n", __func__, desc.ret[0]);
+
+	return desc.ret[0];
 }
 
-static void fts_late_resume(struct early_suspend *h)
+static int fts_secure_touch_clk_prepare_enable(struct fts_ts_info *info)
 {
-	struct fts_ts_info *info;
-	info = container_of(h, struct fts_ts_info, early_suspend);
-	fts_resume(info->client);
+	int ret;
+
+	if (!info->iface_clk || !info->core_clk) {
+		dev_err(&info->client->dev,
+			"%s: error clk. iface:%d, core:%d\n", __func__,
+			IS_ERR_OR_NULL(info->iface_clk), IS_ERR_OR_NULL(info->core_clk));
+		return -ENODEV;
+	}
+
+	ret = clk_prepare_enable(info->iface_clk);
+	if (ret) {
+		dev_err(&info->client->dev,
+			"%s: error on clk_prepare_enable(iface_clk):%d\n", __func__, ret);
+		return ret;
+	}
+
+	ret = clk_prepare_enable(info->core_clk);
+	if (ret) {
+		clk_disable_unprepare(info->iface_clk);
+		dev_err(&info->client->dev,
+			"%s: error clk_prepare_enable(core_clk):%d\n", __func__, ret);
+		return ret;
+	}
+	return ret;
+}
+
+static void fts_secure_touch_clk_disable_unprepare(
+		struct fts_ts_info *info)
+{
+	clk_disable_unprepare(info->core_clk);
+	clk_disable_unprepare(info->iface_clk);
+}
+
+static ssize_t fts_secure_touch_enable_show(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	struct fts_ts_info *info = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d", atomic_read(&info->st_enabled));
+}
+
+/*
+ * Accept only "0" and "1" valid values.
+ * "0" will reset the st_enabled flag, then wake up the reading process.
+ * The bus driver is notified via pm_runtime that it is not required to stay
+ * awake anymore.
+ * It will also make sure the queue of events is emptied in the controller,
+ * in case a touch happened in between the secure touch being disabled and
+ * the local ISR being ungated.
+ * "1" will set the st_enabled flag and clear the st_pending_irqs flag.
+ * The bus driver is requested via pm_runtime to stay awake.
+ */
+static ssize_t fts_secure_touch_enable_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct fts_ts_info *info = dev_get_drvdata(dev);
+	unsigned long value;
+	int err = 0;
+
+	if (count > 2)
+		return -EINVAL;
+
+	err = kstrtoul(buf, 10, &value);
+	if (err != 0)
+		return err;
+
+	err = count;
+
+	switch (value) {
+	case 0:
+			if (atomic_read(&info->st_enabled) == 0)
+				break;
+
+			dev_err(&info->client->dev, "%s: SECURETOUCH_secure_touch_enable : case 0", __func__);
+
+			fts_change_pipe_owner(info, APSS);
+
+//			mutex_lock(&info->i2c_mutex);
+			fts_secure_touch_clk_disable_unprepare(info);
+			dev_err(&info->client->dev, "%s: SECURETOUCH_secure_touch_enable_reset", __func__);
+			pm_runtime_put_sync(info->client->adapter->dev.parent);
+
+//			mutex_unlock(&info->i2c_mutex);
+
+			atomic_set(&info->st_enabled, 0);
+			fts_secure_touch_notify(info);
+
+			fts_delay(10);
+
+			fts_interrupt_handler(info->client->irq, info);
+			complete(&info->st_powerdown);
+#ifdef ST_INT_COMPLETE
+			complete(&info->st_interrupt);
+#endif
+			break;
+
+	case 1:
+			if (atomic_read(&info->st_enabled)) {
+				err = -EBUSY;
+				break;
+			}
+
+			synchronize_irq(info->client->irq);
+
+			/* Release All Finger */
+			fts_release_all_finger(info);
+			dev_err(&info->client->dev, "%s: SECURETOUCH_secure_touch_enable : case 1", __func__);
+
+//			mutex_lock(&info->i2c_mutex);
+
+			if (pm_runtime_get_sync(info->client->adapter->dev.parent) < 0) {
+				dev_err(&info->client->dev, "pm_runtime_get failed\n");
+				err = -EIO;
+				break;
+			}
+
+			if (fts_secure_touch_clk_prepare_enable(info) < 0) {
+				dev_err(&info->client->dev, "clk_prepare_enable failed\n");
+
+				pm_runtime_put_sync(info->client->adapter->dev.parent);
+				err = -EIO;
+				break;
+			}
+
+//			mutex_unlock(&info->i2c_mutex);
+
+			dev_err(&info->client->dev, "%s: SECURETOUCH_secure_touch_enable_set", __func__);
+
+			fts_change_pipe_owner(info, TZ);
+
+			dev_err(&info->client->dev, "%s: 1", __func__);
+
+			reinit_completion(&info->st_powerdown);
+#ifdef ST_INT_COMPLETE
+			reinit_completion(&info->st_interrupt);
+#endif
+			atomic_set(&info->st_enabled, 1);
+
+			dev_err(&info->client->dev, "%s: 2", __func__);
+
+//			synchronize_irq(info->client->irq);
+			atomic_set(&info->st_pending_irqs, 0);
+			break;
+
+	default:
+			dev_err(&info->client->dev, "unsupported value: %lu\n", value);
+			err = -EINVAL;
+			break;
+	}
+
+	dev_err(&info->client->dev, "%s: 3", __func__);
+
+	return err;
+}
+
+static ssize_t fts_secure_touch_show(struct device *dev,
+						struct device_attribute *attr, char *buf)
+{
+	struct fts_ts_info *info = dev_get_drvdata(dev);
+	int val = 0;
+
+	dev_err(&info->client->dev, "%s: SECURETOUCH_fts_secure_touch_show &info->st_pending_irqs=%d ",
+								__func__, atomic_read(&info->st_pending_irqs));
+
+	if (atomic_read(&info->st_enabled) == 0)
+		return -EBADF;
+
+	if (atomic_cmpxchg(&info->st_pending_irqs, -1, 0) == -1)
+		return -EINVAL;
+
+	if (atomic_cmpxchg(&info->st_pending_irqs, 1, 0) == 1)
+		val = 1;
+
+	dev_err(&info->client->dev, "%s %d: SECURETOUCH_fts_secure_touch_show", __func__, val);
+	dev_err(&info->client->dev, "%s: SECURETOUCH_fts_secure_touch_show &info->st_pending_irqs=%d ",
+								__func__, atomic_read(&info->st_pending_irqs));
+#ifdef ST_INT_COMPLETE
+	complete(&info->st_interrupt);
+#endif
+	return scnprintf(buf, PAGE_SIZE, "%u", val);
+}
+
+static ssize_t secure_ownership_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "1");
 }
 #endif
 
-int fts_write_reg(struct fts_ts_info *info,
+static int fts_write_reg(struct fts_ts_info *info,
 		  unsigned char *reg, unsigned short num_com)
 {
 	struct i2c_msg xfer_msg[2];
+	struct i2c_client *client = info->client;
 	int ret;
 
 	if (info->touch_stopped) {
-		tsp_debug_err(true, &info->client->dev, "%s: Sensor stopped\n", __func__);
+		dev_err(&info->client->dev, "%s: Sensor stopped\n", __func__);
 		goto exit;
 	}
 
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-	if (TRUSTEDUI_MODE_INPUT_SECURED & trustedui_get_current_mode()) {
-		tsp_debug_err(true, &info->client->dev,
-			"%s TSP no accessible from Linux, TUI is enabled!\n", __func__);
-		return -EIO;
+#if defined(CONFIG_SECURE_TOUCH)
+	if (atomic_read(&info->st_enabled)) {
+		dev_err(&info->client->dev, "%s: secure enabled\n", __func__);
+		goto exit;
 	}
 #endif
 
 	mutex_lock(&info->i2c_mutex);
 
-	xfer_msg[0].addr = info->client->addr;
+	xfer_msg[0].addr = client->addr;
 	xfer_msg[0].len = num_com;
 	xfer_msg[0].flags = 0;
 	xfer_msg[0].buf = reg;
 
-	ret = i2c_transfer(info->client->adapter, xfer_msg, 1);
+	ret = i2c_transfer(client->adapter, xfer_msg, 1);
+	if (ret < 0)
+		dev_err(&client->dev, "%s failed. ret: %d, addr: %x\n",
+					__func__, ret, xfer_msg[0].addr);
 
 	mutex_unlock(&info->i2c_mutex);
 	return ret;
@@ -173,37 +392,48 @@ int fts_write_reg(struct fts_ts_info *info,
 	return 0;
 }
 
-int fts_read_reg(struct fts_ts_info *info, unsigned char *reg, int cnum,
+static int fts_read_reg(struct fts_ts_info *info, unsigned char *reg, int cnum,
 		 unsigned char *buf, int num)
 {
 	struct i2c_msg xfer_msg[2];
+	struct i2c_client *client = info->client;
 	int ret;
+	int retry = 3;
 
 	if (info->touch_stopped) {
-		tsp_debug_err(true, &info->client->dev, "%s: Sensor stopped\n", __func__);
+		dev_err(&info->client->dev, "%s: Sensor stopped\n", __func__);
 		goto exit;
 	}
 
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-	if (TRUSTEDUI_MODE_INPUT_SECURED & trustedui_get_current_mode()) {
-		tsp_debug_err(true, &info->client->dev,
-			"%s TSP no accessible from Linux, TUI is enabled!\n", __func__);
-		return -EIO;
+#if defined(CONFIG_SECURE_TOUCH)
+	if (atomic_read(&info->st_enabled)) {
+		dev_err(&info->client->dev, "%s: secure enabled\n", __func__);
+		goto exit;
 	}
 #endif
 
 	mutex_lock(&info->i2c_mutex);
 
-	xfer_msg[0].addr = info->client->addr;
+	xfer_msg[0].addr = client->addr;
 	xfer_msg[0].len = cnum;
 	xfer_msg[0].flags = 0;
 	xfer_msg[0].buf = reg;
 
-	xfer_msg[1].addr = info->client->addr;
+	xfer_msg[1].addr = client->addr;
 	xfer_msg[1].len = num;
 	xfer_msg[1].flags = I2C_M_RD;
 	xfer_msg[1].buf = buf;
-	ret = i2c_transfer(info->client->adapter, xfer_msg, 2);
+
+	do {
+		ret = i2c_transfer(client->adapter, xfer_msg, 2);
+		if (ret < 0) {
+			dev_err(&client->dev, "%s failed(%d). ret:%d, addr:%x\n",
+					__func__, retry, ret, xfer_msg[0].addr);
+			usleep_range(10 * 1000, 10 * 1000);
+		} else {
+			break;
+		}
+	} while (--retry > 0);
 
 	mutex_unlock(&info->i2c_mutex);
 	return ret;
@@ -212,18 +442,28 @@ int fts_read_reg(struct fts_ts_info *info, unsigned char *reg, int cnum,
 	return 0;
 }
 
-#ifdef FTS_SUPPORT_STRINGLIB
+/*
+ * int fts_read_to_string(struct fts_ts_info *, unsigned short *reg, unsigned char *data, int length)
+ * read specfic value from the string area.
+ * string area means Display Lab algorithm
+ */
+
 static int fts_read_from_string(struct fts_ts_info *info,
 					unsigned short *reg, unsigned char *data, int length)
 {
 	unsigned char string_reg[3];
 	unsigned char *buf;
+	int ret = 0;
 
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-	if (TRUSTEDUI_MODE_INPUT_SECURED & trustedui_get_current_mode()) {
-		tsp_debug_err(true, &info->client->dev,
-			"%s TSP no accessible from Linux, TUI is enabled!\n", __func__);
-		return -EIO;
+	if (!info->dt_data->support_string_lib) {
+		dev_err(&info->client->dev, "%s: Did not support String lib\n", __func__);
+		return 0;
+	}
+
+#if defined(CONFIG_SECURE_TOUCH)
+	if (atomic_read(&info->st_enabled)) {
+		dev_err(&info->client->dev, "%s: secure enabled\n", __func__);
+		return 0;
 	}
 #endif
 
@@ -232,28 +472,29 @@ static int fts_read_from_string(struct fts_ts_info *info,
 	string_reg[2] = *reg & 0xFF;
 
 	if (info->digital_rev == FTS_DIGITAL_REV_1) {
-		return fts_read_reg(info, string_reg, 3, data, length);
+		ret = fts_read_reg(info, string_reg, 3, data, length);
 	} else {
-		int rtn;
+		int ret;
 		buf = kzalloc(length + 1, GFP_KERNEL);
 		if (buf == NULL) {
 			tsp_debug_info(true, &info->client->dev,
 					"%s: kzalloc error.\n", __func__);
-			return -1;
+			return -ENOMEM;
 		}
 
-		rtn = fts_read_reg(info, string_reg, 3, buf, length + 1);
-		if (rtn >= 0)
+		ret = fts_read_reg(info, string_reg, 3, buf, length + 1);
+		if (ret >= 0)
 			memcpy(data, &buf[1], length);
 
 		kfree(buf);
-		return rtn;
 	}
+
+	return ret;
 }
 /*
  * int fts_write_to_string(struct fts_ts_info *, unsigned short *, unsigned char *, int)
  * send command or write specfic value to the string area.
- * string area means guest image or brane firmware.. etc..
+ * string area means Display Lab algorithm
  */
 static int fts_write_to_string(struct fts_ts_info *info,
 					unsigned short *reg, unsigned char *data, int length)
@@ -263,15 +504,27 @@ static int fts_write_to_string(struct fts_ts_info *info,
 	int ret;
 
 	if (info->touch_stopped) {
-		   tsp_debug_err(true, &info->client->dev, "%s: Sensor stopped\n", __func__);
-		   return 0;
+		dev_err(&info->client->dev, "%s: Sensor stopped\n", __func__);
+		return 0;
+	}
+
+#if defined(CONFIG_SECURE_TOUCH)
+	if (atomic_read(&info->st_enabled)) {
+		dev_err(&info->client->dev, "%s: secure enabled\n", __func__);
+		return 0;
+	}
+#endif
+
+	if (!info->dt_data->support_string_lib) {
+		dev_err(&info->client->dev, "%s: Did not support String lib\n", __func__);
+		return 0;
 	}
 
 	regAdd = kzalloc(length + 6, GFP_KERNEL);
 	if (regAdd == NULL) {
 		tsp_debug_info(true, &info->client->dev,
 				"%s: kzalloc error.\n", __func__);
-		return -1;
+		return -ENOMEM;
 	}
 
 	mutex_lock(&info->i2c_mutex);
@@ -304,7 +557,7 @@ static int fts_write_to_string(struct fts_ts_info *info,
 
 	ret = i2c_transfer(info->client->adapter, xfer_msg, 2);
 	if (ret == 2) {
-		tsp_debug_info(true, &info->client->dev,
+		dev_info(&info->client->dev,
 				"%s: string command is OK.\n", __func__);
 
 		regAdd[0] = FTS_CMD_NOTIFY;
@@ -318,22 +571,23 @@ static int fts_write_to_string(struct fts_ts_info *info,
 
 		ret = i2c_transfer(info->client->adapter, xfer_msg, 1);
 		if (ret != 1)
-			tsp_debug_info(true, &info->client->dev,
+			dev_info(&info->client->dev,
 					"%s: string notify is failed.\n", __func__);
 		else
-			tsp_debug_info(true, &info->client->dev,
+			dev_info(&info->client->dev,
 					"%s: string notify is OK[%X].\n", __func__, *data);
 
-	} else
-		tsp_debug_info(true, &info->client->dev,
+	} else {
+		dev_info(&info->client->dev,
 				"%s: string command is failed. ret: %d\n", __func__, ret);
+	}
 
 	mutex_unlock(&info->i2c_mutex);
 	kfree(regAdd);
 
 	return ret;
+
 }
-#endif
 
 static void fts_delay(unsigned int ms)
 {
@@ -343,31 +597,51 @@ static void fts_delay(unsigned int ms)
 		msleep(ms);
 }
 
-void fts_command(struct fts_ts_info *info, unsigned char cmd)
+static int fts_command(struct fts_ts_info *info, unsigned char cmd)
 {
 	unsigned char regAdd = 0;
-	int ret = 0;
+	int ret;
 
 	regAdd = cmd;
 	ret = fts_write_reg(info, &regAdd, 1);
-	tsp_debug_info(true, &info->client->dev, "FTS Command (%02X) , ret = %d \n", cmd, ret);
+	if (ret < 0)
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
+	else
+		dev_info(&info->client->dev, "%s: cmd: %02X, ret: %d\n",
+					__func__, cmd, ret);
+
+	return ret;
 }
 
-void fts_enable_feature(struct fts_ts_info *info, unsigned char cmd, int enable)
+static void fts_enable_feature(struct fts_ts_info *info, unsigned char cmd, int enable)
 {
-	unsigned char regAdd[2] = {0xC1, 0x00};
+	unsigned char regAdd[2] = {FTS_CMS_ENABLE_FEATURE, 0x00};
 	int ret = 0;
 
 	if (!enable)
-		regAdd[0] = 0xC2;
+		regAdd[0] = FTS_CMS_DISABLE_FEATURE;
 	regAdd[1] = cmd;
 	ret = fts_write_reg(info, &regAdd[0], 2);
-	tsp_debug_info(true, &info->client->dev, "FTS %s Feature (%02X %02X) , ret = %d \n", (enable)?"Enable":"Disable", regAdd[0], regAdd[1], ret);
+	tsp_debug_info(true, &info->client->dev,
+				"FTS %s Feature (%02X %02X) , ret = %d\n",
+				enable ? "Enable" : "Disable", regAdd[0], regAdd[1], ret);
 }
 
+/* Cover Type
+ * 0 : Flip Cover
+ * 1 : S View Cover
+ * 2 : N/A
+ * 3 : S View Wireless Cover
+ * 4 : N/A
+ * 5 : S Charger Cover
+ * 6 : S View Wallet Cover
+ * 7 : LED Cover
+ * 100 : Montblanc
+ */
 static void fts_set_cover_type(struct fts_ts_info *info, bool enable)
 {
-	tsp_debug_info(true, &info->client->dev, "%s: %d\n", __func__, info->cover_type);
+	dev_info(&info->client->dev, "%s: %d\n", __func__, info->cover_type);
 
 	switch (info->cover_type) {
 	case FTS_VIEW_WIRELESS:
@@ -393,208 +667,345 @@ static void fts_set_cover_type(struct fts_ts_info *info, bool enable)
 	case FTS_COVER_NOTHING1:
 	case FTS_COVER_NOTHING2:
 	default:
-		tsp_debug_err(true, &info->client->dev, "%s: not change touch state, %d\n",
+		dev_err(&info->client->dev, "%s: not chage touch state, %d\n",
 				__func__, info->cover_type);
 		break;
 	}
-}
 
-void fts_change_scan_rate(struct fts_ts_info *info, unsigned char cmd)
+	info->flip_state = enable;
+
+}
+static int fts_change_scan_rate(struct fts_ts_info *info, unsigned char cmd)
 {
 	unsigned char regAdd[2] = {0xC3, 0x00};
 	int ret = 0;
 
 	regAdd[1] = cmd;
+
 	ret = fts_write_reg(info, &regAdd[0], 2);
-
-	tsp_debug_dbg(true, &info->client->dev, "FTS %s Scan Rate (%02X %02X) , ret = %d \n",
-		(cmd == FTS_CMD_FAST_SCAN) ? "90Hz" : (cmd == FTS_CMD_SLOW_SCAN) ? "60Hz" : "30Hz",
-		regAdd[0], regAdd[1], ret);
-}
-
-void fts_systemreset(struct fts_ts_info *info)
-{
-	unsigned char regAdd[4] = { 0xB6, 0x00, 0x23, 0x01 };
-	tsp_debug_info(true, &info->client->dev, "FTS SystemReset\n");
-	fts_write_reg(info, &regAdd[0], 4);
-	fts_delay(10);
-}
-
-static void fts_interrupt_set(struct fts_ts_info *info, int enable)
-{
-	unsigned char regAdd[4] = { 0xB6, 0x00, 0x1C, enable };
-
-	if (enable)
-		tsp_debug_info(true, &info->client->dev, "FTS INT Enable\n");
+	if (ret < 0)
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
 	else
-		tsp_debug_info(true, &info->client->dev, "FTS INT Disable\n");
+		dev_info(&info->client->dev, "%s: cmd: %02X, ret: %d\n",
+					__func__, cmd, ret);
 
-	fts_write_reg(info, &regAdd[0], 4);
+	return ret;
 }
 
-static int fts_read_chip_id(struct fts_ts_info *info) {
+static int fts_systemreset(struct fts_ts_info *info)
+{
+	unsigned char regAdd[4] = {0xB6, 0x00, 0x23, 0x01};
+	int ret;
+
+	if (info->stm_ver == STM_VER7) {
+		regAdd[2] = 0x28;
+		regAdd[3] = 0x80;
+	}
+
+	ret = fts_write_reg(info, regAdd, 4);
+	if (ret < 0)
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
+	else
+		dev_info(&info->client->dev, "%s: ret: %d\n",
+					__func__, ret);
+
+	fts_delay(10);
+
+	return ret;
+}
+
+int fts_interrupt_set(struct fts_ts_info *info, int enable)
+{
+	unsigned char regAdd[4] = {0xB6, 0x00, 0x1C, enable};
+	int ret;
+
+	if (info->stm_ver == STM_VER7) {
+		regAdd[2] = 0x2C;
+	        if (enable)
+	            regAdd[3] = INT_ENABLE_D3;
+	        else
+	            regAdd[3] = INT_DISABLE_D3;
+	}
+
+	ret = fts_write_reg(info, regAdd, 4);
+	if (ret < 0)
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
+	else
+		dev_info(&info->client->dev, "%s: %s. ret: %d\n",
+					__func__, enable ? "enable" : "disable", ret);
+
+	return ret;
+}
+
+static int fts_check_stm_ver(struct fts_ts_info *info)
+{
+	unsigned char regAdd[3] = {0xB6, 0x00, 0x07};
+	unsigned char val[7] = {0};
+	int ret;
+
+	ret = fts_read_reg(info, regAdd, 3, val, 7);
+	if (ret < 0) {
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
+
+		return ret;
+	}
+
+	if ((val[1] == FTS_ID0) && (val[2] == FTS_ID2)) {
+		dev_err(&info->client->dev, "%s FTS4/5\n", __func__);
+		return STM_VER5;
+	}
+
+	regAdd[2] = 0x04;
+
+	ret = fts_read_reg(info, regAdd, 3, val, 7);
+	if (ret < 0) {
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
+
+		return ret;
+	}
+
+	if ((val[1] == FTS_7_ID0) && (val[2]) == FTS_7_ID1) {
+		tsp_debug_info(true, &info->client->dev,
+			"FTS 7 series Chip ID : %02X %02X\n", val[1], val[2]);
+		return STM_VER7;
+	}
+
+	return 0;
+
+}
+
+/*
+ * static int fts_read_chip_id(struct fts_ts_info *info)
+ * :
+ */
+static int fts_read_chip_id(struct fts_ts_info *info)
+{
 
 	unsigned char regAdd[3] = {0xB6, 0x00, 0x07};
 	unsigned char val[7] = {0};
 	int ret;
 
-	ret = fts_read_reg(info, regAdd, 3, (unsigned char *)val, 7);
+	if (info->stm_ver == STM_VER7) {
+		regAdd[2] = 0x04;
+	}
+
+	ret = fts_read_reg(info, regAdd, 3, val, 7);
 	if (ret < 0) {
-		tsp_debug_err(true, &info->client->dev, "%s failed. ret: %d\n",
-			__func__, ret);
+		dev_err(&info->client->dev, "%s failed. ret: %d\n",
+					__func__, ret);
+
 		return ret;
 	}
 
-	tsp_debug_info(true, &info->client->dev, "FTS %02X%02X%02X =  %02X %02X %02X %02X %02X %02X\n",
-	       regAdd[0], regAdd[1], regAdd[2], val[1], val[2], val[3], val[4], val[5], val[6]);
-	if(val[1] == FTS_ID0 && val[2] == FTS_ID2)
-	{
-		if(val[4] == 0x00 && val[5] == 0x00)	 // 00 39 6C 03 00 00
-		{
-			// Cx Corruption
-			fts_recovery_cx(info);
-		}
-		else
-		{
-			tsp_debug_info(true, &info->client->dev,"FTS Chip ID : %02X %02X\n", val[1], val[2]);
+	dev_info(&info->client->dev, "%s: %02X %02X %02X %02X %02X %02X\n",
+			__func__, val[1], val[2], val[3],
+			val[4], val[5], val[6]);
+
+	/* FTS7BD50C is different with FTS5 and FTS4 series */
+	if (info->stm_ver == STM_VER7) {
+		if ((val[1] == FTS_7_ID0) && (val[2]) == FTS_7_ID1) {
+			tsp_debug_info(true, &info->client->dev,
+				"FTS 7 series Chip ID : %02X %02X\n", val[1], val[2]);
+
+			info->digital_rev = FTS_DIGITAL_REV_3;
+			return 0;
+		} else {
+			tsp_debug_err(true, &info->client->dev,
+				"[FAIL] FTS 7 series Chip ID : %02X, %02X %02X\n", val[0], val[1], val[2]);
 		}
 	}
 
-	if (val[1] != FTS_ID0)
+	if (val[1] == FTS_ID0 && val[2] == FTS_ID2) {
+		if (val[4] == 0x00 && val[5] == 0x00) {
+			/* 00 39 6C 03 00 00 ==> Cx Corruption */
+			fts_recovery_cx(info);
+		} else {
+			tsp_debug_info(true, &info->client->dev,
+				"FTS Chip ID : %02X %02X\n", val[1], val[2]);
+		}
+	}
+
+	if (val[1] != FTS_ID0) {
+		dev_err(&info->client->dev, "%s: invalid chip id, %02X\n",
+					__func__, val[1]);
 		return -FTS_ERROR_INVALID_CHIP_ID;
-	if (val[2] == FTS_ID1)
+	}
+
+	if (val[2] == FTS_ID1) {
 		info->digital_rev = FTS_DIGITAL_REV_1;
-	else if (val[2] == FTS_ID2)
+	} else if (val[2] == FTS_ID2) {
 		info->digital_rev = FTS_DIGITAL_REV_2;
-	else
+	} else {
+		dev_err(&info->client->dev, "%s: invalid chip version id, %02X\n",
+					__func__, val[2]);
 		return -FTS_ERROR_INVALID_CHIP_VERSION_ID;
+	}
+
+	if ((val[5] == 0) && (val[6] == 0)) {
+		dev_err(&info->client->dev, "%s: invalid version, need firmup\n", __func__);
+	}
 
 	return ret;
 }
 
 static int fts_wait_for_ready(struct fts_ts_info *info)
 {
-	int rc;
-	unsigned char regAdd;
-	unsigned char data[FTS_EVENT_SIZE];
-	int retry = 0;
-	int err_cnt=0;
+	unsigned char regAdd = READ_ONE_EVENT;
+	unsigned char data[FTS_EVENT_SIZE] = {0, };
+	int retry = 0, err_cnt = 0, ret;
 
-	memset(data, 0x0, FTS_EVENT_SIZE);
+	do {
+		ret = fts_read_reg(info, &regAdd, 1, data, FTS_EVENT_SIZE);
 
-	regAdd = READ_ONE_EVENT;
-	rc = -1;
-	while (fts_read_reg(info, &regAdd, 1, (unsigned char *)data, FTS_EVENT_SIZE)) {
 		if (data[0] == EVENTID_CONTROLLER_READY) {
-			rc = 0;
+			ret = 0;
 			break;
 		}
 
 		if (data[0] == EVENTID_ERROR) {
 			if (err_cnt++ > 32) {
-				rc = -FTS_ERROR_EVENT_ID;
+				ret = -FTS_ERROR_EVENT_ID;
 				break;
 			}
 			continue;
 		}
 
-		if (retry++ > FTS_RETRY_COUNT) {
-			rc = -FTS_ERROR_TIMEOUT;
-			tsp_debug_err(true, &info->client->dev, "%s: Time Over\n", __func__);
+		if (ret < 0 && retry == 3) {
+			dev_err(&info->client->dev, "%s: i2c error\n", __func__);
+			ret = -FTS_ERROR_TIMEOUT;
+#ifdef FTS_SUPPORT_ESD_CHECK
 			if (info->lowpower_mode) {
 				schedule_delayed_work(&info->reset_work, msecs_to_jiffies(10));
 			}
+#endif
 			break;
 		}
-		fts_delay(20);
-	}
 
-	tsp_debug_info(true, &info->client->dev,
+		if (retry++ > 30) {
+			dev_err(&info->client->dev, "%s: time out\n", __func__);
+			ret = -FTS_ERROR_TIMEOUT;
+#ifdef FTS_SUPPORT_ESD_CHECK
+			if (info->lowpower_mode) {
+				schedule_delayed_work(&info->reset_work, msecs_to_jiffies(10));
+			}
+#endif
+			break;
+		}
+
+		fts_delay(10);
+	} while (ret);
+
+	dev_info(&info->client->dev,
 		"%s: %02X, %02X, %02X, %02X, %02X, %02X, %02X, %02X\n",
 		__func__, data[0], data[1], data[2], data[3],
 		data[4], data[5], data[6], data[7]);
 
-	return rc;
+	return ret;
 }
 
-int fts_get_version_info(struct fts_ts_info *info)
+static int fts_get_version_info(struct fts_ts_info *info)
 {
-	int rc;
-	unsigned char regAdd[3];
-	unsigned char data[FTS_EVENT_SIZE];
-	int retry = 0;
+	unsigned char regAdd[3] = {0, 0, 0};
+	unsigned char data[FTS_EVENT_SIZE] = {0, };
+	int retry = 0, ret;
 
-	fts_command(info, FTS_CMD_RELEASEINFO);
-
-	memset(data, 0x0, FTS_EVENT_SIZE);
+	ret = fts_command(info, FTS_CMD_RELEASEINFO);
+	if (ret < 0) {
+		dev_err(&info->client->dev, "%s: failed\n", __func__);
+		return ret;
+	}
 
 	regAdd[0] = READ_ONE_EVENT;
-	rc = -1;
-	while (fts_read_reg(info, &regAdd[0], 1, (unsigned char *)data, FTS_EVENT_SIZE)) {
+
+	while (fts_read_reg(info, regAdd, 1, data, FTS_EVENT_SIZE)) {
 		if (data[0] == EVENTID_INTERNAL_RELEASE_INFO) {
-			// Internal release Information
-			info->fw_version_of_ic = (data[3] << 8) + data[4];
-			info->config_version_of_ic = (data[6] << 8) + data[5];
+			info->fw_version_of_ic = ((data[3] << 8) | data[4]);
+			info->config_version_of_ic = ((data[6] << 8) | data[5]);
 			info->ic_product_id = data[2];
 		} else if (data[0] == EVENTID_EXTERNAL_RELEASE_INFO) {
-			// External release Information
-			info->fw_main_version_of_ic = (data[1] << 8) + data[2];
-			rc = 0;
+			info->fw_main_version_of_ic = ((data[1] << 8) | data[2]);
 			break;
 		}
 
-		if (retry++ > FTS_RETRY_COUNT) {
-			rc = -FTS_ERROR_TIMEOUT;
-			tsp_debug_err(true, &info->client->dev, "%s: Time Over\n", __func__);
+		if (retry++ > 30) {
+			dev_err(&info->client->dev, "%s: time out\n", __func__);
+			ret = -FTS_ERROR_TIMEOUT;
 			break;
 		}
 	}
 
-	tsp_debug_info(true, &info->client->dev,
-			"IC product id : 0x%02X "
-			"IC Firmware Version : 0x%04X "
-			"IC Config Version : 0x%04X "
-			"IC Main Version : 0x%04X\n",
-			info->ic_product_id,
-			info->fw_version_of_ic,
-			info->config_version_of_ic,
-			info->fw_main_version_of_ic);
+#ifdef FTS_SUPPORT_PARTIAL_DOWNLOAD
+	regAdd[0] = 0xd0;
+	regAdd[1] = 0x00;
+	regAdd[2] = 0x5A;
+	if (info->stm_ver == STM_VER7)
+		regAdd[2] = 0x52;
 
-	return rc;
+	ret = fts_read_reg(info, regAdd, 3, (unsigned char *)data, 3);
+	if (!ret) {
+		info->afe_ver = 0;
+		tsp_debug_info(true, info->dev,
+			"%s: Read Fail - Final AFE [Data : %2X] AFE Ver [Data : %2X] \n",
+			__func__, data[1], data[2]);
+	} else {
+		tsp_debug_info(true, info->dev,
+			"%s: Final AFE [Data : %2X] AFE Ver [Data : %2X] \n",
+			__func__, data[1], data[2]);
+		info->afe_ver = data[2];
+	}
+	tsp_debug_info(true, &info->client->dev,
+		"%s: ID: 0x%02X, Firmware: 0x%04X, Config: 0x%04X, Main: 0x%04X, AFE: 0x%02X\n",
+		__func__, info->ic_product_id, info->fw_version_of_ic,
+		info->config_version_of_ic, info->fw_main_version_of_ic,
+		info->afe_ver);
+#else
+	dev_info(&info->client->dev,
+			"%s: ID: 0x%02X, Firmware: 0x%04X, Config: 0x%04X, Main: 0x%04X\n",
+			__func__, info->ic_product_id, info->fw_version_of_ic,
+			info->config_version_of_ic, info->fw_main_version_of_ic);
+#endif
+
+	return ret;
 }
+
 
 #ifdef FTS_SUPPORT_NOISE_PARAM
 int fts_get_noise_param_address(struct fts_ts_info *info)
 {
-	int rc;
 	unsigned char regAdd[3];
-	unsigned char rData[3];
-	struct fts_noise_param *noise_param;
-	int i;
-
-	noise_param = (struct fts_noise_param *)&info->noise_param;
+	unsigned char rData[3] = {0, };
+	int ret = -1;
+	int ii;
 
 	regAdd[0] = 0xd0;
 	regAdd[1] = 0x00;
-	regAdd[2] = 32 * 2;
+	regAdd[2] = 0x40;
 
-	if (info->digital_rev == FTS_DIGITAL_REV_1)
-		rc = fts_read_reg(info, regAdd, 3, (unsigned char *)noise_param->pAddr, 2);
-	else {
-		rc = fts_read_reg(info, regAdd, 3, (unsigned char *)rData, 3);
-		noise_param->pAddr[0] = rData[1] + (rData[2]<<8);
+	if (info->digital_rev == FTS_DIGITAL_REV_1) {
+		ret = fts_read_reg(info, regAdd, 3, (unsigned char *)info->noise_param->pAddr, 2);
+	} else if (info->digital_rev == FTS_DIGITAL_REV_2) {
+		ret = fts_read_reg(info, regAdd, 3, rData, 3);
+		info->noise_param->pAddr[0] = (rData[2] << 8) | rData[1];
 	}
 
-	for (i = 1; i < MAX_NOISE_PARAM; i++) {
-		noise_param->pAddr[i] = noise_param->pAddr[0] + i * 2;
+	if (ret < 0) {
+		dev_err(&info->client->dev, "%s: failed, ret: %d\n", __func__, ret);
+		return ret;
 	}
 
-	for (i = 0; i < MAX_NOISE_PARAM; i++) {
-		tsp_debug_dbg(true, &info->client->dev, "Get Noise Param%d Address = 0x%4x\n", i,
-		       noise_param->pAddr[i]);
-	}
+	for (ii = 1; ii < MAX_NOISE_PARAM; ii++)
+		info->noise_param->pAddr[ii] = info->noise_param->pAddr[0] + (ii * 2);
 
-	return rc;
+	for (ii = 0; ii < MAX_NOISE_PARAM; ii++)
+		dev_info(&info->client->dev, "%s: [%d] address: 0x%04X\n",
+				__func__, ii, info->noise_param->pAddr[ii]);
+
+	return ret;
 }
 
 static int fts_get_noise_param(struct fts_ts_info *info)
@@ -616,18 +1027,17 @@ static int fts_get_noise_param(struct fts_ts_info *info)
 		fts_write_reg(info, regAdd, 3);
 
 		regAdd[0] = 0xb1;
-		regAdd[1] = (noise_param->pAddr[i] >> 8) & 0xff;
-		regAdd[2] = noise_param->pAddr[i] & 0xff;
-		rc = fts_read_reg(info, regAdd, 3, &buf[0], 3);
+		regAdd[1] = (info->noise_param->pAddr[i] >> 8) & 0xff;
+		regAdd[2] = info->noise_param->pAddr[i] & 0xff;
+		rc = fts_read_reg(info, regAdd, 3, buf, 3);
 
-		noise_param->pData[i] = buf[1]+(buf[2]<<8);
-		//tsp_debug_info(true, &info->client->dev, "0x%2x%2x%2x 0x%2x 0x%2x\n", regAdd[0],regAdd[1],regAdd[2], buf[1], buf[2]);
+		info->noise_param->pData[i] = (buf[2] << 8) | buf[1];
 	}
 
-	for (i = 0; i < MAX_NOISE_PARAM; i++) {
-		tsp_debug_dbg(true, &info->client->dev, "Get Noise Param%d Address [ 0x%04x ] = 0x%04x\n", i,
-		       noise_param->pAddr[i], noise_param->pData[i]);
-	}
+	for (i = 0; i < MAX_NOISE_PARAM; i++)
+		dev_info(&info->client->dev, "%s: [%d] address: 0x%04X data: 0x%04X\n",
+				__func__, i, info->noise_param->pAddr[i],
+				info->noise_param->pData[i]);
 
 	return rc;
 }
@@ -636,9 +1046,6 @@ static int fts_set_noise_param(struct fts_ts_info *info)
 {
 	int i;
 	unsigned char regAdd[5];
-	struct fts_noise_param *noise_param;
-
-	noise_param = (struct fts_noise_param *)&info->noise_param;
 
 	for (i = 0; i < MAX_NOISE_PARAM; i++) {
 		regAdd[0] = 0xb3;
@@ -647,46 +1054,87 @@ static int fts_set_noise_param(struct fts_ts_info *info)
 		fts_write_reg(info, regAdd, 3);
 
 		regAdd[0] = 0xb1;
-		regAdd[1] = (noise_param->pAddr[i] >> 8) & 0xff;
-		regAdd[2] = noise_param->pAddr[i] & 0xff;
-		regAdd[3] = noise_param->pData[i] & 0xff;
-		regAdd[4] = (noise_param->pData[i] >> 8) & 0xff;
+		regAdd[1] = (info->noise_param->pAddr[i] >> 8) & 0xff;
+		regAdd[2] = info->noise_param->pAddr[i] & 0xff;
+		regAdd[3] = info->noise_param->pData[i] & 0xff;
+		regAdd[4] = (info->noise_param->pData[i] >> 8) & 0xff;
 		fts_write_reg(info, regAdd, 5);
 	}
 
-	for (i = 0; i < MAX_NOISE_PARAM; i++) {
-		tsp_debug_dbg(true, &info->client->dev, "Set Noise Param%d Address [ 0x%04x ] = 0x%04x\n", i,
-		       noise_param->pAddr[i], noise_param->pData[i]);
-	}
+	for (i = 0; i < MAX_NOISE_PARAM; i++)
+		dev_info(&info->client->dev, "%s: [%d] address: 0x%04X, data: 0x%04X\n",
+				__func__, i, info->noise_param->pAddr[i],
+				info->noise_param->pData[i]);
 
 	return 0;
 }
-#endif
+#endif				// FTS_SUPPORT_NOISE_PARAM
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-void fts_release_all_key(struct fts_ts_info *info)
+static void fts_release_all_key(struct fts_ts_info *info)
 {
-	unsigned char key_recent = TOUCH_KEY_RECENT;
-	unsigned char key_back = TOUCH_KEY_BACK;
+	input_report_key(info->input_dev, KEY_RECENT, KEY_RELEASE);
+	input_report_key(info->input_dev, KEY_BACK, KEY_RELEASE);
+	tsp_debug_info(true, &info->client->dev, "[TSP_KEY] %s\n", __func__);
 
-	if (info->board->support_mskey && info->tsp_keystatus != TOUCH_KEY_NULL) {
-		if (info->tsp_keystatus & key_recent) {
-			input_report_key(info->input_dev, KEY_RECENT, KEY_RELEASE);
-			tsp_debug_info(true, &info->client->dev, "[TSP_KEY] Recent R!\n");
-		}
-
-		if (info->tsp_keystatus & key_back) {
-			input_report_key(info->input_dev, KEY_BACK, KEY_RELEASE);
-			tsp_debug_info(true, &info->client->dev, "[TSP_KEY] back R!\n");
-		}
-
-		input_sync(info->input_dev);
-
-		info->tsp_keystatus = TOUCH_KEY_NULL;
-#if defined (CONFIG_INPUT_BOOSTER)
-		input_booster_send_event(BOOSTER_DEVICE_TOUCHKEY, BOOSTER_MODE_OFF);
-#endif
+#ifdef TKEY_BOOSTER
+	if ((info->tsp_keystatus & TOUCH_KEY_RECENT)
+		|| (info->tsp_keystatus & TOUCH_KEY_BACK)) {
+		if (info->tkey_booster && info->tkey_booster->dvfs_set)
+			info->tkey_booster->dvfs_set(info->tkey_booster, 0);
+	} else {
+		if (info->tkey_booster && info->tkey_booster->dvfs_set)
+			info->tkey_booster->dvfs_set(info->tkey_booster, 2);
 	}
+#endif
+}
+#endif
+
+
+#if defined(CONFIG_TOUCHSCREEN_DUMP_MODE)
+#include <linux/qcom/sec_debug.h>
+extern struct tsp_dump_callbacks dump_callbacks;
+static struct delayed_work * p_ghost_check;
+
+extern void fts_ts_run_rawdata_all(struct fts_ts_info *info);
+static void fts_ts_check_rawdata(struct work_struct *work)
+{
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info, ghost_check.work);
+
+	if (info->tsp_dump_lock == 1) {
+		tsp_debug_err(true, &info->client->dev, "%s, ignored ## already checking..\n", __func__);
+		return;
+	}
+	if (info->power_state == STATE_POWEROFF) {
+		tsp_debug_err(true, &info->client->dev, "%s, ignored ## IC is power off\n", __func__);
+		return;
+	}
+
+	info->tsp_dump_lock = 1;
+	tsp_debug_err(true, &info->client->dev, "%s, start ##\n", __func__);
+	fts_ts_run_rawdata_all((void *)info);
+	msleep(100);
+
+	tsp_debug_err(true, &info->client->dev, "%s, done ##\n", __func__);
+	info->tsp_dump_lock = 0;
+
+}
+
+static void dump_tsp_log(void)
+{
+	printk(KERN_ERR "fts_ts %s: start \n", __func__);
+
+#if defined(CONFIG_SAMSUNG_LPM_MODE)
+	if (poweroff_charging) {
+		printk(KERN_ERR "fts_ts %s, ignored ## lpm charging Mode!!\n", __func__);
+		return;
+	}
+#endif
+	if (p_ghost_check == NULL) {
+		printk(KERN_ERR "fts_ts %s, ignored ## tsp probe fail!!\n", __func__);
+		return;
+	}
+	schedule_delayed_work(p_ghost_check, msecs_to_jiffies(100));
 }
 #endif
 
@@ -697,35 +1145,63 @@ void fts_release_all_key(struct fts_ts_info *info)
 
 static int fts_init(struct fts_ts_info *info)
 {
-	unsigned char val[16];
+	unsigned char val[16] = {0, };
 	unsigned char regAdd[8];
-	int rc;
+	int ret;
 
 	fts_systemreset(info);
 
-	rc = fts_wait_for_ready(info);
-	if (rc == -FTS_ERROR_EVENT_ID) {
+	ret = fts_wait_for_ready(info);
+	if (ret == -FTS_ERROR_EVENT_ID) {
 		info->fw_version_of_ic = 0;
 		info->config_version_of_ic = 0;
 		info->fw_main_version_of_ic = 0;
-	} else
+	}/* else {
 		fts_get_version_info(info);
+	}*/
 
-	rc = fts_read_chip_id(info);
-	if (rc < 0)
-		return 1;
+	info->stm_ver = fts_check_stm_ver(info);
+	ret = fts_read_chip_id(info);
+	if (ret < 0) {
+		return ret;
+	}
 
-	rc  = fts_fw_update_on_probe(info);
-	if (rc  < 0)
-		tsp_debug_err(true, &info->client->dev, "%s: Failed to firmware update\n",
+	fts_get_version_info(info);
+
+	ret = fts_fw_update_on_probe(info);
+	if (ret < 0)
+		dev_err(info->dev, "%s: Failed to firmware update\n",
 				__func__);
 
-	fts_command(info, SLEEPOUT);
+	if (info->stm_ver != STM_VER7)
+		fts_command(info, SLEEPOUT);
 
+#ifdef SEC_TSP_FACTORY_TEST
+	ret = fts_get_channel_info(info);
+	if (ret < 0) {
+		dev_info(&info->client->dev, "%s: failed get channel info\n", __func__);
+		return ret;
+	}
+
+	if (info->SenseChannelLength && info->ForceChannelLength) {
+		info->pFrame =
+		    kzalloc(info->SenseChannelLength * info->ForceChannelLength * 2,
+			    GFP_KERNEL);
+
+		info->cx_data = kzalloc(info->SenseChannelLength * info->ForceChannelLength, GFP_KERNEL);
+		if (!info->pFrame || !info->cx_data) {
+			dev_err(&info->client->dev, "%s: cx_data kzalloc Failed\n", __func__);
+			return -ENOMEM;
+		}
+	}
+#endif
+
+	fts_command(info, FLUSHBUFFER);
+	fts_delay(10);
 	fts_command(info, SENSEON);
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey)
+	if (info->dt_data->support_mskey)
 		fts_command(info, FTS_CMD_KEY_SENSE_ON);
 #endif
 
@@ -734,64 +1210,39 @@ static int fts_init(struct fts_ts_info *info)
 #endif
 	/* fts driver set functional feature */
 	info->touch_count = 0;
+#ifdef FTS_SUPPORT_HOVER
 	info->hover_enabled = false;
 	info->hover_ready = false;
+#endif
 	info->flip_enable = false;
 	info->mainscr_disable = false;
 
 	info->deepsleep_mode = false;
 	info->lowpower_mode = false;
 	info->lowpower_flag = 0x00;
-	info->fts_power_state = 0;
+
+	info->power_state = STATE_ACTIVE;
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
 	info->tsp_keystatus = 0x00;
 #endif
 
-#ifdef FTS_SUPPORT_2NDSCREEN
-	if (info->board->support_2ndscreen) {
-		info->SIDE_Flag = 0;
-		info->previous_SIDE_value = 0;
-		info->run_autotune = true;
-	}
-#endif
-
-#ifdef SEC_TSP_FACTORY_TEST
-	rc = fts_get_channel_info(info);
-	if (rc >= 0) {
-		tsp_debug_info(true, &info->client->dev, "FTS Sense(%02d) Force(%02d)\n",
-		       info->SenseChannelLength, info->ForceChannelLength);
-	} else {
-		tsp_debug_info(true, &info->client->dev, "FTS read failed rc = %d\n", rc);
-		tsp_debug_info(true, &info->client->dev, "FTS Initialise Failed\n");
-		return 1;
-	}
-
-	info->pFrame =
-	    kzalloc(info->SenseChannelLength * info->ForceChannelLength * 2,
-		    GFP_KERNEL);
-	if (info->pFrame == NULL) {
-		tsp_debug_info(true, &info->client->dev, "FTS pFrame kzalloc Failed\n");
-		return 1;
-	}
-
-	info->cx_data = kzalloc(info->SenseChannelLength * info->ForceChannelLength, GFP_KERNEL);
-	if (!info->cx_data)
-		tsp_debug_err(true, &info->client->dev, "%s: cx_data kzalloc Failed\n", __func__);
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+	info->SIDE_Flag = 0;
+	info->previous_SIDE_value = 0;
 #endif
 
 	fts_command(info, FORCECALIBRATION);
-	fts_command(info, FLUSHBUFFER);
 
 	fts_interrupt_set(info, INT_ENABLE);
+	fts_irq_enable(info, true);
 
-	memset(val, 0x0, 4);
 	regAdd[0] = READ_STATUS;
-	fts_read_reg(info, regAdd, 1, (unsigned char *)val, 4);
-	tsp_debug_info(true, &info->client->dev, "FTS ReadStatus(0x84) : %02X %02X %02X %02X\n", val[0],
+	ret = fts_read_reg(info, regAdd, 1, (unsigned char *)val, 4);
+	dev_info(&info->client->dev, "FTS ReadStatus(0x84) : %02X %02X %02X %02X\n", val[0],
 	       val[1], val[2], val[3]);
 
-	tsp_debug_info(true, &info->client->dev, "FTS Initialized\n");
+	dev_info(&info->client->dev, "FTS Initialized\n");
 
 	return 0;
 }
@@ -799,10 +1250,38 @@ static int fts_init(struct fts_ts_info *info)
 static void fts_debug_msg_event_handler(struct fts_ts_info *info,
 				      unsigned char data[])
 {
-	tsp_debug_dbg(true, &info->client->dev,
-	       "%s: %02X %02X %02X %02X %02X %02X %02X %02X\n", __func__,
-	       data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
+	dev_err(&info->client->dev,
+			"%s: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+			__func__, data[0], data[1], data[2], data[3],
+			data[4], data[5], data[6], data[7]);
 }
+
+#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+static char location_detect(struct fts_ts_info *info, int coord, bool flag)
+{
+	/* flag ? coord = Y : coord = X */
+	int x_devide = info->dt_data->max_x / 3;
+	int y_devide = info->dt_data->max_y / 3;
+
+	if (flag) {
+		if (coord < y_devide)
+			return 'H';
+		else if (coord < y_devide * 2)
+			return 'M';
+		else
+			return 'L';
+	} else {
+		if (coord < x_devide)
+			return '0';
+		else if (coord < x_devide * 2)
+			return '1';
+		else
+			return '2';
+	}
+
+	return 'E';
+}
+#endif
 
 static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 					      unsigned char data[],
@@ -814,34 +1293,38 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 	unsigned char LastLeftEvent = 0;
 	int x = 0, y = 0, z = 0;
 	int bw = 0, bh = 0, palm = 0, sumsize = 0;
-#if defined (CONFIG_INPUT_BOOSTER)
-	bool booster_restart = false;
-#endif
-#ifdef FTS_SUPPORT_2NDSCREEN
+	unsigned short string_addr;
+	unsigned char string;
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
 	u8 currentSideFlag = 0;
+#endif
+#ifdef FTS_USE_SIDE_SCROLL_FLAG
+	int scroll_flag = 0;
+	int scroll_thr = 0;
 #endif
 #ifdef FTS_SUPPORT_SIDE_GESTURE
 	static int longpress_release[FINGER_MAX] = {0, };
 #endif
-#ifdef FTS_SUPPORT_STRINGLIB
-	unsigned short string_addr;
-	unsigned char string_data[10] = {0, };
-	unsigned char string_clear = 0;
+	unsigned char tool_type = MT_TOOL_FINGER;
+#ifdef USE_STYLUS_PEN
+	bool finger_type = MT_TOOL_FINGER;
 #endif
 
 	for (EventNum = 0; EventNum < LeftEvent; EventNum++) {
 #if 0
-		tsp_debug_info(true, &info->client->dev, "%d %2x %2x %2x %2x %2x %2x %2x %2x\n",
+		dev_info(&info->client->dev, "%d %2x %2x %2x %2x %2x %2x %2x %2x\n",
 			EventNum,
 			data[EventNum * FTS_EVENT_SIZE],
-			data[EventNum * FTS_EVENT_SIZE+1],
-			data[EventNum * FTS_EVENT_SIZE+2],
-			data[EventNum * FTS_EVENT_SIZE+3],
-			data[EventNum * FTS_EVENT_SIZE+4],
-			data[EventNum * FTS_EVENT_SIZE+5],
-			data[EventNum * FTS_EVENT_SIZE+6],
-			data[EventNum * FTS_EVENT_SIZE+7]);
+			data[EventNum * FTS_EVENT_SIZE + 1],
+			data[EventNum * FTS_EVENT_SIZE + 2],
+			data[EventNum * FTS_EVENT_SIZE + 3],
+			data[EventNum * FTS_EVENT_SIZE + 4],
+			data[EventNum * FTS_EVENT_SIZE + 5],
+			data[EventNum * FTS_EVENT_SIZE + 6],
+			data[EventNum * FTS_EVENT_SIZE + 7]);
 #endif
+
+
 		EventID = data[EventNum * FTS_EVENT_SIZE] & 0x0F;
 
 		if ((EventID >= 3) && (EventID <= 5)) {
@@ -858,14 +1341,33 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			EventID = data[EventNum * FTS_EVENT_SIZE] & 0xFF;
 			status = data[1 + EventNum * FTS_EVENT_SIZE] & 0xFF;
 		}
+#ifdef FTS_SUPPORT_HOVER
+		if (info->hover_present &&
+				(EventID != EVENTID_HOVER_ENTER_POINTER) &&
+				(EventID != EVENTID_HOVER_MOTION_POINTER)) {
+
+			dev_info(&info->client->dev,
+				"[HR] tID:%d Ver[%02X%04X%01X%01X%01X] --\n",
+				TouchID,
+				info->panel_revision, info->fw_main_version_of_ic,
+				info->flip_enable, info->glove_enabled, info->mainscr_disable);
+			info->finger[TouchID].mcount = 0;
+
+			input_mt_slot(info->input_dev, 0);
+			input_mt_report_slot_state(info->input_dev,
+						   MT_TOOL_FINGER, 0);
+			info->hover_present = false;
+		}
+#endif
 
 		switch (EventID) {
 		case EVENTID_NO_EVENT:
+			dev_info(&info->client->dev, "%s: No Event\n", __func__);
 			break;
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
 		case EVENTID_MSKEY:
-			if (info->board->support_mskey) {
+			if (info->dt_data->support_mskey) {
 				unsigned char input_keys;
 
 				input_keys = data[2 + EventNum * FTS_EVENT_SIZE];
@@ -875,8 +1377,11 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 				else {
 					unsigned char change_keys;
 					unsigned char key_state;
-					unsigned char key_recent = TOUCH_KEY_RECENT;
-					unsigned char key_back = TOUCH_KEY_BACK;
+					unsigned char key_recent;
+					unsigned char key_back;
+
+					key_recent = TOUCH_KEY_RECENT;
+					key_back = TOUCH_KEY_BACK;
 
 					change_keys = input_keys ^ info->tsp_keystatus;
 
@@ -893,12 +1398,11 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 						input_report_key(info->input_dev, KEY_BACK, key_state != 0 ? KEY_PRESS : KEY_RELEASE);
 						tsp_debug_info(true, &info->client->dev, "[TSP_KEY] BACK %s\n" , key_state != 0 ? "P" : "R");
 					}
-
-#if defined (CONFIG_INPUT_BOOSTER)
-					if ((change_keys & key_recent)||(change_keys & key_back)) {
-						input_booster_send_event(BOOSTER_DEVICE_TOUCHKEY, (key_state != 0 ? KEY_PRESS : KEY_RELEASE));
-					}
+#ifdef TKEY_BOOSTER
+					if (info->tkey_booster && info->tkey_booster->dvfs_set)
+						info->tkey_booster->dvfs_set(info->tkey_booster, !!key_state);
 #endif
+
 					input_sync(info->input_dev);
 				}
 
@@ -906,15 +1410,18 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			}
 			break;
 #endif
-#ifdef FTS_SUPPORT_SIDE_GESTURE
 		case EVENTID_SIDE_TOUCH:
-		case EVENTID_SIDE_TOUCH_DEBUG:
-			if (info->board->support_sidegesture) {
-				unsigned char event_type = data[1 + EventNum * FTS_EVENT_SIZE];
+		case EVENTID_SIDE_TOUCH_DEBUG: {
+#if defined(FTS_SUPPORT_SIDE_GESTURE) || defined(FTS_SUPPORT_ESD_CHECK)
+			unsigned char event_type = data[1 + EventNum * FTS_EVENT_SIZE];
+#endif
+#ifdef FTS_SUPPORT_SIDE_GESTURE
+			if ((event_type == FTS_SIDEGESTURE_EVENT_SINGLE_STROKE) ||
+				(event_type == FTS_SIDEGESTURE_EVENT_DOUBLE_STROKE) ||
+				(event_type == FTS_SIDEGESTURE_EVENT_INNER_STROKE)) {
 
-				if ((event_type == FTS_SIDEGESTURE_EVENT_SINGLE_STROKE) ||
-					(event_type == FTS_SIDEGESTURE_EVENT_DOUBLE_STROKE) ||
-					(event_type == FTS_SIDEGESTURE_EVENT_INNER_STROKE)) {
+				if (info->dt_data->support_sidegesture) {
+
 					int direction, distance;
 					direction = data[2 + EventNum * FTS_EVENT_SIZE];
 					distance = *(int *)&data[3 + EventNum * FTS_EVENT_SIZE];
@@ -925,76 +1432,70 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 						input_report_key(info->input_dev, KEY_SIDE_GESTURE_LEFT, 1);
 
 					tsp_debug_info(true, &info->client->dev,
-					"%s: [Gesture] %02X %02X %02X %02X %02X %02X %02X %02X\n",
-					__func__, data[0], data[1], data[2], data[3],
-					data[4], data[5], data[6], data[7]);
+						"%s: [Gesture] %02X %02X %02X %02X %02X %02X %02X %02X\n",
+						__func__, data[0], data[1], data[2], data[3],
+						data[4], data[5], data[6], data[7]);
 
 					input_sync(info->input_dev);
-					fts_delay(1);
+					usleep_range(1000, 1000);
 
 					if (direction)
 						input_report_key(info->input_dev, KEY_SIDE_GESTURE_RIGHT, 0);
 					else
 						input_report_key(info->input_dev, KEY_SIDE_GESTURE_LEFT, 0);
-				}
-				else if (event_type == FTS_SIDETOUCH_EVENT_LONG_PRESS) {
-					 int sideLongPressfingerID = 0;
-					 sideLongPressfingerID = data[2 + EventNum * FTS_EVENT_SIZE];
 
-					 //Todo : event processing
-					longpress_release[sideLongPressfingerID - 1] = 1;
-
-					tsp_debug_info(true, &info->client->dev,
-						"%s: [Side Long Press] id:%d %02X %02X %02X %02X %02X %02X %02X %02X\n",
-						__func__, sideLongPressfingerID, data[0], data[1], data[2], data[3],
-						data[4], data[5], data[6], data[7]);
-				}
-				else if(event_type == FTS_SIDETOUCH_EVENT_REBOOT_BY_ESD) {
-					tsp_debug_info(true, &info->client->dev,
-						"%s: ESD detected!  %02X %02X %02X %02X %02X %02X %02X %02X\n",
-						__func__, data[0], data[1], data[2], data[3],
-						data[4], data[5], data[6], data[7]);
-
-					schedule_delayed_work(&info->reset_work, msecs_to_jiffies(10));
-				}
-				else {
-					fts_debug_msg_event_handler(info,
-							  &data[EventNum *
-								FTS_EVENT_SIZE]);
-				}
-			} else {
-				unsigned char event_type = data[1 + EventNum * FTS_EVENT_SIZE];
-				if(event_type == FTS_SIDETOUCH_EVENT_REBOOT_BY_ESD) {
-					tsp_debug_info(true, &info->client->dev,
-						"%s: ESD detected!	%02X %02X %02X %02X %02X %02X %02X %02X\n",
-						__func__, data[0], data[1], data[2], data[3],
-						data[4], data[5], data[6], data[7]);
-
-					schedule_delayed_work(&info->reset_work, msecs_to_jiffies(10));
-				}
-				else {
-					fts_debug_msg_event_handler(info,
-							  &data[EventNum *
-								FTS_EVENT_SIZE]);
+				} else {
+					fts_debug_msg_event_handler(info, &data[EventNum * FTS_EVENT_SIZE]);
 				}
 
 			}
-			break;
-#endif
-		case EVENTID_ERROR:
-			if (data[1 + EventNum * FTS_EVENT_SIZE] == 0x08) { // Get Auto tune fail event
-				if (data[2 + EventNum * FTS_EVENT_SIZE] == 0x00) {
-					tsp_debug_info(true, &info->client->dev, "[FTS] Fail Mutual Auto tune\n");
-				}
-				else if (data[2 + EventNum * FTS_EVENT_SIZE] == 0x01) {
-					tsp_debug_info(true, &info->client->dev, "[FTS] Fail Self Auto tune\n");
-				}
-			} else if (data[1 + EventNum * FTS_EVENT_SIZE] == 0x09) // Get detect SYNC fail event
-				tsp_debug_info(true, &info->client->dev, "[FTS] Fail detect SYNC\n");
-			break;
+			else if (event_type == FTS_SIDETOUCH_EVENT_LONG_PRESS) {
+				int sideLongPressfingerID = 0;
+				sideLongPressfingerID = data[2 + EventNum * FTS_EVENT_SIZE];
 
+				//Todo : event processing
+				longpress_release[sideLongPressfingerID - 1] = 1;
+
+				tsp_debug_info(true, &info->client->dev,
+					"%s: [Side Long Press]id:%d %02X %02X %02X %02X %02X %02X %02X %02X\n",
+					__func__, sideLongPressfingerID, data[0], data[1],
+					data[2], data[3], data[4], data[5], data[6], data[7]);
+			}
+			else
+#endif
+			{
+#ifdef FTS_SUPPORT_ESD_CHECK
+			if (event_type == FTS_SIDETOUCH_EVENT_REBOOT_BY_ESD) {
+				tsp_debug_info(true, &info->client->dev,
+				"%s: [ESD error] %02X %02X %02X %02X %02X %02X %02X %02X\n",
+				__func__, data[0], data[1], data[2], data[3],
+					data[4], data[5], data[6], data[7]);
+
+				schedule_delayed_work(&info->reset_work, msecs_to_jiffies(10));
+			}
+			else
+#endif
+				fts_debug_msg_event_handler(info, &data[EventNum * FTS_EVENT_SIZE]);
+			}
+			break;}
+		case EVENTID_ERROR:
+			 /* Get Auto tune fail event */
+			if (data[1 + EventNum * FTS_EVENT_SIZE] == 0x08) {
+				if (data[2 + EventNum * FTS_EVENT_SIZE] == 0x00)
+					dev_info(&info->client->dev, "[FTS] Fail Mutual Auto tune\n");
+				else if (data[2 + EventNum * FTS_EVENT_SIZE] == 0x01)
+					dev_info(&info->client->dev, "[FTS] Fail Self Auto tune\n");
+
+			} else if (data[1 + EventNum * FTS_EVENT_SIZE] == 0x09) {
+				tsp_debug_info(true, &info->client->dev, "[FTS] Fail detect SYNC\n");
+			}
+
+			break;
+#ifdef FTS_SUPPORT_HOVER
 		case EVENTID_HOVER_ENTER_POINTER:
 		case EVENTID_HOVER_MOTION_POINTER:
+			info->hover_present = true;
+
 			x = ((data[4 + EventNum * FTS_EVENT_SIZE] & 0xF0) >> 4)
 			    | ((data[2 + EventNum * FTS_EVENT_SIZE]) << 4);
 			y = ((data[4 + EventNum * FTS_EVENT_SIZE] & 0x0F) |
@@ -1008,54 +1509,48 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 
 			input_report_key(info->input_dev, BTN_TOUCH, 0);
 			input_report_key(info->input_dev, BTN_TOOL_FINGER, 1);
-#ifdef FTS_SUPPORT_2NDSCREEN
-			if (info->board->support_2ndscreen) {
-				info->SIDE_Flag = 0;
-				info->previous_SIDE_value = 0;
-				input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, 0);
-			}
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+			info->SIDE_Flag = 0;
+			info->previous_SIDE_value = 0;
+			input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, 0);
 #endif
-
 			input_report_abs(info->input_dev, ABS_MT_POSITION_X, x);
 			input_report_abs(info->input_dev, ABS_MT_POSITION_Y, y);
 			input_report_abs(info->input_dev, ABS_MT_DISTANCE, 255 - z);
 			break;
 
 		case EVENTID_HOVER_LEAVE_POINTER:
+			info->hover_present = false;
+
 			input_mt_slot(info->input_dev, 0);
 			input_mt_report_slot_state(info->input_dev,
 						   MT_TOOL_FINGER, 0);
 			break;
-
+#endif
 		case EVENTID_ENTER_POINTER:
-			if (info->fts_power_state == FTS_POWER_STATE_LOWPOWER)
-				break;
+			if (info->power_state & STATE_LOWPOWER_SUSPEND)
+				continue;
 
 			info->touch_count++;
-#if defined (CONFIG_INPUT_BOOSTER)
-			booster_restart = true;
-#endif
+
 		case EVENTID_MOTION_POINTER:
-			if (info->fts_power_state == FTS_POWER_STATE_LOWPOWER) {
-				tsp_debug_info(true, &info->client->dev, "%s: low power mode\n", __func__);
+			if (info->power_state & STATE_LOWPOWER_SUSPEND) {
+				dev_err(&info->client->dev, "%s %d: low power mode\n", __func__, __LINE__);
 				fts_release_all_finger(info);
-				break;
+				continue;
 			}
 
 			if (info->touch_count == 0) {
-				tsp_debug_info(true, &info->client->dev, "%s: count 0\n", __func__);
-				fts_release_all_finger(info);
-				break;
+				dev_err(&info->client->dev, "%s %d: count 0, set as Enter_pointer\n", __func__, __LINE__);
+				EventID = EVENTID_ENTER_POINTER;
+				info->touch_count++;
 			}
 
 			if ((EventID == EVENTID_MOTION_POINTER) &&
 				(info->finger[TouchID].state == EVENTID_LEAVE_POINTER)) {
-				tsp_debug_info(true, &info->client->dev, "%s: state leave but point is moved.\n", __func__);
-				break;
+				dev_err(&info->client->dev, "%s: state leave but point is moved.\n", __func__);
+				continue;
 			}
-
-			if (info->fts_power_state == FTS_POWER_STATE_LOWPOWER)
-				break;
 
 			x = data[1 + EventNum * FTS_EVENT_SIZE] +
 			    ((data[2 + EventNum * FTS_EVENT_SIZE] &
@@ -1066,27 +1561,31 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 						  FTS_EVENT_SIZE] << 4);
 			bw = data[4 + EventNum * FTS_EVENT_SIZE];
 			bh = data[5 + EventNum * FTS_EVENT_SIZE];
-			palm =
-			    (data[6 + EventNum * FTS_EVENT_SIZE] >> 7) & 0x01;
 
+			palm = (data[6 + EventNum * FTS_EVENT_SIZE] >> 7) & 0x01;
 			sumsize = (data[6 + EventNum * FTS_EVENT_SIZE] & 0x7f) << 1;
 
-			if ((info->touch_count == 1) && (sumsize < 40))
-				sumsize = 39;
-#ifdef FTS_SUPPORT_2NDSCREEN
-			if (info->board->support_2ndscreen) {
-				currentSideFlag = (data[7 + EventNum * FTS_EVENT_SIZE] >> 7) & 0x01;
-				z = data[7 + EventNum * FTS_EVENT_SIZE] & 0x7f;
-			} else
-				z = data[7 + EventNum * FTS_EVENT_SIZE];
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+			currentSideFlag = (data[7 + EventNum * FTS_EVENT_SIZE] >> 7) & 0x01;
+			z = data[7 + EventNum * FTS_EVENT_SIZE] & 0x7f;
 #else
 			z = data[7 + EventNum * FTS_EVENT_SIZE];
 #endif
-			input_mt_slot(info->input_dev, TouchID);
-			input_mt_report_slot_state(info->input_dev,
-						   MT_TOOL_FINGER,
-						   1 + (palm << 1));
 
+			input_mt_slot(info->input_dev, TouchID);
+
+#ifdef USE_STYLUS_PEN
+			/* TODO : need to read finger type in TSP IC. arrange specific register for this. */
+			if (info->use_stylus)
+				tool_type = finger_type;
+
+			input_mt_report_slot_state(info->input_dev,
+							tool_type, 1);
+#else
+			input_mt_report_slot_state(info->input_dev,
+							tool_type,
+							1 + (palm << 1));
+#endif
 			input_report_key(info->input_dev, BTN_TOUCH, 1);
 			input_report_key(info->input_dev,
 					 BTN_TOOL_FINGER, 1);
@@ -1096,19 +1595,21 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 					 ABS_MT_POSITION_Y, y);
 
 			input_report_abs(info->input_dev,
-					 ABS_MT_TOUCH_MAJOR, max(bw,
-								 bh));
-
+					 ABS_MT_TOUCH_MAJOR, max(bw, bh));
 			input_report_abs(info->input_dev,
-					 ABS_MT_TOUCH_MINOR, min(bw,
-								 bh));
-#ifdef FTS_SUPPORT_SEC_SWIPE
+					 ABS_MT_TOUCH_MINOR, min(bw, bh));
 			input_report_abs(info->input_dev, ABS_MT_PALM,
 					 palm);
-#endif
 #if defined(FTS_SUPPORT_SIDE_GESTURE)
-			if (info->board->support_sidegesture)
-				input_report_abs(info->input_dev, ABS_MT_GRIP, 0);
+			input_report_abs(info->input_dev, ABS_MT_GRIP, 0);
+#endif
+#if defined(CONFIG_SEC_FACTORY)
+			if (z == 0)
+				input_report_abs(info->input_dev,
+						 ABS_MT_PRESSURE, 0x01);
+			else
+				input_report_abs(info->input_dev,
+						 ABS_MT_PRESSURE, z & 0xFF);
 #endif
 
 			info->finger[TouchID].lx = x;
@@ -1117,13 +1618,13 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			break;
 
 		case EVENTID_LEAVE_POINTER:
-			if (info->fts_power_state == FTS_POWER_STATE_LOWPOWER)
-				break;
+			if (info->power_state & STATE_LOWPOWER_SUSPEND)
+				continue;
 
 			if (info->touch_count <= 0) {
-				tsp_debug_info(true, &info->client->dev, "%s: count 0\n", __func__);
+				dev_err(&info->client->dev, "%s %d: count 0\n", __func__, __LINE__);
 				fts_release_all_finger(info);
-				break;
+				continue;
 			}
 
 			info->touch_count--;
@@ -1131,19 +1632,15 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			input_mt_slot(info->input_dev, TouchID);
 
 #if defined(FTS_SUPPORT_SIDE_GESTURE)
-			if (info->board->support_sidegesture) {
-				if (longpress_release[TouchID] == 1) {
-					input_report_abs(info->input_dev, ABS_MT_GRIP, 1);
-					tsp_debug_info(true, &info->client->dev,
-						"[FTS] GRIP [%d] %s\n", TouchID,
-						longpress_release[TouchID] ? "LONGPRESS" : "RELEASE");
-					longpress_release[TouchID] = 0;
+			if (longpress_release[TouchID] == 1) {
+				input_report_abs(info->input_dev, ABS_MT_GRIP, 1);
+				dev_info(&info->client->dev, "[FTS] GRIP [%d] %s\n",
+						TouchID, longpress_release[TouchID] ? "LONGPRESS" : "RELEASE");
+				longpress_release[TouchID] = 0;
 
-					input_sync(info->input_dev);
-				}
+				input_sync(info->input_dev);
 			}
 #endif
-
 			input_mt_report_slot_state(info->input_dev,
 						   MT_TOOL_FINGER, 0);
 
@@ -1151,21 +1648,18 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 				/* Clear BTN_TOUCH when All touch are released  */
 				input_report_key(info->input_dev, BTN_TOUCH, 0);
 				input_report_key(info->input_dev, BTN_TOOL_FINGER, 0);
-#ifdef FTS_SUPPORT_SIDE_SCROLL
-				if (info->board->support_sidescroll) {
-					input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 0);
-					input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 0);
-				}
+
+#ifdef FTS_USE_SIDE_SCROLL_FLAG
+				input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 0);
+				input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 0);
 #endif
-#ifdef FTS_SUPPORT_2NDSCREEN
-				if (info->board->support_2ndscreen) {
-					info->SIDE_Flag = 0;
-					info->previous_SIDE_value = 0;
-					input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, 0);
-				}
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+				info->SIDE_Flag = 0;
+				info->previous_SIDE_value = 0;
+				input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, 0);
 #endif
 #ifdef FTS_SUPPORT_SIDE_GESTURE
-				if (info->board->support_sidegesture) {
+				if (info->dt_data->support_sidegesture) {
 					input_report_key(info->input_dev, KEY_SIDE_GESTURE, 0);
 					input_report_key(info->input_dev, KEY_SIDE_GESTURE_RIGHT, 0);
 					input_report_key(info->input_dev, KEY_SIDE_GESTURE_LEFT, 0);
@@ -1184,26 +1678,37 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 
 				tm = info->touch_mode;
 				input_report_switch(info->input_dev, SW_GLOVE, tm);
+
+				dev_info(&info->client->dev, "[FTS] GLOVE %s\n", tm ? "PRESS" : "RELEASE");
 #endif
 			} else if (status == STATUS_EVENT_RAW_DATA_READY) {
 				unsigned char regAdd[4] = {0xB0, 0x01, 0x29, 0x01};
 				fts_write_reg(info, &regAdd[0], 4);
-
+#ifdef FTS_SUPPORT_HOVER
 				info->hover_ready = true;
+#endif
 
-				tsp_debug_info(true, &info->client->dev, "[FTS] Received the Hover Raw Data Ready Event\n");
+				dev_info(&info->client->dev,
+						"[FTS] Received the Hover Raw Data Ready Event\n");
 			} else if (status == STATUS_EVENT_FORCE_CAL_MUTUAL) {
-				tsp_debug_dbg(true, &info->client->dev, "[FTS] Received Force Calibration Mutual only Event\n");
+				tsp_debug_err(true, &info->client->dev,
+						"[FTS] Received Force Calibration Mutual only Event\n");
 			} else if (status == STATUS_EVENT_FORCE_CAL_SELF) {
-				tsp_debug_dbg(true, &info->client->dev, "[FTS] Received Force Calibration Self only Event\n");
+				tsp_debug_err(true, &info->client->dev,
+						"[FTS] Received Force Calibration Self only Event\n");
 			} else if (status == STATUS_EVENT_WATERMODE_ON) {
-				tsp_debug_info(true, &info->client->dev, "[FTS] Received Water Mode On Event\n");
+				tsp_debug_err(true, &info->client->dev,
+						"[FTS] Received Water Mode On Event\n");
 			} else if (status == STATUS_EVENT_WATERMODE_OFF) {
-				tsp_debug_info(true, &info->client->dev, "[FTS] Received Water Mode Off Event\n");
+				tsp_debug_err(true, &info->client->dev,
+						"[FTS] Received Water Mode Off Event\n");
 			} else if (status == STATUS_EVENT_MUTUAL_CAL_FRAME_CHECK) {
-				tsp_debug_info(true, &info->client->dev, "[FTS] Received Mutual Calib Frame Check Event\n");
+				tsp_debug_err(true, &info->client->dev,
+						"[FTS] Received Mutual Calib Frame Check Event\n");
 			} else if (status == STATUS_EVENT_SELF_CAL_FRAME_CHECK) {
-				tsp_debug_info(true, &info->client->dev, "[FTS] Received Self Calib Frame Check Event\n");
+				tsp_debug_err(true, &info->client->dev,
+						"[FTS] Received Self Calib Frame Check Event\n");
+
 			} else {
 				fts_debug_msg_event_handler(info,
 						  &data[EventNum *
@@ -1213,49 +1718,52 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 
 #ifdef SEC_TSP_FACTORY_TEST
 		case EVENTID_RESULT_READ_REGISTER:
-			procedure_cmd_event(info, &data[EventNum * FTS_EVENT_SIZE]);
+			fts_debug_msg_event_handler(info, &data[EventNum * FTS_EVENT_SIZE]);
 			break;
 #endif
 
-#ifdef FTS_SUPPORT_SIDE_SCROLL
-		case EVENTID_SIDE_SCROLL:
-			if (info->board->support_sidescroll) {
-				int scroll_flag = data[3 + EventNum * FTS_EVENT_SIZE];
-				int scroll_thr	= data[6 + EventNum * FTS_EVENT_SIZE];
-				tsp_debug_info(true, &info->client->dev,"[TB] side scroll flag: event: %02X, thr: %02X\n", scroll_flag, scroll_thr);
 
-				 // TODO : Report function call this area
+#ifdef FTS_USE_SIDE_SCROLL_FLAG
+		case EVENTID_SIDE_SCROLL_FLAG:
+			scroll_flag = data[3 + EventNum * FTS_EVENT_SIZE];
+			scroll_thr  = data[6 + EventNum * FTS_EVENT_SIZE];
+			dev_info(&info->client->dev,
+					"[TB] side scroll flag: event: %02X, thr: %02X\n",
+					scroll_flag, scroll_thr);
 
-				if (scroll_flag == 1) {
-					input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 1);
-					input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 0);
-					input_sync(info->input_dev);
-				} else if (scroll_flag == 2) {
-					input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 0);
-					input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 1);
-					input_sync(info->input_dev);
-				}
+             // TODO : Report function call this area
+
+			if (scroll_flag == 1) {
+				input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 1);
+				input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 0);
+				input_sync(info->input_dev);
+
+			} else if (scroll_flag == 2) {
+				input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 0);
+				input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 1);
+				input_sync(info->input_dev);
+
 			}
 			break;
 #endif
-#ifdef FTS_SUPPORT_STRINGLIB
+
 		case EVENTID_FROM_STRING:
-			string_addr = FTS_CMD_STRING_ACCESS;
-			fts_read_from_string(info, &string_addr, string_data, 6);
-			tsp_debug_info(true, &info->client->dev,
-					"%s: [String] %02X %02X %02X %02X %02X %02X %02X %02X || %04X: %02X, %02X\n",
+			string_addr = FTS_CMD_STRING_ACCESS + 1;
+			fts_read_from_string(info, &string_addr, &string, sizeof(string));
+
+			dev_info(&info->client->dev,
+					"%s: [String] %02X %02X %02X %02X %02X %02X %02X %02X || %04X: %02X\n",
 					__func__, data[0], data[1], data[2], data[3],
 					data[4], data[5], data[6], data[7],
-					string_addr, string_data[0], string_data[1]);
+					string_addr, string);
 
-			switch(string_data[1]) {
-			case FTS_STRING_EVENT_REAR_CAM:
-				tsp_debug_info(true, &info->client->dev, "%s: REAR_CAM\n", __func__);
+			switch (string) {
+			case FTS_STRING_EVENT_AOD_TRIGGER:
+				tsp_debug_info(true, &info->client->dev, "%s: AOD[%X]\n", __func__, string);
+				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
+				info->scrub_id = (string << 3) & 0xFF;
 				break;
-			case FTS_STRING_EVENT_FRONT_CAM:
-				tsp_debug_info(true, &info->client->dev, "%s: FRONT_CAM\n", __func__);
-				break;
-			case FTS_STRING_EVENT_WATCH_STATUS:
+		/*	case FTS_STRING_EVENT_WATCH_STATUS:
 			case FTS_STRING_EVENT_FAST_ACCESS:
 			case FTS_STRING_EVENT_DIRECT_INDICATOR:
 				tsp_debug_info(true, &info->client->dev, "%s: SCRUB[%X]\n", __func__, string_data[1]);
@@ -1263,106 +1771,111 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 				info->scrub_id = (string_data[1] >> 2) & 0x3;
 				info->scrub_x = string_data[2] | (string_data[3] << 8);
 				info->scrub_y = string_data[4] | (string_data[5] << 8);
-				break;
+				break;*/
 			case FTS_STRING_EVENT_SPAY:
 			case FTS_STRING_EVENT_SPAY1:
 			case FTS_STRING_EVENT_SPAY2:
-				dev_info(&info->client->dev, "%s: SPAY[%X]\n", __func__, string_data[1]);
+				tsp_debug_info(true, &info->client->dev, "%s: SPAY[%X]\n", __func__, string);
 				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
-				info->scrub_id = (string_data[1] >> 2) & 0xF;
+				info->scrub_id = (string >> 2) & 0xF;
 				break;
+		/*	case FTS_STRING_EVENT_EDGE_SWIPE_RIGHT:
+			case FTS_STRING_EVENT_EDGE_SWIPE_LEFT:
+				tsp_debug_info(true, &info->client->dev, "%s: Edge swipe[%X]\n", __func__, string_data[1]);
+				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
+				info->scrub_id = (string_data[1] >> 2) & 0xFF;
+				break;*/
 			default:
-				tsp_debug_info(true, &info->client->dev, "%s: no event:%X\n", __func__, string_data[1]);
+				tsp_debug_info(true, &info->client->dev, "%s: no event:%X\n", __func__, string);
 				break;
 			}
 
 			input_sync(info->input_dev);
 
-			if (!info->debug_string) {
-				/* request by display lab, buf clear */
-				string_clear |= string_data[1];
-
-				string_addr = FTS_CMD_STRING_ACCESS + 1;
-				string_data[1] &= ~(string_clear);
-
-				tsp_debug_info(true, &info->client->dev,
-						"%s: clear bit : string_data[1]: %X, string_clear: %X\n",
-						__func__, string_data[1], string_clear);
-
-				fts_write_to_string(info, &string_addr, &string_data[1], 1);
-			} else {
-				tsp_debug_info(true, &info->client->dev,
-						"%s: do not clear string_bit\n",
-						__func__);
-			}
-
 			input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 0);
 
 			break;
-#endif
 
 		default:
-			fts_debug_msg_event_handler(info,
-						  &data[EventNum *
-							FTS_EVENT_SIZE]);
+			fts_debug_msg_event_handler(info, &data[EventNum * FTS_EVENT_SIZE]);
 			continue;
 		}
-#ifdef FTS_SUPPORT_2NDSCREEN
-		if (info->board->support_2ndscreen) {
-			if (currentSideFlag != info->previous_SIDE_value) {
-				tsp_debug_info(true, &info->client->dev,"[TB] 2nd screen flag was changed,	old:%d c:%d f:%d\n", info->previous_SIDE_value, currentSideFlag, info->SIDE_Flag);
-				info->SIDE_Flag = currentSideFlag;
-				// TODO : Report function call this area
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+		if (currentSideFlag != info->previous_SIDE_value) {
 
-				input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, !(!(info->SIDE_Flag)) );
-			}
-			info->previous_SIDE_value = currentSideFlag;
+			dev_info(&info->client->dev, "[TB] 2nd screen flag was changed, old:%d c:%d f:%d\n",
+					info->previous_SIDE_value, currentSideFlag, info->SIDE_Flag);
+			info->SIDE_Flag = currentSideFlag;
+			// TODO : Report function call this area
+
+			input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, !(!(info->SIDE_Flag)));
 		}
+		info->previous_SIDE_value = currentSideFlag;
 #endif
 
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 		if (EventID == EVENTID_ENTER_POINTER)
-			tsp_debug_info(true, &info->client->dev,
+			dev_err(&info->client->dev,
 				"[P] tID:%d x:%d y:%d w:%d h:%d z:%d s:%d p:%d tc:%d tm:%d\n",
 				TouchID, x, y, bw, bh, z, sumsize, palm, info->touch_count, info->touch_mode);
+#ifdef FTS_SUPPORT_HOVER
 		else if (EventID == EVENTID_HOVER_ENTER_POINTER)
-			tsp_debug_dbg(true, &info->client->dev,
+			dev_err(&info->client->dev,
 				"[HP] tID:%d x:%d y:%d z:%d\n",
 				TouchID, x, y, z);
-#else
+#endif
+		else if (EventID == EVENTID_LEAVE_POINTER) {
+			dev_err(&info->client->dev,
+				"[R] tID:%d mc: %d tc:%d lx:%d ly:%d Ver[%02X%04X%01X%01X%01X] NV[%X|%d]\n",
+				TouchID, info->finger[TouchID].mcount, info->touch_count,
+				info->finger[TouchID].lx, info->finger[TouchID].ly,
+				info->panel_revision, info->fw_main_version_of_ic,
+				info->flip_enable, info->glove_enabled, info->mainscr_disable,
+				info->test_result.data[0], info->pat);
+			info->finger[TouchID].mcount = 0;
+		}
+
+#else	/* defined(CONFIG_SAMSUNG_PRODUCT_SHIP) */
 		if (EventID == EVENTID_ENTER_POINTER)
-			tsp_debug_info(true, &info->client->dev,
-				"[P] tID:%d tc:%d tm:%d\n",
-				TouchID, info->touch_count, info->touch_mode);
+			dev_err(&info->client->dev,
+				"[P] tID:%d loc:%c%c tc:%d tm:%d\n",
+				TouchID,
+				location_detect(info, y, 1), location_detect(info, x, 0),
+				info->touch_count, info->touch_mode);
+#ifdef FTS_SUPPORT_HOVER
 		else if (EventID == EVENTID_HOVER_ENTER_POINTER)
-			tsp_debug_dbg(true, &info->client->dev,
+			dev_err(&info->client->dev,
 				"[HP] tID:%d\n", TouchID);
 #endif
 		else if (EventID == EVENTID_LEAVE_POINTER) {
-#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-			tsp_debug_info(true, &info->client->dev,
-				"[R] tID:%d mc: %d tc:%d lx: %d ly: %d Ver[%01X%04X%01X%01X%01X]\n",
-				TouchID, info->finger[TouchID].mcount, info->touch_count,
-				info->finger[TouchID].lx, info->finger[TouchID].ly,
-				info->tspid_val, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled, info->mainscr_disable);
-#else
-			tsp_debug_info(true, &info->client->dev,
-				"[R] tID:%d mc: %d tc:%d Ver[%01X%04X%01X%01X%01X]\n",
-				TouchID, info->finger[TouchID].mcount, info->touch_count,
-				info->tspid_val, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled, info->mainscr_disable);
-#endif
-			info->finger[TouchID].mcount = 0;
-		} else if (EventID == EVENTID_HOVER_LEAVE_POINTER) {
-			tsp_debug_dbg(true, &info->client->dev,
-				"[HR] tID:%d Ver[%02X%04X%01X%01X]\n",
+			dev_err(&info->client->dev,
+				"[R] tID:%d loc:%c%c mc: %d tc:%d Ver[%02X%04X%01X%01X%01X] NV[%X|%d]\n",
 				TouchID,
+				location_detect(info, info->finger[TouchID].ly, 1),
+				location_detect(info, info->finger[TouchID].lx, 0),
+				info->finger[TouchID].mcount, info->touch_count,
 				info->panel_revision, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled);
+				info->flip_enable, info->glove_enabled, info->mainscr_disable,
+				info->test_result.data[0], info->pat);
 			info->finger[TouchID].mcount = 0;
-		} else if (EventID == EVENTID_MOTION_POINTER)
+		}
+#endif
+#ifdef FTS_SUPPORT_HOVER
+		else if (EventID == EVENTID_HOVER_LEAVE_POINTER) {
+			if (info->hover_present) {
+				dev_info(&info->client->dev,
+					"[HR] tID:%d Ver[%02X%04X%01X%01X] ++\n",
+					TouchID,
+					info->panel_revision, info->fw_main_version_of_ic,
+					info->flip_enable, info->glove_enabled);
+				info->finger[TouchID].mcount = 0;
+				info->hover_present = false;
+			}
+		}
+#endif
+		else if (EventID == EVENTID_MOTION_POINTER) {
 			info->finger[TouchID].mcount++;
+		}
 
 		if ((EventID == EVENTID_ENTER_POINTER) ||
 			(EventID == EVENTID_MOTION_POINTER) ||
@@ -1371,17 +1884,12 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 	}
 
 	input_sync(info->input_dev);
-
-#if defined (CONFIG_INPUT_BOOSTER)
-	if ((EventID == EVENTID_ENTER_POINTER)
-			|| (EventID == EVENTID_LEAVE_POINTER)) {
-		if (booster_restart)
-			input_booster_send_event(BOOSTER_DEVICE_TOUCH, BOOSTER_MODE_ON);
-		if (!info->touch_count)
-			input_booster_send_event(BOOSTER_DEVICE_TOUCH, BOOSTER_MODE_OFF);
-	}
+//TEST
+#ifdef TSP_BOOSTER
+	if (EventID == EVENTID_ENTER_POINTER || EventID == EVENTID_LEAVE_POINTER)
+		if (info->tsp_booster && info->tsp_booster->dvfs_set)
+			info->tsp_booster->dvfs_set(info->tsp_booster, info->touch_count);
 #endif
-
 	return LastLeftEvent;
 }
 
@@ -1394,18 +1902,49 @@ static void fts_ta_cb(struct fts_callbacks *cb, int ta_status)
 	if (ta_status == 0x01 || ta_status == 0x03) {
 		fts_command(info, FTS_CMD_CHARGER_PLUGGED);
 		info->TA_Pluged = true;
-		tsp_debug_info(true, &info->client->dev,
+		dev_info(&info->client->dev,
 			 "%s: device_control : CHARGER CONNECTED, ta_status : %x\n",
 			 __func__, ta_status);
 	} else {
 		fts_command(info, FTS_CMD_CHARGER_UNPLUGGED);
 		info->TA_Pluged = false;
-		tsp_debug_info(true, &info->client->dev,
+		dev_info(&info->client->dev,
 			 "%s: device_control : CHARGER DISCONNECTED, ta_status : %x\n",
 			 __func__, ta_status);
 	}
 }
 #endif
+
+#if defined(CONFIG_SECURE_TOUCH)
+static void fts_secure_touch_notify(struct fts_ts_info *info)
+{
+	dev_err(&info->client->dev, "%s: SECURETOUCH_NOTIFY", __func__);
+	sysfs_notify(&info->input_dev->dev.kobj, NULL, "secure_touch");
+}
+
+static irqreturn_t fts_filter_interrupt(struct fts_ts_info *info)
+{
+/*
+	dev_err(&info->client->dev, "%s: SECURETOUCH_cmpxchg st_pending_irqs=%d",
+							__func__, atomic_read(&info->st_pending_irqs));
+*/
+	if (atomic_read(&info->st_enabled)) {
+		if (atomic_cmpxchg(&info->st_pending_irqs, 0, 1) == 0) {
+			dev_err(&info->client->dev, "%s: SECURETOUCH_cmpxchg", __func__);
+			dev_err(&info->client->dev, "%s: SECURETOUCH_cmpxchg st_pending_irqs=%d",
+								__func__, atomic_read(&info->st_pending_irqs));
+			fts_secure_touch_notify(info);
+		}
+		dev_err(&info->client->dev, "%s: SECURETOUCH_FILTER_INTR", __func__);
+		return IRQ_HANDLED;
+	}
+/*
+	dev_err(&info->client->dev, "%s: SECURETOUCH_FILTER_INTR_irq-none", __func__);
+*/
+	return IRQ_NONE;
+}
+#endif
+
 
 /**
  * fts_interrupt_handler()
@@ -1422,15 +1961,54 @@ static irqreturn_t fts_interrupt_handler(int irq, void *handle)
 	struct fts_ts_info *info = handle;
 	unsigned char regAdd[4] = {0xb6, 0x00, 0x45, READ_ALL_EVENT};
 	unsigned short evtcount = 0;
-#ifdef FTS_SUPPORT_SIDE_GESTURE
-	if ((info->board->support_sidegesture) &&
-		(info->fts_power_state == FTS_POWER_STATE_LOWPOWER)) {
-		pm_wakeup_event(info->input_dev->dev.parent, 1000);
+	int ret;
+
+	if(info->stm_ver == STM_VER7){
+		regAdd[2] = 0x23;
+	}
+
+#if defined(CONFIG_SECURE_TOUCH)
+	if (IRQ_HANDLED == fts_filter_interrupt(info)) {
+#ifdef ST_INT_COMPLETE
+		ret = wait_for_completion_interruptible_timeout((&info->st_interrupt),
+					msecs_to_jiffies(10 * MSEC_PER_SEC));
+		dev_err(&info->client->dev, "%s: SECURETOUCH_IRQ_HANDLED, ret:%d",
+					__func__, ret);
+#else
+		dev_err(&info->client->dev, "%s: SECURETOUCH_IRQ_HANDLED",
+					__func__);
+#endif
+		goto out;
 	}
 #endif
+
 	evtcount = 0;
+
+	if (info->lowpower_mode) {
+		if (info->power_state == STATE_LOWPOWER_SUSPEND) {
+
+			wake_lock_timeout(&info->wakelock, 4 * HZ);
+
+			dev_dbg(&info->client->dev, "%s: PM_SUSPEND\n", __func__);
+
+			ret = wait_for_completion_interruptible_timeout((&info->resume_done),
+						msecs_to_jiffies(1 * MSEC_PER_SEC));
+			dev_dbg(&info->client->dev, "%s: PM_RESUMED, ret:%d\n", __func__, ret);
+
+			if (ret == 0)
+				return IRQ_HANDLED;
+
+		}
+	}
 	fts_read_reg(info, &regAdd[0], 3, (unsigned char *)&evtcount, 2);
-	evtcount = evtcount >> 10;
+
+	if(info->stm_ver == STM_VER7){
+		evtcount = evtcount >> 8;
+		evtcount = evtcount / 2;
+		//evtcount = evtcount >> 9;
+	} else {
+		evtcount = evtcount >> 10;
+	}
 
 	if (evtcount > FTS_FIFO_MAX)
 		evtcount = FTS_FIFO_MAX;
@@ -1440,442 +2018,575 @@ static irqreturn_t fts_interrupt_handler(int irq, void *handle)
 		fts_read_reg(info, &regAdd[3], 1, (unsigned char *)info->data,
 				  FTS_EVENT_SIZE * evtcount);
 		fts_event_handler_type_b(info, info->data, evtcount);
+	} else {
+		dev_info(&info->client->dev, "%s: No event[%02X]\n",
+				__func__, evtcount);
 	}
-#ifdef FTS_SUPPORT_SIDE_GESTURE
-	if ((info->board->support_sidegesture) &&
-		(info->fts_power_state == FTS_POWER_STATE_LOWPOWER))
-		pm_relax(info->input_dev->dev.parent);
+#if defined(CONFIG_SECURE_TOUCH)
+out:
 #endif
-
 	return IRQ_HANDLED;
 }
 
-static int fts_irq_enable(struct fts_ts_info *info,
-		bool enable)
+void fts_irq_enable(struct fts_ts_info *info, bool enable)
 {
-	int retval = 0;
+	if (!info->irq)
+		return;
 
 	if (enable) {
 		if (info->irq_enabled)
-			return retval;
-
-		retval = request_threaded_irq(info->irq, NULL,
-				fts_interrupt_handler, info->board->irq_type,
-				FTS_TS_DRV_NAME, info);
-		if (retval < 0) {
-			tsp_debug_info(true, &info->client->dev,
-					"%s: Failed to create irq thread %d\n",
-					__func__, retval);
-			return retval;
-		}
-
+			return;
+		enable_irq(info->irq);
 		info->irq_enabled = true;
 	} else {
-		if (info->irq_enabled) {
-			disable_irq(info->irq);
-			free_irq(info->irq, info);
-			info->irq_enabled = false;
-		}
+		if (!info->irq_enabled)
+			return;
+		disable_irq(info->irq);
+		info->irq_enabled = false;
 	}
-
-	return retval;
 }
-
-#ifdef CONFIG_OF
-#ifdef FTS_SUPPORT_TA_MODE
-struct fts_callbacks *fts_charger_callbacks;
-void tsp_charger_infom(bool en)
-{
-
-	pr_err("[TSP]%s: ta:%d\n",	__func__, en);
-
-	if (fts_charger_callbacks && fts_charger_callbacks->inform_charger)
-		fts_charger_callbacks->inform_charger(fts_charger_callbacks, en);
-}
-static void fts_tsp_register_callback(void *cb)
-{
-	fts_charger_callbacks = cb;
-}
-#endif
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-static int fts_led_power_ctrl(void *data, bool on)
+static int fts_led_power_ctrl(struct fts_ts_info *info, bool on)
 {
-	struct fts_ts_info *info = (struct fts_ts_info *)data;
-	const struct fts_i2c_platform_data *pdata = info->board;
-	struct device *dev = &info->client->dev;
-	struct regulator *regulator_tk_led = NULL;
-	static bool enabled;
-	int retval = 0;
+	int ret = 0;
 
-	if (enabled == on)
-		return retval;
+	dev_info(&info->client->dev, "%s: vdd_keyled %s ++\n", __func__, on ? "ON" : "OFF");
 
-	regulator_tk_led = regulator_get(NULL, pdata->regulator_tk_led);
-	if (IS_ERR_OR_NULL(regulator_tk_led)) {
-		tsp_debug_err(true, dev, "%s: Failed to get %s regulator.\n",
-			 __func__, pdata->regulator_tk_led);
-		goto out;
-	}
-
-	tsp_debug_info(true, dev, "%s: %s\n", __func__, on ? "on" : "off");
-
-	if (on) {
-		retval = regulator_enable(regulator_tk_led);
-		if (retval) {
-			tsp_debug_err(true, dev, "%s: Failed to enable led%d\n", __func__, retval);
-			goto out;
-		}
+	if (!info->keyled_vreg) {
+		dev_info(&info->client->dev, "%s: failed vdd_keyled is null\n", __func__);
 	} else {
-		if (regulator_is_enabled(regulator_tk_led))
-			regulator_disable(regulator_tk_led);
+		if (on) {
+			if (regulator_is_enabled(info->keyled_vreg)) {
+				dev_info(&info->client->dev, "vdd_keyled already enabled\n");
+			} else {
+				ret = regulator_enable(info->keyled_vreg);
+				if (ret) {
+					dev_err(&info->client->dev, "vdd_keyled enable failed rc=%d\n", ret);
+					return 2;
+				}
+			}
+		} else {
+			if (regulator_is_enabled(info->keyled_vreg)) {
+				ret = regulator_disable(info->keyled_vreg);
+				if (ret) {
+					dev_err(&info->client->dev, "vdd_keyled disable failed rc=%d\n", ret);
+					return 3;
+				}
+			} else {
+				dev_info(&info->client->dev, "vdd_keyled already disabled\n");
+			}
+		}
+
+		dev_info(&info->client->dev, "%s: vdd_keyled %s --\n", __func__, regulator_is_enabled(info->keyled_vreg) ? "ON" : "OFF");
 	}
 
-	enabled = on;
-out:
-	regulator_put(regulator_tk_led);
-
-	return retval;
+	return ret;
 }
 #endif
 
-static int fts_power_ctrl(void *data, bool on)
-{
-	struct fts_ts_info *info = (struct fts_ts_info *)data;
-	const struct fts_i2c_platform_data *pdata = info->board;
-	struct device *dev = &info->client->dev;
-	struct regulator *regulator_dvdd = NULL;
-	struct regulator *regulator_avdd = NULL;
-	static bool enabled;
-	int retval = 0;
-
-	if (enabled == on)
-		return retval;
-
-	regulator_dvdd = regulator_get(NULL, pdata->regulator_dvdd);
-	if (IS_ERR_OR_NULL(regulator_dvdd)) {
-		tsp_debug_err(true, dev, "%s: Failed to get %s regulator.\n",
-			 __func__, pdata->regulator_dvdd);
-		goto out;
-	}
-
-	regulator_avdd = regulator_get(NULL, pdata->regulator_avdd);
-	if (IS_ERR_OR_NULL(regulator_avdd)) {
-		tsp_debug_err(true, dev, "%s: Failed to get %s regulator.\n",
-			 __func__, pdata->regulator_avdd);
-		goto out;
-	}
-
-	tsp_debug_info(true, dev, "%s: %s\n", __func__, on ? "on" : "off");
-
-	if (on) {
-		retval = regulator_enable(regulator_avdd);
-		if (retval) {
-			tsp_debug_err(true, dev, "%s: Failed to enable avdd: %d\n", __func__, retval);
-			goto out;
-		}
-		retval = regulator_enable(regulator_dvdd);
-		if (retval) {
-			tsp_debug_err(true, dev, "%s: Failed to enable vdd: %d\n", __func__, retval);
-			goto out;
-		}
-
-		retval = pinctrl_select_state(pdata->pinctrl, pdata->pins_default);
-		if (retval < 0)
-			tsp_debug_err(true, dev, "%s: Failed to configure tsp_attn pin\n", __func__);
-
-		fts_delay(5);
-	} else {
-		if (regulator_is_enabled(regulator_dvdd))
-			regulator_disable(regulator_dvdd);
-		if (regulator_is_enabled(regulator_avdd))
-			regulator_disable(regulator_avdd);
-
-		retval = pinctrl_select_state(pdata->pinctrl, pdata->pins_sleep);
-		if (retval < 0)
-			tsp_debug_err(true, dev, "%s: Failed to configure tsp_attn pin\n", __func__);
-	}
-
-	enabled = on;
-out:
-	regulator_put(regulator_dvdd);
-	regulator_put(regulator_avdd);
-
-	return retval;
-}
-
-static int fts_parse_dt(struct i2c_client *client)
+static int fts_power_ctrl(struct i2c_client *client, bool enable)
 {
 	struct device *dev = &client->dev;
-	struct fts_i2c_platform_data *pdata = dev->platform_data;
-	struct device_node *np = dev->of_node;
-	u32 coords[2], lines[2];
-	int retval = 0;
+	int retval;
+	static struct regulator *avdd, *vddo;
 
-	pdata->tspid = of_get_named_gpio(np, "stm,tspid_gpio", 0);
-	if (gpio_is_valid(pdata->tspid))
-		tsp_debug_info(true, dev, "TSP_ID : %d\n", gpio_get_value(pdata->tspid));
-	else
-		tsp_debug_err(true, dev, "skipped to get tspid gpio\n");
+	if (!avdd) {
+		avdd = devm_regulator_get(dev, "avdd");
 
-	pdata->gpio = of_get_named_gpio(np, "stm,irq_gpio", 0);
-	if (gpio_is_valid(pdata->gpio)) {
-		retval = gpio_request_one(pdata->gpio, GPIOF_DIR_IN, "stm,tsp_int");
-		if (retval) {
-			tsp_debug_err(true, dev, "Unable to request tsp_int [%d]\n", pdata->gpio);
-			return -EINVAL;
+		if (IS_ERR(avdd)) {
+			dev_err(dev, "%s: could not get avdd, rc = %ld\n",
+				__func__, PTR_ERR(avdd));
+			avdd = NULL;
+			return -ENODEV;
+		}
+		retval = regulator_set_voltage(avdd, 3300000, 3300000);
+		if (retval)
+			dev_err(dev, "%s: unable to set avdd voltage to 3.3V\n",
+				__func__);
+
+		dev_err(dev, "%s: is enabled %s\n", __func__, regulator_is_enabled(avdd) ? "TRUE" : "FALSE");
+	}
+	if (!vddo) {
+		vddo = devm_regulator_get(dev, "vddo");
+
+		if (IS_ERR(vddo)) {
+			dev_err(dev, "%s: could not get vddo, rc = %ld\n",
+				__func__, PTR_ERR(vddo));
+			vddo = NULL;
+			return -ENODEV;
+		}
+		retval = regulator_set_voltage(vddo, 1800000, 1800000);
+		if (retval)
+			dev_err(dev, "%s: unable to set vddo voltage to 1.8V\n",
+				__func__);
+		dev_err(dev, "%s: is enabled %s\n", __func__, regulator_is_enabled(vddo) ? "TRUE" : "FALSE");
+	}
+
+	if (enable) {
+		if (0/*regulator_is_enabled(avdd)*/) {
+			dev_err(dev, "%s: avdd is already enabled\n", __func__);
+		} else {
+			retval = regulator_enable(avdd);
+			if (retval) {
+				dev_err(dev, "%s: Fail to enable regulator avdd[%d]\n",
+					__func__, retval);
+				goto err;
+			}
+			dev_info(dev, "%s: avdd is enabled[OK]\n", __func__);
+		}
+
+		if (0/*regulator_is_enabled(vddo)*/) {
+			dev_err(dev, "%s: vddo is already enabled\n", __func__);
+		} else {
+			retval = regulator_enable(vddo);
+			if (retval) {
+				dev_err(dev, "%s: Fail to enable regulator vddo[%d]\n",
+					__func__, retval);
+				goto err;
+			}
+			dev_info(dev, "%s: vddo is enabled[OK]\n", __func__);
 		}
 	} else {
-		tsp_debug_err(true, dev, "Failed to get irq gpio\n");
-		return -EINVAL;
-	}
-	client->irq = gpio_to_irq(pdata->gpio);
+		if (regulator_is_enabled(vddo)) {
+			retval = regulator_disable(vddo);
+			if (retval) {
+				dev_err(dev, "%s: Fail to disable regulator vddo[%d]\n",
+					__func__, retval);
+				goto err;
+			}
+			dev_info(dev, "%s: vddo is disabled[OK]\n", __func__);
+		} else {
+			dev_err(dev, "%s: vddo is already disabled\n", __func__);
+		}
 
-	if (of_property_read_u32(np, "stm,irq_type", &pdata->irq_type)) {
-		tsp_debug_err(true, dev, "Failed to get irq_type property\n");
-		return -EINVAL;
-	}
-
-	if (of_property_read_u32(np, "stm,grip_area", &pdata->grip_area))
-		tsp_debug_err(true, dev, "skipped to get grip_area property\n");
-
-	if (of_property_read_u32_array(np, "stm,max_coords", coords, 2)) {
-		tsp_debug_err(true, dev, "Failed to get max_coords property\n");
-		return -EINVAL;
-	}
-	pdata->max_x = coords[0];
-	pdata->max_y = coords[1];
-
-	if (of_property_read_u32_array(np, "stm,num_lines", lines, 2))
-		tsp_debug_err(true, dev, "skipped to get num_lines property\n");
-	else {
-		pdata->SenseChannelLength = lines[0];
-		pdata->ForceChannelLength = lines[1];
-		tsp_debug_info(true, dev, "num_of[rx,tx]: [%d,%d]\n",
-			pdata->SenseChannelLength, pdata->ForceChannelLength);
+		if (regulator_is_enabled(avdd)) {
+			retval = regulator_disable(avdd);
+			if (retval) {
+				dev_err(dev, "%s: Fail to disable regulator avdd[%d]\n",
+					__func__, retval);
+				goto err;
+			}
+			dev_info(dev, "%s: avdd is disabled[OK]\n", __func__);
+		} else {
+			dev_err(dev, "%s: avdd is already disabled\n", __func__);
+		}
 	}
 
-	if (of_property_read_string(np, "stm,regulator_dvdd", &pdata->regulator_dvdd)) {
-		tsp_debug_err(true, dev, "Failed to get regulator_dvdd name property\n");
-		return -EINVAL;
-	}
-	if (of_property_read_string(np, "stm,regulator_avdd", &pdata->regulator_avdd)) {
-		tsp_debug_err(true, dev, "Failed to get regulator_avdd name property\n");
-		return -EINVAL;
-	}
-	pdata->power = fts_power_ctrl;
+	return 0;
 
-	/* Optional parmeters(those values are not mandatory)
-	 * do not return error value even if fail to get the value
-	 */
-	of_property_read_string(np, "stm,firmware_name", &pdata->firmware_name);
+err:
+	return retval;
+}
 
-	if (of_property_read_string_index(np, "stm,project_name", 0, &pdata->project_name))
-		tsp_debug_err(true, dev, "skipped to get project_name property\n");
-	if (of_property_read_string_index(np, "stm,project_name", 1, &pdata->model_name))
-		tsp_debug_err(true, dev, "skipped to get model_name property\n");
+#if defined(CONFIG_SECURE_TOUCH)
+static void fts_secure_touch_init(struct fts_ts_info *info)
+{
+	int ret;
 
-	pdata->max_width = 28;
-	pdata->support_hover = true;
-	pdata->support_mshover = true;
-#ifdef FTS_SUPPORT_TA_MODE
-	pdata->register_cb = fts_tsp_register_callback;
+	dev_err(&info->client->dev, "%s: SECURETOUCH_INIT\n", __func__);
+	init_completion(&info->st_powerdown);
+#ifdef ST_INT_COMPLETE
+	init_completion(&info->st_interrupt);
 #endif
+	info->core_clk = clk_get(&info->client->dev, "core_clk");
+	if (IS_ERR(info->core_clk)) {
+		ret = PTR_ERR(info->core_clk);
+		dev_err(&info->client->dev, "%s: error on clk_get(core_clk):%d\n",
+			__func__, ret);
+		return;
+	}
+
+	info->iface_clk = clk_get(&info->client->dev, "iface_clk");
+	if (IS_ERR(info->iface_clk)) {
+		ret = PTR_ERR(info->core_clk);
+		dev_err(&info->client->dev, "%s: error on clk_get(iface_clk):%d\n",
+			__func__, ret);
+		goto err_iface_clk;
+	}
+
+	return;
+
+err_iface_clk:
+	clk_put(info->core_clk);
+	info->core_clk = NULL;
+}
+#endif
+
+#ifdef CONFIG_OF
+static int fts_parse_dt(struct device *dev,
+		struct fts_device_tree_data *dt_data)
+{
+	struct device_node *np = dev->of_node;
+	int rc;
+	int tsp_id, tsp_id2;
+	u32 coords[2];
+
+	/* irq gpio info */
+	dt_data->irq_gpio = of_get_named_gpio(np, "stm,irq-gpio", 0);
+
+	rc = of_property_read_u32_array(np, "stm,tsp-coords", coords, 2);
+	if (rc < 0) {
+		dev_info(dev, "%s: Unable to read stm,tsp-coords\n", __func__);
+		return rc;
+	}
+
+	dt_data->max_x = coords[0];
+	dt_data->max_y = coords[1];
+
+	/* tsp_id, tsp_id2 */
+	dt_data->tsp_id = of_get_named_gpio(np, "stm,tsp-id", 0);
+	dt_data->tsp_id2 = of_get_named_gpio(np, "stm,tsp-id2", 0);
+
+	/* check STM/LSI IC in HERO2 */
+	if (gpio_is_valid(dt_data->tsp_id) && gpio_is_valid(dt_data->tsp_id2)) {
+		rc = gpio_request(dt_data->tsp_id, "tsp_id");
+		if (rc)
+			pr_err("%s: unable to request tsp_id [%d], ret=%d\n",
+					__func__, dt_data->tsp_id, rc);
+		rc = gpio_request(dt_data->tsp_id2, "tsp_id2");
+		if (rc)
+			pr_err("%s: unable to request tsp_id [%d], ret=%d\n",
+					__func__, dt_data->tsp_id2, rc);
+
+		tsp_id = gpio_get_value(dt_data->tsp_id);
+		tsp_id2 = gpio_get_value(dt_data->tsp_id2);
+
+		/* tsp_id : 0 STM, 1 LSI
+		 * tsp_id2 : 0 ALPS, 1 ILSIN */
+		if (tsp_id) {
+			dev_err(dev, "%s: Return error to use LSI IC\n", __func__);
+			return -ENODEV;
+		}
+
+		if (tsp_id2) {
+			dev_err(dev, "%s: Hero2 ILSIN module\n", __func__);
+		} else {
+			dev_err(dev, "%s: Hero2 ALPS module\n", __func__);
+		}
+
+	} else {
+		tsp_id2 = 0;
+	}
+
+	rc = of_property_read_string_index(np, "stm,firmware_name", tsp_id2, &dt_data->firmware_name);
+	if (rc) {
+		dt_data->firmware_name = NULL;
+	}
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	if (of_property_read_u32(np, "stm,num_touchkey", &pdata->num_touchkey))
-		tsp_debug_err(true, dev, "skipped to get num_touchkey property\n");
-	else {
-#ifdef FTS_SUPPORT_SIDE_GESTURE
-		pdata->support_sidegesture = true;
+	dt_data->support_mskey = of_property_read_bool(np, "stm,support_mskey");
+	dt_data->num_touchkey = 2;
+	dt_data->touchkey = fts_touchkeys;
+	if (dt_data->support_mskey)
+		dev_info(dev, "%s: Support touchkey\n", __func__);
 #endif
-		pdata->support_mskey = true;
-		pdata->touchkey = fts_touchkeys;
 
-		if (of_property_read_string(np, "stm,regulator_tk_led", &pdata->regulator_tk_led))
-			tsp_debug_err(true, dev, "skipped to get regulator_tk_led name property\n");
-		else
-			pdata->led_power = fts_led_power_ctrl;
+	/* project info */
+	rc = of_property_read_string(np, "stm,tsp-project", &dt_data->project);
+	if (rc < 0) {
+		dev_info(dev, "%s: Unable to read stm,tsp-project\n", __func__);
+		dt_data->project = "0";
 	}
-#endif
-#ifdef CONFIG_SEC_FACTORY
-	pdata->panel_revision = (lcdtype & 0xF000) >> 12;
-#endif
-	tsp_debug_info(true, dev,
-		"irq :%d, irq_type: 0x%04x, max[x,y]: [%d,%d], grip_area :%d, project/model_name: %s/%s, panel_revision: %d\n",
-		pdata->gpio, pdata->irq_type, pdata->max_x, pdata->max_y, pdata->grip_area,
-		pdata->project_name, pdata->model_name,
-		pdata->panel_revision);
 
-	return retval;
+	/* model info */
+	rc = of_property_read_string(np, "stm,tsp-model", &dt_data->model);
+	if (rc < 0) {
+		dev_info(dev, "%s: Unable to read stm,tsp-model\n", __func__);
+		dt_data->model = FTS_DEVICE_NAME;
+	}
+
+	of_property_read_u32(np, "stm,support_gesture", &dt_data->support_sidegesture);
+
+	rc = of_property_read_u32(np, "stm,grip_area", &dt_data->grip_area);
+	if (rc < 0)
+		dt_data->grip_area = -1;
+
+	dt_data->support_string_lib = of_property_read_bool(np, "stm,string-lib");
+
+	rc = of_property_read_u32(np, "stm,bringup", &dt_data->bringup);
+	if (rc < 0)
+		dt_data->bringup = 0;
+
+	dev_err(dev, "%s: tsp_int= %d, X= %d, Y= %d, grip_area= %d, project= %s, gesture[%d], string[%d], bringup[%d], tsp_id=%d, tsp_id2=%d, fw_name=%s\n",
+		__func__, dt_data->irq_gpio,
+			dt_data->max_x, dt_data->max_y, dt_data->grip_area, dt_data->project,
+			dt_data->support_sidegesture, dt_data->support_string_lib, dt_data->bringup,
+			dt_data->tsp_id, dt_data->tsp_id2, dt_data->firmware_name);
+
+	return 0;
+}
+#else
+static int fts_parse_dt(struct device *dev,
+		struct fts_device_tree_data *dt_data)
+{
+	return -ENODEV;
 }
 #endif
 
-static int fts_setup_drv_data(struct i2c_client *client)
+static int fts_pinctrl_init(struct fts_ts_info *info)
 {
-	int retval = 0;
-	struct fts_i2c_platform_data *pdata;
-	struct fts_ts_info *info;
+	struct i2c_client *client = info->client;
+	int ret;
 
-	/* parse dt */
-	if (client->dev.of_node) {
-		pdata = devm_kzalloc(&client->dev,
-			sizeof(struct fts_i2c_platform_data), GFP_KERNEL);
-
-		if (!pdata) {
-			tsp_debug_err(true, &client->dev, "Failed to allocate platform data\n");
-			return -ENOMEM;
+	/* Get pinctrl if target uses pinctrl */
+	info->pinctrl = devm_pinctrl_get(&client->dev);
+	if (IS_ERR(info->pinctrl)) {
+		if (PTR_ERR(info->pinctrl) == -EPROBE_DEFER) {
+			ret = -ENODEV;
+			return ret;
 		}
 
-		client->dev.platform_data = pdata;
-		retval = fts_parse_dt(client);
-		if (retval) {
-			tsp_debug_err(true, &client->dev, "Failed to parse dt\n");
-			return retval;
+		dev_err(&client->dev, "%s: Target does not use pinctrl\n", __func__);
+		info->pinctrl = NULL;
+	}
+
+	return 0;
+}
+
+static int fts_pinctrl_configure(struct fts_ts_info *info,
+							bool active)
+{
+	struct pinctrl_state *set_state_i2c;
+	int retval;
+
+	if (!info->pinctrl) {
+		return 0;
+	}
+
+	dev_info(&info->client->dev, "%s: %s\n", __func__, active ? "ACTIVE" : "SUSPEND");
+
+	if (active) {
+		set_state_i2c =
+			pinctrl_lookup_state(info->pinctrl,
+						"tsp_active");
+		if (IS_ERR(set_state_i2c)) {
+			dev_err(&info->client->dev, "%s: cannot get active state\n", __func__);
+			return PTR_ERR(set_state_i2c);
 		}
 	} else {
-		pdata = client->dev.platform_data;
+		set_state_i2c =
+			pinctrl_lookup_state(info->pinctrl,
+						"tsp_suspend");
+		if (IS_ERR(set_state_i2c)) {
+			dev_err(&info->client->dev, "%s: cannot get sleep state\n", __func__);
+			return PTR_ERR(set_state_i2c);
+		}
 	}
 
-	if (!pdata) {
-		tsp_debug_err(true, &client->dev, "No platform data found\n");
-			return -EINVAL;
-	}
-	if (!pdata->power) {
-		tsp_debug_err(true, &client->dev, "No power contorl found\n");
-			return -EINVAL;
+	retval = pinctrl_select_state(info->pinctrl, set_state_i2c);
+	if (retval) {
+		dev_err(&info->client->dev, "%s: cannot set %s state\n",
+				__func__, active ? "active" : "suspend");
+		return retval;
 	}
 
-	pdata->pinctrl = devm_pinctrl_get(&client->dev);
-	if (IS_ERR(pdata->pinctrl)) {
-		tsp_debug_err(true, &client->dev, "could not get pinctrl\n");
-		return PTR_ERR(pdata->pinctrl);
-	}
+	gpio_direction_input(info->dt_data->irq_gpio);
 
-	pdata->pins_default = pinctrl_lookup_state(pdata->pinctrl, "on_state");
-	if (IS_ERR(pdata->pins_default))
-		tsp_debug_err(true, &client->dev, "could not get default pinstate\n");
-
-	pdata->pins_sleep = pinctrl_lookup_state(pdata->pinctrl, "off_state");
-	if (IS_ERR(pdata->pins_sleep))
-		tsp_debug_err(true, &client->dev, "could not get sleep pinstate\n");
-
-	info = kzalloc(sizeof(struct fts_ts_info), GFP_KERNEL);
-	if (!info) {
-		tsp_debug_err(true, &client->dev,
-				"%s: Failed to alloc mem for info\n",
-				__func__);
-		return -ENOMEM;
-	}
-
-	info->client = client;
-	info->board = pdata;
-	info->irq = client->irq;
-	info->irq_type = info->board->irq_type;
-	info->irq_enabled = false;
-	info->touch_stopped = false;
-	info->panel_revision = info->board->panel_revision;
-	info->stop_device = fts_stop_device;
-	info->start_device = fts_start_device;
-	info->fts_command = fts_command;
-	info->fts_enable_feature = fts_enable_feature;
-	info->fts_read_reg = fts_read_reg;
-	info->fts_write_reg = fts_write_reg;
-	info->fts_systemreset = fts_systemreset;
-	info->fts_get_version_info = fts_get_version_info;
-	info->fts_wait_for_ready = fts_wait_for_ready;
-#ifdef FTS_SUPPORT_STRINGLIB
-	info->fts_read_from_string = fts_read_from_string;
-	info->fts_write_to_string = fts_write_to_string;
-#endif
-#ifdef FTS_SUPPORT_NOISE_PARAM
-	info->fts_get_noise_param_address = fts_get_noise_param_address;
-#endif
-
-#ifdef USE_OPEN_DWORK
-	INIT_DELAYED_WORK(&info->open_work, fts_open_work);
-#endif
-	info->delay_time = 300;
-	INIT_DELAYED_WORK(&info->reset_work, fts_reset_work);
-
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-	INIT_DELAYED_WORK(&info->debug_work, dump_tsp_rawdata);
-	p_debug_work = &info->debug_work;
-#endif
-#ifdef SEC_TSP_FACTORY_TEST
-	INIT_DELAYED_WORK(&info->cover_cmd_work, clear_cover_cmd_work);
-#endif
-
-	if (info->board->support_hover)
-		tsp_debug_info(true, &info->client->dev, "FTS Support Hover Event \n");
-	else
-		tsp_debug_info(true, &info->client->dev, "FTS Not support Hover Event \n");
-
-	i2c_set_clientdata(client, info);
-
-	if (pdata->get_ddi_type) {
-		info->ddi_type = pdata->get_ddi_type();
-		tsp_debug_info(true, &client->dev, "%s: DDI Type is %s[%d]\n",
-			__func__, info->ddi_type ? "MAGNA" : "SDC", info->ddi_type);
-	}
-
-	return retval;
+	return 0;
 }
-#ifdef CONFIG_BATTERY_SAMSUNG
-extern unsigned int lpcharge;
+
+static void fts_request_gpio(struct fts_ts_info *info)
+{
+	int ret;
+	dev_info(&info->client->dev, "%s\n", __func__);
+
+	ret = gpio_request(info->dt_data->irq_gpio, "stm,irq_gpio");
+	if (ret) {
+		pr_err("%s: unable to request irq_gpio [%d], ret=%d\n",
+				__func__, info->dt_data->irq_gpio, ret);
+		return;
+	}
+
+#ifdef FTS_SUPPORT_TOUCH_KEY
+	if (info->dt_data->support_mskey) {
+		dev_info(&info->client->dev, "%s: vdd_keyled setting, %d\n", __func__, __LINE__);
+
+		info->keyled_vreg = regulator_get(&info->client->dev, "vdd_keyled");
+		if (IS_ERR(info->keyled_vreg)) {
+			pr_err("%s: failed vdd_keyled request error \n", __func__);
+			info->keyled_vreg = NULL;
+			return;
+		}
+
+		ret = regulator_set_voltage(info->keyled_vreg, 3300000, 3300000);
+		if (ret)
+			pr_err("%s: vdd_keyled 3.3V setting error\n", __func__);
+	}
+
 #endif
+}
+
+static void fts_read_nv_work(struct work_struct *work)
+{
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
+							work_read_nv.work);
+
+	if (info->stm_ver == STM_VER7)
+		fts_get_tsp_test_result(info);
+
+#ifdef FTS_SUPPORT_PARTIAL_DOWNLOAD
+	get_PureAutotune_status(info);
+#endif
+
+	tsp_debug_info(true, &info->client->dev,
+		"%s: fac_nv:%02X, pat:%d\n", __func__, info->test_result.data[0], info->pat);
+}
+
 static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 {
 	int retval;
 	struct fts_ts_info *info = NULL;
+	struct fts_device_tree_data *dt_data = NULL;
 	static char fts_ts_phys[64] = { 0 };
 	int i = 0;
-	long j = 0;
+	int temp;
 
-	tsp_debug_info(true, &client->dev, "FTS Driver [12%s]\n", FTS_TS_DRV_VERSION);
-
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
-		tsp_debug_err(true, &client->dev, "FTS err = EIO!\n");
-		return -EIO;
-	}
-#ifdef CONFIG_BATTERY_SAMSUNG
-	if (lpcharge == 1) {
-		tsp_debug_err(true, &client->dev, "%s : Do not load driver due to : lpm %d\n",
-			 __func__, lpcharge);
+	if (tsp_init_done) {
+		pr_err("%s: tsp already init done\n", __func__);
 		return -ENODEV;
 	}
-#endif
-	/* Build up driver data */
-	retval = fts_setup_drv_data(client);
-	if (retval < 0) {
-		tsp_debug_err(true, &client->dev, "%s: Failed to set up driver data\n", __func__);
-		goto err_setup_drv_data;
+
+	tsp_debug_info(true, &client->dev, "%s\n", __func__);
+
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
+		dev_err(&client->dev, "FTS err = EIO!\n");
+		return -EIO;
 	}
 
-	info = (struct fts_ts_info *)i2c_get_clientdata(client);
+	retval = fts_power_ctrl(client, true);
+	if (retval) {
+		dev_err(&client->dev,
+			"%s: Failed to power on: %d\n", __func__, retval);
+		goto err_power_on;
+	}
+
+	if (client->dev.of_node) {
+		dt_data = devm_kzalloc(&client->dev,
+				sizeof(struct fts_device_tree_data),
+				GFP_KERNEL);
+		if (!dt_data) {
+			dev_err(&client->dev, "Failed to allocate memory\n");
+			retval = -ENOMEM;
+			goto err_pdata;
+		}
+		retval = fts_parse_dt(&client->dev, dt_data);
+		if (retval)
+			goto err_pdata;
+	} else {
+		dt_data = client->dev.platform_data;
+		dev_err(&client->dev, "%s: TSP failed to align dtsi\n", __func__);
+	}
+
+	info = kzalloc(sizeof(struct fts_ts_info), GFP_KERNEL);
 	if (!info) {
-		tsp_debug_err(true, &client->dev, "%s: Failed to get driver data\n", __func__);
-		retval = -ENODEV;
-		goto err_get_drv_data;
+		dev_err(&client->dev, "FTS err = ENOMEM!\n");
+		retval = -ENOMEM;
+		goto err_pdata;
 	}
 
-	if (info->board->power)
-		info->board->power(info, true);
+#ifdef FTS_SUPPORT_NOISE_PARAM
+	info->noise_param = kzalloc(sizeof(struct fts_noise_param), GFP_KERNEL);
+	if (!info->noise_param) {
+		dev_err(&info->client->dev, "%s: Failed to set noise param mem\n",
+				__func__);
+		retval = -ENOMEM;
+		goto err_alloc_noise_param;
+	}
+#endif
+
+	info->client = client;
+	info->dt_data = dt_data;
+
+#ifdef USE_OPEN_DWORK
+	INIT_DELAYED_WORK(&info->open_work, fts_open_work);
+#endif
+
+	info->delay_time = 300;
+
+#if defined(USE_RESET_WORK_EXIT_LOWPOWERMODE) || defined(FTS_SUPPORT_ESD_CHECK)
+	INIT_DELAYED_WORK(&info->reset_work, fts_reset_work);
+#endif
+	INIT_DELAYED_WORK(&info->work_read_nv, fts_read_nv_work);
+
+	fts_request_gpio(info);
+	retval = fts_pinctrl_init(info);
+	if (retval < 0) {
+		dev_err(&info->client->dev, "%s: Failed to get pinctrl\n",
+				__func__);
+		goto err_init_pinctrl;
+	}
+	fts_pinctrl_configure(info, true);
+
+#ifdef TSP_BOOSTER
+	info->tsp_booster = input_booster_allocate(INPUT_BOOSTER_ID_TSP);
+	if (!info->tsp_booster) {
+		dev_err(&client->dev,
+			"%s: Failed to alloc mem for tsp_booster\n", __func__);
+		goto err_get_tsp_booster;
+	}
+#endif
+#ifdef TKEY_BOOSTER
+	info->tkey_booster = input_booster_allocate(INPUT_BOOSTER_ID_TKEY);
+	if (!info->tkey_booster) {
+		dev_err(&client->dev,
+			"%s: Failed to alloc mem for tkey_booster\n", __func__);
+		goto err_get_tkey_booster;
+	}
+#endif
 
 	info->dev = &info->client->dev;
 	info->input_dev = input_allocate_device();
 	if (!info->input_dev) {
-		tsp_debug_info(true, &info->client->dev, "FTS err = ENOMEM!\n");
+		dev_info(&info->client->dev, "FTS err = ENOMEM!\n");
 		retval = -ENOMEM;
 		goto err_input_allocate_device;
 	}
 
 	info->input_dev->dev.parent = &client->dev;
 	info->input_dev->name = "sec_touchscreen";
-	snprintf(fts_ts_phys, sizeof(fts_ts_phys), "%s/input1",
+	snprintf(fts_ts_phys, sizeof(fts_ts_phys), "%s/input0",
 		 info->input_dev->name);
 	info->input_dev->phys = fts_ts_phys;
 	info->input_dev->id.bustype = BUS_I2C;
+
+	info->irq = client->irq = gpio_to_irq(info->dt_data->irq_gpio);
+	dev_err(&info->client->dev, "%s: # irq : %d, gpio_to_irq[%d]\n",
+			__func__, info->irq, info->dt_data->irq_gpio);
+
+	temp = get_lcd_attached("GET");
+	info->lcd_id[2] = temp & 0xFF;
+	info->lcd_id[1] = (temp >> 8) & 0xFF;
+	info->lcd_id[0] = (temp >> 16) & 0xFF;
+	info->panel_revision = info->lcd_id[1] >> 4;
+
+	dev_err(&info->client->dev, "%s: lcd id : %06X[%02X][%02X][%02X]\n",
+			__func__, temp, info->lcd_id[0],
+			info->lcd_id[1], info->lcd_id[2]);
+	info->panel_revision = (info->lcd_id[1] >> 4) & 0xF;
+
+	info->irq_enabled = false;
+	info->touch_stopped = false;
+	info->stop_device = fts_stop_device;
+	info->start_device = fts_start_device;
+	info->fts_delay = fts_delay;
+	info->fts_command = fts_command;
+	info->fts_read_reg = fts_read_reg;
+	info->fts_write_reg = fts_write_reg;
+	info->fts_systemreset = fts_systemreset;
+	info->fts_get_version_info = fts_get_version_info;
+	info->fts_wait_for_ready = fts_wait_for_ready;
+	info->fts_power_ctrl = fts_power_ctrl;
+	info->fts_write_to_string = fts_write_to_string;
+	info->fts_read_from_string = fts_read_from_string;
+	info->fts_change_scan_rate = fts_change_scan_rate;
+#ifdef FTS_SUPPORT_TOUCH_KEY
+	if (info->dt_data->support_mskey)
+		info->led_power = fts_led_power_ctrl;
+#endif
+#ifdef FTS_SUPPORT_NOISE_PARAM
+	info->fts_get_noise_param_address = fts_get_noise_param_address;
+#endif
 
 #ifdef USE_OPEN_CLOSE
 	info->input_dev->open = fts_input_open;
@@ -1893,30 +2604,31 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 #endif
 	set_bit(BTN_TOUCH, info->input_dev->keybit);
 	set_bit(BTN_TOOL_FINGER, info->input_dev->keybit);
-#ifdef FTS_SUPPORT_2NDSCREEN
-	if (info->board->support_2ndscreen)
-		set_bit(BTN_SUBSCREEN_FLAG, info->input_dev->keybit);
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+	set_bit(BTN_SUBSCREEN_FLAG, info->input_dev->keybit);
 #endif
-#ifdef FTS_SUPPORT_SIDE_SCROLL
-	if (info->board->support_sidescroll) {
-		set_bit(BTN_R_FLICK_FLAG, info->input_dev->keybit);
-		set_bit(BTN_L_FLICK_FLAG, info->input_dev->keybit);
-	}
+#ifdef FTS_USE_SIDE_SCROLL_FLAG
+	set_bit(BTN_R_FLICK_FLAG, info->input_dev->keybit);
+	set_bit(BTN_L_FLICK_FLAG, info->input_dev->keybit);
 #endif
-#ifdef FTS_SUPPORT_STRINGLIB
+#ifdef USE_STYLUS
+	input_set_abs_params(info->input_dev,
+				ABS_MT_TOOL_TYPE, 0,
+				MT_TOOL_MAX, 0, 0);
+#endif
+
 	set_bit(KEY_BLACK_UI_GESTURE, info->input_dev->keybit);
-#endif
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey) {
-		for (i = 0 ; i < info->board->num_touchkey ; i++)
-			set_bit(info->board->touchkey[i].keycode, info->input_dev->keybit);
+	if (info->dt_data->support_mskey) {
+		for (i = 0 ; i < info->dt_data->num_touchkey ; i++)
+			set_bit(info->dt_data->touchkey[i].keycode, info->input_dev->keybit);
 
 		set_bit(EV_LED, info->input_dev->evbit);
 		set_bit(LED_MISC, info->input_dev->ledbit);
 	}
 #endif
 #ifdef FTS_SUPPORT_SIDE_GESTURE
-	if (info->board->support_sidegesture) {
+	if (info->dt_data->support_sidegesture) {
 		set_bit(KEY_SIDE_GESTURE, info->input_dev->keybit);
 		set_bit(KEY_SIDE_GESTURE_RIGHT, info->input_dev->keybit);
 		set_bit(KEY_SIDE_GESTURE_LEFT, info->input_dev->keybit);
@@ -1925,34 +2637,57 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 
 	input_mt_init_slots(info->input_dev, FINGER_MAX, INPUT_MT_DIRECT);
 	input_set_abs_params(info->input_dev, ABS_MT_POSITION_X,
-			     0, info->board->max_x, 0, 0);
+			0, info->dt_data->max_x, 0, 0);
 	input_set_abs_params(info->input_dev, ABS_MT_POSITION_Y,
-			     0, info->board->max_y, 0, 0);
+			0, info->dt_data->max_y, 0, 0);
+#if defined(CONFIG_SEC_FACTORY)
+	input_set_abs_params(info->input_dev, ABS_MT_PRESSURE,
+				 0, 0xFF, 0, 0);
+#endif
+	for (i = 0; i < FINGER_MAX; i++) {
+		info->finger[i].state = EVENTID_LEAVE_POINTER;
+		info->finger[i].mcount = 0;
+	}
 
-	mutex_init(&info->lock);
-	mutex_init(&info->device_mutex);
+	mutex_init(&(info->device_mutex));
 	mutex_init(&info->i2c_mutex);
+	wake_lock_init(&info->wakelock, WAKE_LOCK_SUSPEND, "fts_wakelock");
+	init_completion(&info->resume_done);
 
-	info->enabled = false;
-	mutex_lock(&info->lock);
+	irq_set_status_flags(info->irq, IRQ_NOAUTOEN);
+	retval = request_threaded_irq(info->irq, NULL,
+			fts_interrupt_handler, IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+			FTS_TS_DRV_NAME, info);
+	if (retval < 0) {
+		dev_info(&info->client->dev,
+				"%s: Failed to create irq thread %d\n",
+				__func__, retval);
+		goto err_request_irq;
+	}
+
 	retval = fts_init(info);
-	info->reinit_done = true;
-	mutex_unlock(&info->lock);
-	if (retval) {
-		tsp_debug_err(true, &info->client->dev, "FTS fts_init fail!\n");
+	if (retval < 0) {
+		dev_err(&info->client->dev, "FTS fts_init fail!\n");
 		goto err_fts_init;
+	}
+
+	info->reinit_done = true;
+
+	/* temporary code : revXX use old pannel */
+	if (info->stm_ver != STM_VER7) {
+		input_set_abs_params(info->input_dev, ABS_MT_POSITION_X,
+				0, 4096 - 1, 0, 0);
+		input_set_abs_params(info->input_dev, ABS_MT_POSITION_Y,
+				0, 4096 - 1, 0, 0);
 	}
 
 	input_set_abs_params(info->input_dev, ABS_MT_TOUCH_MAJOR,
 				 0, 255, 0, 0);
 	input_set_abs_params(info->input_dev, ABS_MT_TOUCH_MINOR,
 				 0, 255, 0, 0);
-#ifdef FTS_SUPPORT_SEC_SWIPE
 	input_set_abs_params(info->input_dev, ABS_MT_PALM, 0, 1, 0, 0);
-#endif
 #if defined(FTS_SUPPORT_SIDE_GESTURE)
-	if (info->board->support_sidegesture)
-		input_set_abs_params(info->input_dev, ABS_MT_GRIP, 0, 1, 0, 0);
+	input_set_abs_params(info->input_dev, ABS_MT_GRIP, 0, 1, 0, 0);
 #endif
 	input_set_abs_params(info->input_dev, ABS_MT_DISTANCE,
 				 0, 255, 0, 0);
@@ -1962,40 +2697,12 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 
 	retval = input_register_device(info->input_dev);
 	if (retval) {
-		tsp_debug_err(true, &info->client->dev, "FTS input_register_device fail!\n");
+		dev_err(&info->client->dev, "FTS input_register_device fail!\n");
 		goto err_register_input;
 	}
 
-	for (i = 0; i < FINGER_MAX; i++) {
-		info->finger[i].state = EVENTID_LEAVE_POINTER;
-		info->finger[i].mcount = 0;
-	}
-
-	info->enabled = true;
-
-	retval = fts_irq_enable(info, true);
-	if (retval < 0) {
-		tsp_debug_info(true, &info->client->dev,
-						"%s: Failed to enable attention interrupt\n",
-						__func__);
-		goto err_enable_irq;
-	}
-
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-	trustedui_set_tsp_irq(info->irq);
-	tsp_debug_info(true, &client->dev, "%s[%d] called!\n",
-		__func__, info->irq);
-#endif
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	info->early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
-	info->early_suspend.suspend = fts_early_suspend;
-	info->early_sfts_start_deviceuspend.resume = fts_late_resume;
-	register_early_suspend(&info->early_suspend);
-#endif
-
 #ifdef FTS_SUPPORT_TA_MODE
-	info->register_cb = info->board->register_cb;
+	info->register_cb = info->register_cb;
 
 	info->callbacks.inform_charger = fts_ta_cb;
 	if (info->register_cb)
@@ -2003,46 +2710,34 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 #endif
 
 #ifdef SEC_TSP_FACTORY_TEST
-	INIT_LIST_HEAD(&info->cmd_list_head);
-
-	info->cmd_buffer_size = 0;
-	for (j = 0; j < ARRAY_SIZE(ft_commands); j++) {
-		list_add_tail(&ft_commands[j].list, &info->cmd_list_head);
-		if(ft_commands[j].cmd_name)
-			info->cmd_buffer_size += strlen(ft_commands[j].cmd_name) + 1;
-	}
-
-	mutex_init(&info->cmd_lock);
-	info->cmd_is_running = false;
-
-	info->fac_dev_ts = sec_device_create(info, "tsp");
-	if (IS_ERR(info->fac_dev_ts)) {
-		tsp_debug_err(true, &info->client->dev, "FTS Failed to create device for the sysfs\n");
-		retval = -ENOENT;
-		goto err_sysfs;
-	}
-
-	dev_set_drvdata(info->fac_dev_ts, info);
-
-	retval = sysfs_create_group(&info->fac_dev_ts->kobj,
-				 &sec_touch_factory_attr_group);
-	if (retval < 0) {
-		tsp_debug_err(true, &info->client->dev, "FTS Failed to create sysfs group\n");
-		goto err_sysfs;
-	}
-
-	retval = sysfs_create_link(&info->fac_dev_ts->kobj,
-				&info->input_dev->dev.kobj, "input");
-
+	retval = sec_cmd_init(&info->sec, stm_ft_cmds,
+			ARRAY_SIZE(stm_ft_cmds), SEC_CLASS_DEVT_TSP);
 	if (retval < 0) {
 		tsp_debug_err(true, &info->client->dev,
-				"%s: Failed to create link\n", __func__);
+			"%s: Failed to sec_cmd_init\n", __func__);
+		return -ENODEV;
+	}
+
+	retval = sysfs_create_group(&info->sec.fac_dev->kobj,
+				 &sec_touch_factory_attr_group);
+	if (retval < 0) {
+		tsp_debug_err(true, &info->client->dev,
+			"%s: FTS Failed to create sysfs group\n", __func__);
 		goto err_sysfs;
+	}
+#endif
+
+	retval = sysfs_create_link(&info->sec.fac_dev->kobj,
+		&info->input_dev->dev.kobj, "input");
+	if (retval < 0) {
+		tsp_debug_err(true, &info->client->dev,
+			"%s: Failed to create input symbolic link\n",
+			__func__);
 	}
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey) {
-		info->fac_dev_tk = sec_device_create(info, "sec_touchkey");
+	if (info->dt_data->support_mskey) {
+		info->fac_dev_tk = device_create(sec_class, NULL, 0, info, "sec_touchkey");
 		if (IS_ERR(info->fac_dev_tk))
 			tsp_debug_err(true, &info->client->dev, "Failed to create device for the touchkey sysfs\n");
 		else {
@@ -2050,9 +2745,9 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 
 			retval = sysfs_create_group(&info->fac_dev_tk->kobj,
 						 &sec_touchkey_factory_attr_group);
-			if (retval < 0)
+			if (retval < 0) {
 				tsp_debug_err(true, &info->client->dev, "FTS Failed to create sysfs group\n");
-			else {
+			} else {
 				retval = sysfs_create_link(&info->fac_dev_tk->kobj,
 							&info->input_dev->dev.kobj, "input");
 
@@ -2063,91 +2758,208 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 		}
 	}
 #endif
+
+#if defined(CONFIG_SECURE_TOUCH)
+	for (i = 0; i < (int)ARRAY_SIZE(attrs); i++) {
+		retval = sysfs_create_file(&info->input_dev->dev.kobj,
+				&attrs[i].attr);
+		if (retval < 0) {
+			dev_err(&info->client->dev,
+				"%s: Failed to create sysfs attributes\n",
+				__func__);
+		}
+	}
+
+	fts_secure_touch_init(info);
 #endif
 
-	device_init_wakeup(&client->dev, true);
+	device_init_wakeup(&client->dev, 1);
+
+
+#ifdef CONFIG_TOUCHSCREEN_DUMP_MODE
+	dump_callbacks.inform_dump = dump_tsp_log;
+	INIT_DELAYED_WORK(&info->ghost_check, fts_ts_check_rawdata);
+	p_ghost_check = &info->ghost_check;
+#endif
+
+	tsp_init_done = true;
+
+	schedule_delayed_work(&info->work_read_nv, msecs_to_jiffies(100));
+
+	dev_err(&info->client->dev, "%s done\n", __func__);
 
 	return 0;
 
 #ifdef SEC_TSP_FACTORY_TEST
+	sysfs_remove_group(&info->sec.fac_dev->kobj,
+			   &sec_touch_factory_attr_group);
 err_sysfs:
-	if (info->irq_enabled)
-		fts_irq_enable(info, false);
-	mutex_destroy(&info->cmd_lock);
+	sec_cmd_exit(&info->sec, SEC_CLASS_DEVT_TSP);
 #endif
-
-err_enable_irq:
 	input_unregister_device(info->input_dev);
 	info->input_dev = NULL;
-
-err_register_input:
+ err_register_input:
 	if (info->input_dev)
 		input_free_device(info->input_dev);
 
 err_fts_init:
-	mutex_destroy(&info->lock);
-	mutex_destroy(&info->device_mutex);
-	mutex_destroy(&info->i2c_mutex);
+#ifdef SEC_TSP_FACTORY_TEST
+	kfree(info->cx_data);
+	kfree(info->pFrame);
+#endif
+	fts_irq_enable(info, false);
+	irq_clear_status_flags(info->irq, IRQ_NOAUTOEN);
+	free_irq(info->irq, info);
+err_request_irq:
+	wake_lock_destroy(&info->wakelock);
 err_input_allocate_device:
-	info->board->power(info, false);
+#ifdef TSP_BOOSTER
+	input_booster_free(info->tsp_booster);
+	info->tsp_booster = NULL;
+err_get_tsp_booster:
+#endif
+#ifdef TKEY_BOOSTER
+	input_booster_free(info->tkey_booster);
+	info->tkey_booster = NULL;
+err_get_tkey_booster:
+#endif
+#ifdef CONFIG_TOUCHSCREEN_DUMP_MODE
+	p_ghost_check = NULL;
+#endif
+	info->pinctrl = NULL;
+err_init_pinctrl:
+	gpio_free(info->dt_data->irq_gpio);
+#ifdef FTS_SUPPORT_NOISE_PARAM
+	kfree(info->noise_param);
+err_alloc_noise_param:
+#endif
 	kfree(info);
-err_get_drv_data:
-err_setup_drv_data:
+err_pdata:
+	if (dt_data) {
+		if (gpio_is_valid(dt_data->tsp_id))
+			gpio_free(dt_data->tsp_id);
+		if (gpio_is_valid(dt_data->tsp_id2))
+			gpio_free(dt_data->tsp_id2);
+	}
+	fts_power_ctrl(client, false);
+err_power_on:
+
+	pr_err("[TSP] %s failed, rc=%d\n", __func__, retval);
+
 	return retval;
 }
 
 static int fts_remove(struct i2c_client *client)
 {
 	struct fts_ts_info *info = i2c_get_clientdata(client);
-
-	tsp_debug_info(true, &info->client->dev, "FTS removed \n");
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	unregister_early_suspend(&info->early_suspend);
+#if defined(CONFIG_SECURE_TOUCH)
+	int i = 0;
 #endif
+	dev_info(&info->client->dev, "FTS removed\n");
 
 	fts_interrupt_set(info, INT_DISABLE);
 	fts_command(info, FLUSHBUFFER);
 
 	fts_irq_enable(info, false);
+	free_irq(info->irq, info);
 
+#ifdef CONFIG_TOUCHSCREEN_DUMP_MODE
+	p_ghost_check = NULL;
+#endif
+
+#if defined(CONFIG_SECURE_TOUCH)
+	for (i = 0; i < (int)ARRAY_SIZE(attrs); i++) {
+		sysfs_remove_file(&info->input_dev->dev.kobj,
+				&attrs[i].attr);
+	}
+#endif
 	input_mt_destroy_slots(info->input_dev);
 
 #ifdef SEC_TSP_FACTORY_TEST
-#ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey) {
-		sysfs_remove_link(&info->fac_dev_tk->kobj, "input");
-		sysfs_remove_group(&info->fac_dev_tk->kobj,
-				   &sec_touchkey_factory_attr_group);
-		sec_device_destroy(info->fac_dev_tk->devt);
-	}
-#endif
-	sysfs_remove_link(&info->fac_dev_ts->kobj, "input");
-	sysfs_remove_group(&info->fac_dev_ts->kobj,
+	sysfs_remove_group(&info->sec.fac_dev->kobj,
 			   &sec_touch_factory_attr_group);
-	sec_device_destroy(info->fac_dev_ts->devt);
+	sec_cmd_exit(&info->sec, SEC_CLASS_DEVT_TSP);
 
-	list_del(&info->cmd_list_head);
-
-	mutex_destroy(&info->cmd_lock);
-
-	if (info->cx_data)
-		kfree(info->cx_data);
-
-	if (info->pFrame)
-		kfree(info->pFrame);
+	kfree(info->cx_data);
+	kfree(info->pFrame);
 #endif
 
-	mutex_destroy(&info->lock);
+	wake_lock_destroy(&info->wakelock);
 
 	input_unregister_device(info->input_dev);
 	info->input_dev = NULL;
-
-	info->board->power(info, false);
+#ifdef TSP_BOOSTER
+	input_booster_free(info->tsp_booster);
+	info->tsp_booster = NULL;
+#endif
+#ifdef TKEY_BOOSTER
+	input_booster_free(info->tkey_booster);
+	info->tkey_booster = NULL;
+#endif
+	fts_power_ctrl(client, false);
+#ifdef FTS_SUPPORT_TOUCH_KEY
+	if (info->dt_data->support_mskey)
+		fts_led_power_ctrl(info, false);
+#endif
 
 	kfree(info);
 
 	return 0;
+}
+
+static void fts_shutdown(struct i2c_client *client)
+{
+	struct fts_ts_info *info = i2c_get_clientdata(client);
+
+	dev_info(&info->client->dev, "%s\n", __func__);
+
+	fts_remove(client);
+}
+
+static void fts_recovery_cx(struct fts_ts_info *info)
+{
+	unsigned char regAdd[4] = {0};
+	unsigned char buf[8] = {0};
+	unsigned char cnt = 100;
+
+	regAdd[0] = 0xB6;
+	regAdd[1] = 0x00;
+	regAdd[2] = 0x1E;
+	regAdd[3] = 0x08;
+
+	/* Loading FW to PRAM  without CRC Check */
+	fts_write_reg(info,&regAdd[0], 4);
+	fts_delay(30);
+
+	fts_command(info,CX_TUNNING);
+	fts_delay(300);
+
+	fts_command(info,FTS_CMD_SAVE_CX_TUNING);
+	fts_delay(200);
+
+	do {
+		int ret;
+		regAdd[0] = READ_ONE_EVENT;
+		ret = fts_read_reg(info, regAdd, 1, &buf[0], FTS_EVENT_SIZE);
+
+		fts_delay(10);
+		if (cnt-- == 0) break;
+	} while (buf[0] != 0x16 || buf[1] != 0x04);
+
+	if (info->stm_ver != STM_VER7) {
+		fts_command(info, SLEEPOUT);
+		fts_delay(50);
+	}
+
+	fts_command(info, FLUSHBUFFER);
+	fts_delay(10);
+	fts_command(info, SENSEON);
+	fts_delay(50);
+
+#ifdef FTS_SUPPORT_TOUCH_KEY
+	if (info->dt_data->support_mskey)
+		fts_command(info, FTS_CMD_KEY_SENSE_ON);
+#endif
 }
 
 #ifdef USE_OPEN_CLOSE
@@ -2158,57 +2970,39 @@ static void fts_open_work(struct work_struct *work)
 	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
 						open_work.work);
 
-	tsp_debug_info(true, &info->client->dev, "%s\n", __func__);
+	dev_info(&info->client->dev, "%s\n", __func__);
 
 	retval = fts_start_device(info);
 	if (retval < 0)
-		tsp_debug_err(true, &info->client->dev,
+		dev_err(&info->client->dev,
 			"%s: Failed to start device\n", __func__);
 }
 #endif
 static int fts_input_open(struct input_dev *dev)
 {
 	struct fts_ts_info *info = input_get_drvdata(dev);
-	int retval;
 
-	tsp_debug_dbg(false, &info->client->dev, "%s\n", __func__);
-
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-	if(TRUSTEDUI_MODE_TUI_SESSION & trustedui_get_current_mode()){	
-		tsp_debug_err(true, &info->client->dev, "%s TUI cancel event call!\n", __func__);
-		msleep(100);
-		tui_force_close(1);
-		msleep(200);
-		if(TRUSTEDUI_MODE_TUI_SESSION & trustedui_get_current_mode()){	
-			tsp_debug_err(true, &info->client->dev, "%s TUI flag force clear!\n",	__func__);
-			trustedui_clear_mask(TRUSTEDUI_MODE_VIDEO_SECURED|TRUSTEDUI_MODE_INPUT_SECURED);
-			trustedui_set_mode(TRUSTEDUI_MODE_OFF);
-		}
-	}
-#endif
+	dev_info(&info->client->dev, "%s\n", __func__);
 
 #ifdef USE_OPEN_DWORK
 	schedule_delayed_work(&info->open_work,
 			      msecs_to_jiffies(TOUCH_OPEN_DWORK_TIME));
 #else
-	retval = fts_start_device(info);
-	if (retval < 0){
-		tsp_debug_err(true, &info->client->dev,
-			"%s: Failed to start device\n", __func__);
-		goto out;
-	}
+	fts_start_device(info);
 #endif
-
-	tsp_debug_err(true, &info->client->dev, "FTS cmd after wakeup : h%d \n", info->retry_hover_enable_after_wakeup);
+#ifdef FTS_SUPPORT_HOVER
+/* Hover feature is not using anymore */
+	tsp_debug_err(true, &info->client->dev, "FTS cmd after wakeup : h%d\n",
+			info->retry_hover_enable_after_wakeup);
 
 	if(info->retry_hover_enable_after_wakeup == 1){
 		unsigned char regAdd[4] = {0xB0, 0x01, 0x29, 0x41};
 		fts_write_reg(info, &regAdd[0], 4);
 		fts_command(info, FTS_CMD_HOVER_ON);
+		info->hover_ready = false;
 		info->hover_enabled = true;
 	}
-
-out:
+#endif
 	return 0;
 }
 
@@ -2216,21 +3010,7 @@ static void fts_input_close(struct input_dev *dev)
 {
 	struct fts_ts_info *info = input_get_drvdata(dev);
 
-	tsp_debug_dbg(false, &info->client->dev, "%s\n", __func__);
-
-#ifdef CONFIG_TRUSTONIC_TRUSTED_UI
-	if(TRUSTEDUI_MODE_TUI_SESSION & trustedui_get_current_mode()){	
-		tsp_debug_err(true, &info->client->dev, "%s TUI cancel event call!\n", __func__);
-		msleep(100);
-		tui_force_close(1);
-		msleep(200);
-		if(TRUSTEDUI_MODE_TUI_SESSION & trustedui_get_current_mode()){	
-			tsp_debug_err(true, &info->client->dev, "%s TUI flag force clear!\n",	__func__);
-			trustedui_clear_mask(TRUSTEDUI_MODE_VIDEO_SECURED|TRUSTEDUI_MODE_INPUT_SECURED);
-			trustedui_set_mode(TRUSTEDUI_MODE_OFF);
-		}
-	}
-#endif
+	dev_info(&info->client->dev, "%s\n", __func__);
 
 #ifdef USE_OPEN_DWORK
 	cancel_delayed_work(&info->open_work);
@@ -2238,7 +3018,9 @@ static void fts_input_close(struct input_dev *dev)
 
 	fts_stop_device(info);
 
+#ifdef FTS_SUPPORT_HOVER
 	info->retry_hover_enable_after_wakeup = 0;
+#endif
 }
 #endif
 
@@ -2259,21 +3041,21 @@ static int fts_get_panel_revision(struct fts_ts_info *info)
 	if (IS_ERR(window_type)) {
 		iRet = PTR_ERR(window_type);
 		if (iRet != -ENOENT)
-			tsp_debug_err(true, &info->client->dev, "%s: window_type file open fail\n", __func__);
+			dev_err(&info->client->dev, "%s: window_type file open fail\n", __func__);
 		set_fs(old_fs);
 		goto exit;
 	}
 
 	iRet = window_type->f_op->read(window_type, (u8 *)lcdtype, sizeof(u8) * 4, &window_type->f_pos);
 	if (iRet != (sizeof(u8) * 4)) {
-		tsp_debug_err(true, &info->client->dev, "%s: Can't read the lcd ldi data\n", __func__);
+		dev_err(&info->client->dev, "%s: Can't read the lcd ldi data\n", __func__);
 		iRet = -EIO;
 	}
 
 	/* The variable of lcdtype has ASCII values(40 81 45) at 0x08 OCTA,
 	  * so if someone need a TSP panel revision then to read third parameter.*/
 	info->panel_revision = lcdtype[3] & 0x0F;
-	tsp_debug_info(true, &info->client->dev,
+	dev_info(&info->client->dev,
 		"%s: update panel_revision 0x%02X\n", __func__, info->panel_revision);
 
 	filp_close(window_type, current->files);
@@ -2289,14 +3071,18 @@ static void fts_reinit_fac(struct fts_ts_info *info)
 
 	info->touch_count = 0;
 
-	fts_command(info, SLEEPOUT);
-	fts_delay(50);
+	if (info->stm_ver != STM_VER7) {
+		fts_command(info, SLEEPOUT);
+		fts_delay(50);
+	}
 
+	fts_command(info, FLUSHBUFFER);
+	fts_delay(10);
 	fts_command(info, SENSEON);
 	fts_delay(50);
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey)
+	if (info->dt_data->support_mskey)
 		info->fts_command(info, FTS_CMD_KEY_SENSE_ON);
 #endif
 
@@ -2307,40 +3093,42 @@ static void fts_reinit_fac(struct fts_ts_info *info)
 	if (info->flip_enable)
 		fts_set_cover_type(info, true);
 
+#ifdef CONFIG_GLOVE_TOUCH
 	/* enable glove touch when flip cover is closed */
-	if (info->fast_mshover_enabled)
+	if (info->fast_glove_enabled)
 		fts_command(info, FTS_CMD_SET_FAST_GLOVE_MODE);
-	else if (info->mshover_enabled)
-		fts_command(info, FTS_CMD_MSHOVER_ON);
+	else if (info->glove_enabled)
+		fts_command(info, FTS_CMD_GLOVE_MODE_ON);
+#endif
 
 	rc = fts_get_channel_info(info);
 	if (rc >= 0) {
-		tsp_debug_info(true, &info->client->dev, "FTS Sense(%02d) Force(%02d)\n",
+		dev_info(&info->client->dev, "FTS Sense(%02d) Force(%02d)\n",
 		       info->SenseChannelLength, info->ForceChannelLength);
 	} else {
-		tsp_debug_info(true, &info->client->dev, "FTS read failed rc = %d\n", rc);
-		tsp_debug_info(true, &info->client->dev, "FTS Initialise Failed\n");
+		dev_info(&info->client->dev, "FTS read failed rc = %d\n", rc);
+		dev_info(&info->client->dev, "FTS Initialise Failed\n");
 		return;
 	}
 
-	info->pFrame =
-	    kzalloc(info->SenseChannelLength * info->ForceChannelLength * 2,
-		    GFP_KERNEL);
-	if (info->pFrame == NULL) {
-		tsp_debug_info(true, &info->client->dev, "FTS pFrame kzalloc Failed\n");
-		return;
-	}
+	if (info->pFrame)
+		kfree(info->pFrame);
+	info->pFrame = kzalloc(info->SenseChannelLength * info->ForceChannelLength * 2, GFP_KERNEL);
 
+	if (info->cx_data)
+		kfree(info->cx_data);
 	info->cx_data = kzalloc(info->SenseChannelLength * info->ForceChannelLength, GFP_KERNEL);
-	if (!info->cx_data)
-		tsp_debug_err(true, &info->client->dev, "%s: cx_data kzalloc Failed\n", __func__);
+
+	if (!info->pFrame || !info->cx_data) {
+		dev_info(&info->client->dev, "mem alloc failed\n");
+		return;
+	}
 
 	fts_command(info, FORCECALIBRATION);
-	fts_command(info, FLUSHBUFFER);
 
 	fts_interrupt_set(info, INT_ENABLE);
 
-	tsp_debug_info(true, &info->client->dev, "FTS Re-Initialised\n");
+	dev_info(&info->client->dev, "FTS Re-Initialised\n");
 }
 #endif
 
@@ -2377,44 +3165,51 @@ static void fts_reinit(struct fts_ts_info *info)
 	fts_set_noise_param(info);
 #endif
 
-	fts_command(info, SLEEPOUT);
-	fts_delay(50);
+	if (info->stm_ver != STM_VER7) {
+		fts_command(info, SLEEPOUT);
+		fts_delay(50);
+	}
 
+	fts_command(info, FLUSHBUFFER);
+	fts_delay(10);
 	fts_command(info, SENSEON);
 	fts_delay(50);
 
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey)
+	if (info->dt_data->support_mskey)
 		info->fts_command(info, FTS_CMD_KEY_SENSE_ON);
 #endif
 
 	if (info->flip_enable)
 		fts_set_cover_type(info, true);
-	else if (info->fast_mshover_enabled)
-		fts_command(info, FTS_CMD_SET_FAST_GLOVE_MODE);
-	else if (info->mshover_enabled)
-		fts_command(info, FTS_CMD_MSHOVER_ON);
 
+#ifdef CONFIG_GLOVE_TOUCH
+	/* enable glove touch when flip cover is closed */
+	if (info->fast_glove_enabled)
+		fts_command(info, FTS_CMD_SET_FAST_GLOVE_MODE);
+	else if (info->glove_enabled)
+		fts_command(info, FTS_CMD_GLOVE_MODE_ON);
+#endif
 #ifdef FTS_SUPPORT_TA_MODE
 	if (info->TA_Pluged)
 		fts_command(info, FTS_CMD_CHARGER_PLUGGED);
 #endif
 
 	info->touch_count = 0;
-#ifdef FTS_SUPPORT_2NDSCREEN
-	if (info->board->support_2ndscreen) {
-		info->SIDE_Flag = 0;
-		info->previous_SIDE_value = 0;
-	}
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+	info->SIDE_Flag = 0;
+	info->previous_SIDE_value = 0;
 #endif
 
-	fts_command(info, FLUSHBUFFER);
 	fts_interrupt_set(info, INT_ENABLE);
 }
 
-void fts_release_all_finger(struct fts_ts_info *info)
+static void fts_release_all_finger(struct fts_ts_info *info)
 {
 	int i;
+
+	if (!tsp_init_done)
+		return;
 
 	for (i = 0; i < FINGER_MAX; i++) {
 		input_mt_slot(info->input_dev, i);
@@ -2422,18 +3217,16 @@ void fts_release_all_finger(struct fts_ts_info *info)
 
 		if ((info->finger[i].state == EVENTID_ENTER_POINTER) ||
 			(info->finger[i].state == EVENTID_MOTION_POINTER)) {
+
 			info->touch_count--;
 			if (info->touch_count < 0)
 				info->touch_count = 0;
 
-			tsp_debug_info(true, &info->client->dev,
-				"[RA] tID:%d mc: %d tc:%d Ver[%02X%04X%01X%01X%01X]\n",
+			dev_info(&info->client->dev,
+				"[R] tID:%d mc: %d tc:%d Ver[%02X%04X%01X%01X%01X]\n",
 				i, info->finger[i].mcount, info->touch_count,
 				info->panel_revision, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled, info->mainscr_disable);
-#ifdef FTS_SUPPORT_SEC_SWIPE
-			input_report_abs(info->input_dev, ABS_MT_PALM, 0);
-#endif
+				info->flip_enable, info->glove_enabled, info->mainscr_disable);
 		}
 
 		info->finger[i].state = EVENTID_LEAVE_POINTER;
@@ -2443,367 +3236,296 @@ void fts_release_all_finger(struct fts_ts_info *info)
 	input_report_key(info->input_dev, BTN_TOUCH, 0);
 	input_report_key(info->input_dev, BTN_TOOL_FINGER, 0);
 
-#ifdef FTS_SUPPORT_2NDSCREEN
-	if (info->board->support_2ndscreen) {
-		info->SIDE_Flag = 0;
-		info->previous_SIDE_value = 0;
-		input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, 0);
-	}
+#ifdef FTS_SUPPORT_2NDSCREEN_FLAG
+	info->SIDE_Flag = 0;
+	info->previous_SIDE_value = 0;
+	input_report_key(info->input_dev, BTN_SUBSCREEN_FLAG, 0);
 #endif
-#ifdef FTS_SUPPORT_SIDE_SCROLL
-	if (info->board->support_sidescroll) {
-		input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 0);
-		input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 0);
-	}
+#ifdef FTS_USE_SIDE_SCROLL_FLAG
+	input_report_key(info->input_dev, BTN_R_FLICK_FLAG, 0);
+	input_report_key(info->input_dev, BTN_L_FLICK_FLAG, 0);
 #endif
 
 #ifdef CONFIG_GLOVE_TOUCH
 	input_report_switch(info->input_dev, SW_GLOVE, false);
 	info->touch_mode = FTS_TM_NORMAL;
 #endif
-#ifdef FTS_SUPPORT_STRINGLIB
 	input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 0);
-#endif
+
 #ifdef FTS_SUPPORT_SIDE_GESTURE
-	if (info->board->support_sidegesture) {
+	if (info->dt_data->support_sidegesture) {
 		input_report_key(info->input_dev, KEY_SIDE_GESTURE, 0);
 		input_report_key(info->input_dev, KEY_SIDE_GESTURE_RIGHT, 0);
 		input_report_key(info->input_dev, KEY_SIDE_GESTURE_LEFT, 0);
 	}
 #endif
 
-#ifdef CONFIG_INPUT_BOOSTER
-	input_booster_send_event(BOOSTER_DEVICE_TOUCH, BOOSTER_MODE_FORCE_OFF);
-#endif
-
 	input_sync(info->input_dev);
-}
 
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-static void dump_tsp_rawdata(struct work_struct *work)
-{
-	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
-							debug_work.work);
-	int i;
+	input_mt_slot(info->input_dev, 0);
 
-	if (info->rawdata_read_lock == true)
-		tsp_debug_err(true, &info->client->dev, "%s, ## checking.. ignored.\n", __func__);
-
-	info->rawdata_read_lock = true;
-	tsp_debug_info(true, &info->client->dev, "%s, ## run CX data ##, %d\n", __func__, __LINE__);
-	run_cx_data_read((void *)info);
-
-	for (i = 0; i < 5; i++) {
-		tsp_debug_info(true, &info->client->dev, "%s, ## run Raw Cap data ##, %d\n", __func__, __LINE__);
-		run_rawcap_read((void *)info);
-
-		tsp_debug_info(true, &info->client->dev, "%s, ## run Delta ##, %d\n", __func__, __LINE__);
-		run_delta_read((void *)info);
-		fts_delay(50);
-	}
-	tsp_debug_info(true, &info->client->dev, "%s, ## Done ##, %d\n", __func__, __LINE__);
-
-	info->rawdata_read_lock = false;
-}
-
-void tsp_dump(void)
-{
-#ifdef CONFIG_BATTERY_SAMSUNG
-	if (lpcharge)
-		return;
+#ifdef TSP_BOOSTER
+	if (info->tsp_booster && info->tsp_booster->dvfs_set)
+		info->tsp_booster->dvfs_set(info->tsp_booster, -1);
 #endif
-	if (!p_debug_work)
-		return;
+}
 
-	printk(KERN_ERR "FTS %s: start \n", __func__);
-	schedule_delayed_work(p_debug_work, msecs_to_jiffies(100));
+#if defined(CONFIG_SECURE_TOUCH)
+static void fts_secure_touch_stop(struct fts_ts_info *info, int blocking)
+{
+	dev_err(&info->client->dev, "%s: SECURETOUCH_STOP\n", __func__);
+	if (atomic_read(&info->st_enabled)) {
+		atomic_set(&info->st_pending_irqs, -1);
+		fts_secure_touch_notify(info);
+
+		if (blocking)
+			wait_for_completion_interruptible(&info->st_powerdown);
+	}
 }
 #endif
-
-static void fts_reset_work(struct work_struct *work)
-{
-	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
-						reset_work.work);
-	bool temp_lpm;
-
-	temp_lpm = info->lowpower_mode;
-	/* Reset-routine must go to power off state  */
-	info->lowpower_mode = 0;
-
-	tsp_debug_info(true, &info->client->dev,"%s, Call Power-Off to recover IC, lpm:%d\n", __func__, temp_lpm);
-	fts_stop_device(info);
-
-	msleep(100);	/* Delay to discharge the IC from ESD or On-state.*/
-	if (fts_start_device(info) < 0) {
-		tsp_debug_err(true, &info->client->dev, "%s: Failed to start device\n", __func__);
-	}
-
-	info->lowpower_mode = temp_lpm;
-}
-
 
 static int fts_stop_device(struct fts_ts_info *info)
 {
-	tsp_debug_info(true, &info->client->dev, "%s\n", __func__);
+	dev_info(&info->client->dev, "%s %s\n",
+			__func__, info->lowpower_mode ? "enter low power mode" : "");
 
+#if defined(CONFIG_SECURE_TOUCH)
+	fts_secure_touch_stop(info, 1);
+#endif
 	mutex_lock(&info->device_mutex);
 
 	if (info->touch_stopped) {
-		tsp_debug_err(true, &info->client->dev, "%s already power off\n", __func__);
+		dev_err(&info->client->dev, "%s already power off\n", __func__);
 		goto out;
 	}
 
 	if (info->lowpower_mode) {
-#ifdef FTS_SUPPORT_SIDE_GESTURE
-		if (info->board->support_sidegesture) {
-			tsp_debug_info(true, &info->client->dev, "%s mainscreen disable flag:%d, clear\n", __func__, info->mainscr_disable);
-			set_mainscreen_disable_cmd((void *)info, 0);
+#ifdef FTS_ADDED_RESETCODE_IN_LPLM
+
+		info->mainscr_disable = false;
+		info->edge_grip_mode = false;
+
+#else	// clear cmd list.
+#ifdef FTS_SUPPORT_MAINSCREEN_DISBLE
+		dev_info(&info->client->dev, "%s mainscreen disebla flag:%d, clear 0\n", __func__, info->mainscr_disable);
+		set_mainscreen_disable_cmd((void *)info, 0);
+#endif
+		if (info->edge_grip_mode == false) {
+			dev_info(&info->client->dev, "%s edge grip enable flag:%d, clear 1\n", __func__, info->edge_grip_mode);
+			longpress_grip_enable_mode(info, 1);		// default
+			grip_check_enable_mode(info, 1);			// default
 		}
 #endif
-		tsp_debug_info(true, &info->client->dev, "%s lowpower flag:%d\n", __func__, info->lowpower_flag);
+		dev_info(&info->client->dev, "%s lowpower flag:%d\n", __func__, info->lowpower_flag);
 
-		info->fts_power_state = FTS_POWER_STATE_LOWPOWER;
+		info->power_state = STATE_LOWPOWER_RESUME;
+
+		if (info->stm_ver != STM_VER7) {
+			if (info->wakeful_edge_side == EDGEWAKE_LEFT) {
+				fts_enable_feature(info, 0x0F, true);	/* left - C1, 0F*/
+			} else {
+				fts_enable_feature(info, 0x0F, false);	/* right - C2, 0F */
+			}
+			fts_delay(10);
+		}
 
 		fts_command(info, FLUSHBUFFER);
+		fts_delay(10);
 
 #ifdef FTS_SUPPORT_SIDE_GESTURE
-		if (info->board->support_sidegesture) {
-			fts_enable_feature(info, FTS_FEATURE_SIDE_GUSTURE, true);
+		if (info->dt_data->support_sidegesture) {
+			fts_enable_feature(info, FTS_FEATURE_SIDE_GESTURE, true);
 			fts_delay(20);
 		}
 #endif
+		if (info->dt_data->support_string_lib && info->fts_mode)
+			fts_enable_feature(info, 0x0B, true);
+
 		fts_command(info, FTS_CMD_LOWPOWER_MODE);
 
 		if (device_may_wakeup(&info->client->dev))
-			enable_irq_wake(info->irq);
+			enable_irq_wake(info->client->irq);
 
 		fts_command(info, FLUSHBUFFER);
+		fts_delay(10);
 
 		fts_release_all_finger(info);
 #ifdef FTS_SUPPORT_TOUCH_KEY
-		fts_release_all_key(info);
+		if (info->dt_data->support_mskey)
+			fts_release_all_key(info);
 #endif
 #ifdef FTS_SUPPORT_NOISE_PARAM
 		fts_get_noise_param(info);
 #endif
 
-#ifdef FTS_SUPPORT_STRINGLIB
-		if (info->fts_mode)
-			fts_enable_feature(info, 0x0B, true);
-#endif
 	} else {
 		fts_interrupt_set(info, INT_DISABLE);
-		disable_irq(info->irq);
+		fts_irq_enable(info, false);
 
 		fts_command(info, FLUSHBUFFER);
+		fts_delay(10);
 		fts_command(info, SLEEPIN);
 		fts_release_all_finger(info);
 #ifdef FTS_SUPPORT_TOUCH_KEY
-		fts_release_all_key(info);
+		if (info->dt_data->support_mskey)
+			fts_release_all_key(info);
 #endif
 #ifdef FTS_SUPPORT_NOISE_PARAM
 		fts_get_noise_param(info);
 #endif
 		info->touch_stopped = true;
-		info->hover_enabled = false;
-		info->hover_ready = false;
 
-		if (info->board->power)
-			info->board->power(info, false);
-
-		info->fts_power_state = FTS_POWER_STATE_POWERDOWN;
+		mutex_lock(&info->i2c_mutex);
+		fts_power_ctrl(info->client, false);
+		mutex_unlock(&info->i2c_mutex);
+		info->power_state = STATE_POWEROFF;
 	}
- out:
+	fts_pinctrl_configure(info, false);
+out:
 	mutex_unlock(&info->device_mutex);
+
 	return 0;
 }
 
 static int fts_start_device(struct fts_ts_info *info)
 {
-	tsp_debug_info(true, &info->client->dev, "%s %s\n",
+	dev_info(&info->client->dev, "%s %s\n",
 			__func__, info->lowpower_mode ? "exit low power mode" : "");
 
+#if defined(CONFIG_SECURE_TOUCH)
+	fts_secure_touch_stop(info, 1);
+#endif
 	mutex_lock(&info->device_mutex);
 
 	if (!info->touch_stopped && !info->lowpower_mode) {
-		tsp_debug_err(true, &info->client->dev, "%s already power on\n", __func__);
+		dev_err(&info->client->dev, "%s already power on\n", __func__);
 		goto out;
 	}
 
 	fts_release_all_finger(info);
 #ifdef FTS_SUPPORT_TOUCH_KEY
-	fts_release_all_key(info);
+	if (info->dt_data->support_mskey)
+		fts_release_all_key(info);
 #endif
+
+	fts_pinctrl_configure(info, true);
+	info->power_state = STATE_ACTIVE;
 
 	if (info->lowpower_mode) {
 		/* low power mode command is sent after LCD OFF. turn on touch power @ LCD ON */
 		if (info->touch_stopped)
 			goto tsp_power_on;
 
-		disable_irq(info->irq);
+		if (device_may_wakeup(&info->client->dev))
+			disable_irq_wake(info->client->irq);
+
+#ifdef USE_RESET_WORK_EXIT_LOWPOWERMODE
+		schedule_work(&info->reset_work.work);
+		goto out;
+#endif
+
+		fts_irq_enable(info, false);
 
 		info->reinit_done = false;
 		fts_reinit(info);
 		info->reinit_done = true;
 
-		enable_irq(info->irq);
-
-		if (device_may_wakeup(&info->client->dev))
-			disable_irq_wake(info->irq);
+		fts_irq_enable(info, true);
 	} else {
 tsp_power_on:
-		if (info->board->power)
-			info->board->power(info, true);
+		fts_power_ctrl(info->client, true);
+		fts_delay(10);
+
 		info->touch_stopped = false;
 		info->reinit_done = false;
 
 		fts_reinit(info);
+
 		info->reinit_done = true;
 
-		enable_irq(info->irq);
+		if (info->flip_state != info->flip_enable) {
+			dev_err(&info->client->dev, "%s: not equal cover state.(%d, %d)\n",
+				__func__, info->flip_state, info->flip_enable);
+			fts_set_cover_type(info, info->flip_enable);
+		}
+
+		fts_irq_enable(info, true);
 	}
 
-#ifdef FTS_SUPPORT_STRINGLIB
-	 if (info->fts_mode) {
-		 unsigned short addr = FTS_CMD_STRING_ACCESS;
-		 int ret;
+	if (info->dt_data->support_string_lib && info->fts_mode) {
+		unsigned short string_addr = FTS_CMD_STRING_ACCESS;
+		int ret;
 
-		 ret = info->fts_write_to_string(info, &addr, &info->fts_mode, sizeof(info->fts_mode));
-		 if (ret < 0)
-			 tsp_debug_err(true, &info->client->dev, "%s: failed. ret: %d\n", __func__, ret);
-	 }
-#endif
-
-	info->tspid_val= gpio_get_value(info->board->tspid);
-
- out:
+		ret = info->fts_write_to_string(info, &string_addr, &info->fts_mode, sizeof(info->fts_mode));
+		if (ret < 0)
+			dev_err(&info->client->dev, "%s: failed. ret: %d\n", __func__, ret);
+	}
+out:
 	mutex_unlock(&info->device_mutex);
 
-	info->fts_power_state = FTS_POWER_STATE_ACTIVE;
-
 	return 0;
 }
 
-static void fts_shutdown(struct i2c_client *client)
+#if defined(USE_RESET_WORK_EXIT_LOWPOWERMODE) || defined(FTS_SUPPORT_ESD_CHECK)
+static void fts_reset_work(struct work_struct *work)
 {
-	struct fts_ts_info *info = i2c_get_clientdata(client);
+	struct fts_ts_info *info = container_of(work, struct fts_ts_info,
+						reset_work.work);
+	unsigned char orig_state;
+	bool orig_lowpower;
 
-	tsp_debug_info(true, &info->client->dev, "FTS %s called!\n", __func__);
+	orig_state = info->power_state;
+	orig_lowpower = info->lowpower_mode;
 
-	if (info->lowpower_mode) {
-		info->lowpower_mode = 0;
-		tsp_debug_info(true, &info->client->dev, "FTS lowpower_mode off!\n");
+	info->lowpower_mode = FTS_DISABLE;
+
+	dev_info(&info->client->dev, "%s, reset IC off, lpm:%d\n", __func__, orig_lowpower);
+	fts_stop_device(info);
+
+	msleep(100);
+
+	info->lowpower_mode = orig_lowpower;
+	dev_dbg(&info->client->dev, "%s, reset IC on\n", __func__);
+	if (fts_start_device(info) < 0) {
+		dev_err(&info->client->dev,
+			"%s: Failed to start device\n", __func__);
 	}
 
-	fts_stop_device(info);
-#ifdef FTS_SUPPORT_TOUCH_KEY
-	 if (info->board->led_power)
-		 info->board->led_power(info, false);
-#endif
+	if (orig_state & STATE_LOWPOWER)
+		fts_stop_device(info);
 }
-
-void fts_recovery_cx(struct fts_ts_info *info)
-{
-	unsigned char regAdd[4] = {0};
-	unsigned char buf[8] = {0};
-	unsigned char cnt = 100;
-
-	regAdd[0] = 0xB6;
-	regAdd[1] = 0x00;
-	regAdd[2] = 0x1E;
-	regAdd[3] = 0x08;
-	fts_write_reg(info,&regAdd[0], 4);		// Loading FW to PRAM  without CRC Check
-	fts_delay(30);
-
-
-	fts_command(info,CX_TUNNING);
-	fts_delay(300);
-
-	fts_command(info,FTS_CMD_SAVE_CX_TUNING);
-	fts_delay(200);
-
-	do
-	{
-		int ret;
-		regAdd[0] = READ_ONE_EVENT;
-		ret = fts_read_reg(info, regAdd, 1, &buf[0], FTS_EVENT_SIZE);
-
-		fts_delay(10);
-		if(cnt-- == 0) break;
-	}while(buf[0] != 0x16 || buf[1] != 0x04);
-
-
-	fts_command(info, SLEEPOUT);
-	fts_delay(50);
-
-	fts_command(info, SENSEON);
-	fts_delay(50);
-
-#ifdef FTS_SUPPORT_TOUCH_KEY
-	if (info->board->support_mskey)
-		fts_command(info, FTS_CMD_KEY_SENSE_ON);
 #endif
-
-	fts_command(info, FLUSHBUFFER);
-}
 
 #ifdef CONFIG_PM
-static int fts_pm_suspend(struct device *dev)
+static int fts_ts_suspend(struct device *dev)
 {
 	struct fts_ts_info *info = dev_get_drvdata(dev);
 
-	tsp_debug_err(true, &info->client->dev, "%s\n", __func__);;
+	if (info->lowpower_mode)
+		reinit_completion(&info->resume_done);
 
-	mutex_lock(&info->input_dev->mutex);
-
-	if (info->input_dev->users)
-		fts_stop_device(info);
-
-	mutex_unlock(&info->input_dev->mutex);
+	info->power_state = STATE_LOWPOWER_SUSPEND;
 
 	return 0;
 }
 
-static int fts_pm_resume(struct device *dev)
+static int fts_ts_resume(struct device *dev)
 {
 	struct fts_ts_info *info = dev_get_drvdata(dev);
 
-	tsp_debug_err(true, &info->client->dev, "%s\n", __func__);
+	if (info->lowpower_mode)
+		complete_all(&info->resume_done);
 
-	mutex_lock(&info->input_dev->mutex);
-
-	if (info->input_dev->users)
-		fts_start_device(info);
-
-	mutex_unlock(&info->input_dev->mutex);
-
-	return 0;
-}
-#endif
-
-#if (!defined(CONFIG_HAS_EARLYSUSPEND)) && (!defined(CONFIG_PM)) && !defined(USE_OPEN_CLOSE)
-static int fts_suspend(struct i2c_client *client, pm_message_t mesg)
-{
-	struct fts_ts_info *info = i2c_get_clientdata(client);
-
-	tsp_debug_info(true, &info->client->dev, "%s\n", __func__);
-
-	fts_stop_device(info);
+	info->power_state = STATE_LOWPOWER_RESUME;
 
 	return 0;
 }
 
-static int fts_resume(struct i2c_client *client)
-{
 
-	struct fts_ts_info *info = i2c_get_clientdata(client);
-
-	tsp_debug_info(true, &info->client->dev, "%s\n", __func__);
-
-	fts_start_device(info);
-
-	return 0;
-}
+static const struct dev_pm_ops fts_ts_pm_ops = {
+	.suspend = fts_ts_suspend,
+	.resume  = fts_ts_resume,
+};
 #endif
 
 static const struct i2c_device_id fts_device_id[] = {
@@ -2811,45 +3533,44 @@ static const struct i2c_device_id fts_device_id[] = {
 	{}
 };
 
-#ifdef CONFIG_PM
-static const struct dev_pm_ops fts_dev_pm_ops = {
-	.suspend = fts_pm_suspend,
-	.resume = fts_pm_resume,
-};
-#endif
-
 #ifdef CONFIG_OF
 static struct of_device_id fts_match_table[] = {
-        { .compatible = "stm,fts_touch",},
-        { },
+	{ .compatible = "stm,fts_ts",},
+	{ },
 };
 #else
-#define fts_match_table NULL
+#define fts_match_table   NULL
 #endif
 
 static struct i2c_driver fts_i2c_driver = {
 	.driver = {
-		   .name = FTS_TS_DRV_NAME,
-		   .owner = THIS_MODULE,
+		.name = FTS_TS_DRV_NAME,
+		.owner = THIS_MODULE,
 #ifdef CONFIG_OF
-		   .of_match_table = fts_match_table,
+		.of_match_table = fts_match_table,
 #endif
 #ifdef CONFIG_PM
-		   .pm = &fts_dev_pm_ops,
+		.pm = &fts_ts_pm_ops,
 #endif
-		   },
+
+	},
 	.probe = fts_probe,
 	.remove = fts_remove,
 	.shutdown = fts_shutdown,
-#if (!defined(CONFIG_HAS_EARLYSUSPEND)) && (!defined(CONFIG_PM)) && !defined(USE_OPEN_CLOSE)
-	.suspend = fts_suspend,
-	.resume = fts_resume,
-#endif
 	.id_table = fts_device_id,
 };
 
 static int __init fts_driver_init(void)
 {
+	pr_err("%s\n", __func__);
+
+#ifdef CONFIG_SAMSUNG_LPM_MODE
+	if (poweroff_charging) {
+		pr_err("%s : LPM Charging Mode!!\n", __func__);
+		return 0;
+	}
+#endif
+
 	return i2c_add_driver(&fts_i2c_driver);
 }
 
@@ -2864,3 +3585,4 @@ MODULE_LICENSE("GPL v2");
 
 module_init(fts_driver_init);
 module_exit(fts_driver_exit);
+

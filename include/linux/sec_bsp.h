@@ -21,15 +21,8 @@
 #ifndef SEC_BSP_H
 #define SEC_BSP_H
 
-extern bool init_command_debug;
 
-extern void sec_boot_stat_get_start_kernel(void);
-extern void sec_boot_stat_get_mct(u32);
-extern void sec_boot_stat_add_initcall(const char *);
-extern void sec_boot_stat_add(const char *);
-extern void get_cpuinfo_cur_freq(int *, int *);
-extern void get_exynos_thermal_curr_temp(int *, int);
-extern void sec_boot_stat_add_init_command(const char *name,
-	int duration);
+extern void sec_boot_stat_add(const char * c);
+
 
 #endif

@@ -23,8 +23,6 @@
 
 #define ENABLE 1
 #define DISABLE 0
-static void da9155_set_charge_current(struct da9155_charger_data *charger,
-	int charge_current);
 
 static enum power_supply_property da9155_charger_props[] = {
 };
@@ -116,6 +114,7 @@ static int da9155_get_charger_health(struct da9155_charger_data *charger)
 		dev_info(charger->dev,
 				"%s: addr: 0x%x write fail\n", __func__, DA9155_TIMER_B);
 	}
+	da9155_charger_test_read(charger);
 
 	da9155_read_reg(charger->i2c, DA9155_STATUS_A, &reg_data);
 	if (reg_data & DA9155_S_VIN_UV_MASK) {
@@ -131,6 +130,19 @@ static int da9155_get_charger_health(struct da9155_charger_data *charger)
 		return POWER_SUPPLY_HEALTH_GOOD;
 }
 
+#if 0
+static int da9155_get_input_current(struct da9155_charger_data *charger)
+{
+	u8 reg_data;
+	int input_current;
+
+	da9155_read_reg(charger->i2c, DA9155_BUCK_ILIM, &reg_data);
+	input_current = reg_data * 100 + 3000;
+
+	return input_current;
+}
+#endif
+
 static int da9155_get_charge_current(struct da9155_charger_data *charger)
 {
 	u8 reg_data;
@@ -142,54 +154,15 @@ static int da9155_get_charge_current(struct da9155_charger_data *charger)
 	return charge_current;
 }
 
-static void da9155_charger_initialize(struct da9155_charger_data *charger)
-{
-	pr_info("%s\n", __func__);
-
-	/* clear event reg */
-	da9155_update_reg(charger->i2c, DA9155_EVENT_A, 0xFF, 0xFF);
-	da9155_update_reg(charger->i2c, DA9155_EVENT_B, 0xFF, 0xFF);
-
-	/* Safety timer enable */
-	da9155_update_reg(charger->i2c, DA9155_CONTROL_E, 0, DA9155_TIMER_DIS_MASK);
-
-	/* VBAT_OV: MAX(5V) */
-	da9155_update_reg(charger->i2c, DA9155_CONTROL_C, 0x38, DA9155_VBAT_OV_MASK);
-}
-
 static void da9155_set_charger_state(struct da9155_charger_data *charger,
 	int enable)
 {
-	u8 status = 0;
-	int current_setting = 0;
-
 	pr_info("%s: BUCK_EN(%s)\n", enable > 0 ? "ENABLE" : "DISABLE", __func__);
 
-	if (enable){
-		da9155_charger_initialize(charger);
-		da9155_read_reg(charger->i2c, DA9155_STATUS_A, &status);
-		if (status & 0x7E ){
-			pr_info("%s: STATUS_A(0x%X)\n", __func__, status);
-			return;
-		}
-
-		current_setting = da9155_get_charge_current(charger);
-		da9155_set_charge_current(charger, 500);
+	if (enable)
 		da9155_update_reg(charger->i2c, DA9155_BUCK_CONT, DA9155_BUCK_EN_MASK, DA9155_BUCK_EN_MASK);
-		msleep(10);
-		if (current_setting > 500)
-			da9155_set_charge_current(charger, current_setting);
-	}
-	else {
-		current_setting = da9155_get_charge_current(charger);
-		if (current_setting > 700) {
-			da9155_set_charge_current(charger, 700);
-			msleep(100);
-		}
-		da9155_set_charge_current(charger, 500);
-		msleep(100);
+	else
 		da9155_update_reg(charger->i2c, DA9155_BUCK_CONT, 0, DA9155_BUCK_EN_MASK);
-	}
 }
 
 #if 0
@@ -221,67 +194,25 @@ static void da9155_set_charge_current(struct da9155_charger_data *charger,
 	pr_info("%s: charge_current(%d)\n", __func__, charge_current);
 }
 
-/* return : 0 (AFC type or High Voltage( > 6V), 1 : 5V ) */
-static int da9155_check_cable_type(unsigned int type)
+static void da9155_charger_initialize(struct da9155_charger_data *charger)
 {
-	if (type == POWER_SUPPLY_TYPE_BATTERY)
-		return -1;
+	pr_info("%s: \n", __func__);
 
-	// AFC or High Voltage charger (6V > )
-	if (type == POWER_SUPPLY_TYPE_HV_MAINS
-			|| type == POWER_SUPPLY_TYPE_HV_MAINS_12V) {
-		return 0;
-	}
-	else {
-		return 1;
-	}
+	/* clear event reg */
+	da9155_update_reg(charger->i2c, DA9155_EVENT_A, 0xFF, 0xFF);
+	da9155_update_reg(charger->i2c, DA9155_EVENT_B, 0xFF, 0xFF);
 
-	return -1;
-}
+	/* unmasked: E_VIN_UV, E_VIN_DROP, E_VIN_OV	*/
+	da9155_update_reg(charger->i2c, DA9155_MASK_A,
+			DA9155_M_VIN_UV_MASK | DA9155_M_VIN_DROP_MASK | DA9155_M_VIN_OV_MASK,
+			0xFF);
+	da9155_update_reg(charger->i2c, DA9155_MASK_B, 0, 0xFF);
 
-static void da9155_set_vindrop_vbatov(struct da9155_charger_data *charger)
-{
-	/* VBAT OV Enable */
-	da9155_write_reg(charger->i2c, DA9155_PAGE_CTRL_0, 0x06);
-	da9155_write_reg(charger->i2c, 0x39, 0x05);
-	da9155_write_reg(charger->i2c, 0x19, 0x0);
-	da9155_write_reg(charger->i2c, 0x39, 0x0);
-	da9155_write_reg(charger->i2c, DA9155_PAGE_CTRL_0, 0x0);
-
-	/* set VIN_DROP to 4.5V */
-	da9155_write_reg(charger->i2c, DA9155_CONTROL_A, 0x4);
-}
-
-static void da9155_mode_change(struct da9155_charger_data *charger, u8 enable)
-{
-	if(charger->i2c) {
-		pr_info("%s: mode(%d), prev_cable_type(%d), cable_type(%d)\n",
-			__func__, enable,charger->prev_cable_type, charger->cable_type);
-		if (enable == ENABLE) {
-			da9155_write_reg(charger->i2c, DA9155_PAGE_CTRL_0, 0x06);
-			da9155_write_reg(charger->i2c, 0x39, 0x05);
-			da9155_write_reg(charger->i2c, 0x11, 0x04);
-			da9155_write_reg(charger->i2c, 0x39, 0x0);
-			da9155_write_reg(charger->i2c, DA9155_PAGE_CTRL_0, 0x0);
-		} else if (enable == DISABLE) {
-			if((charger->prev_cable_type == POWER_SUPPLY_TYPE_HV_MAINS ||
-				charger->prev_cable_type == POWER_SUPPLY_TYPE_HV_MAINS_12V) &&
-				charger->cable_type == POWER_SUPPLY_TYPE_BATTERY)
-					return;
-
-			da9155_write_reg(charger->i2c, DA9155_PAGE_CTRL_0, 0x06);
-			da9155_write_reg(charger->i2c, 0x39, 0x05);
-			da9155_write_reg(charger->i2c, 0x11, 0x0);
-			if(charger->prev_cable_type != POWER_SUPPLY_TYPE_HV_MAINS &&
-				charger->prev_cable_type != POWER_SUPPLY_TYPE_HV_MAINS_12V &&
-				charger->prev_cable_type != POWER_SUPPLY_TYPE_BATTERY &&
-				charger->cable_type == POWER_SUPPLY_TYPE_BATTERY)
-					return;
-
-			da9155_write_reg(charger->i2c, 0x39, 0x0);
-			da9155_write_reg(charger->i2c, DA9155_PAGE_CTRL_0, 0x0);
-		}
-	}
+	/* Safety timer enable */
+	da9155_update_reg(charger->i2c, DA9155_CONTROL_E, 0, DA9155_TIMER_DIS_MASK);
+	
+	/* VBAT_OV: MAX(5V) */
+	da9155_update_reg(charger->i2c, DA9155_CONTROL_C, 0x38, DA9155_VBAT_OV_MASK);
 }
 
 static irqreturn_t da9155_irq_handler(int irq, void *data)
@@ -293,14 +224,7 @@ static irqreturn_t da9155_irq_handler(int irq, void *data)
 			"%s: \n", __func__);
 
 	if (!da9155_read_reg(charger->i2c, DA9155_EVENT_A, &event_a) &&
-			!da9155_read_reg(charger->i2c, DA9155_EVENT_B, &event_b)) {
-
-		if ((event_b & 0x1) && (charger->cable_type != POWER_SUPPLY_TYPE_BATTERY)) {
-			dev_info(charger->dev, "%s: E_RDY Event occured", __func__);
-			da9155_mode_change(charger, da9155_check_cable_type(charger->cable_type));
-			da9155_charger_initialize(charger);
-			da9155_set_vindrop_vbatov(charger);
-		}
+		!da9155_read_reg(charger->i2c, DA9155_EVENT_B, &event_b)) {
 
 		/* clear event reg */
 		da9155_write_reg(charger->i2c, DA9155_EVENT_A, event_a);
@@ -323,12 +247,7 @@ static int da9155_chg_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_HEALTH:
-		if (charger->cable_type == POWER_SUPPLY_TYPE_HV_MAINS ||
-			charger->cable_type == POWER_SUPPLY_TYPE_HV_MAINS_12V) {
-			da9155_charger_test_read(charger);
-			val->intval = da9155_get_charger_health(charger);
-		} else
-			val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		val->intval = da9155_get_charger_health(charger);
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
 		val->intval = da9155_get_charger_state(charger);
@@ -345,10 +264,6 @@ static int da9155_chg_get_property(struct power_supply *psy,
 				u8 reg_data;
 				val->intval = (da9155_read_reg(charger->i2c, DA9155_EVENT_B, &reg_data) == 0);
 			}
-			break;
-		case POWER_SUPPLY_EXT_PROP_CHECK_MULTI_CHARGE:
-			val->intval = (da9155_get_charger_health(charger) == POWER_SUPPLY_HEALTH_GOOD) ?
-				da9155_get_charger_state(charger) : POWER_SUPPLY_STATUS_NOT_CHARGING;
 			break;
 		default:
 			return -EINVAL;
@@ -383,13 +298,7 @@ static int da9155_chg_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_ONLINE:
 		charger->cable_type = val->intval;
 		if (val->intval != POWER_SUPPLY_TYPE_BATTERY) {
-			da9155_mode_change(charger, da9155_check_cable_type(charger->cable_type));
-			charger->prev_cable_type = charger->cable_type;
 			da9155_charger_initialize(charger);
-			da9155_set_vindrop_vbatov(charger);
-		} else {
-			da9155_mode_change(charger, DISABLE);
-			charger->prev_cable_type = POWER_SUPPLY_TYPE_BATTERY;
 		}
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
@@ -441,6 +350,106 @@ static int da9155_charger_parse_dt(struct da9155_charger_data *charger,
 	return ret;
 }
 
+static ssize_t da9155_store_addr(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	int x;
+	if (sscanf(buf, "0x%x\n", &x) == 1) {
+		charger->addr = x;
+	}
+	return count;
+}
+
+static ssize_t da9155_show_addr(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	return sprintf(buf, "0x%x\n", charger->addr);
+}
+
+static ssize_t da9155_store_size(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	int x;
+	if (sscanf(buf, "%d\n", &x) == 1) {
+		charger->size = x;
+	}
+	return count;
+}
+
+static ssize_t da9155_show_size(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	return sprintf(buf, "0x%x\n", charger->size);
+}
+static ssize_t da9155_store_data(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	int x;
+
+	if (sscanf(buf, "0x%x", &x) == 1) {
+		u8 data = x;
+		if (da9155_write_reg(charger->i2c, charger->addr, data) < 0)
+		{
+			dev_info(charger->dev,
+					"%s: addr: 0x%x write fail\n", __func__, charger->addr);
+		}
+	}
+	return count;
+}
+
+static ssize_t da9155_show_data(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct da9155_charger_data *charger = container_of(psy, struct da9155_charger_data, psy_chg);
+	u8 data;
+	int i, count = 0;;
+	if (charger->size == 0)
+		charger->size = 1;
+
+	for (i = 0; i < charger->size; i++) {
+		if (da9155_read_reg(charger->i2c, charger->addr+i, &data) < 0) {
+			dev_info(charger->dev,
+					"%s: read fail\n", __func__);
+			count += sprintf(buf+count, "addr: 0x%x read fail\n", charger->addr+i);
+			continue;
+		}
+		count += sprintf(buf+count, "addr: 0x%x, data: 0x%x\n", charger->addr+i,data);
+	}
+	return count;
+}
+
+static DEVICE_ATTR(addr, 0644, da9155_show_addr, da9155_store_addr);
+static DEVICE_ATTR(size, 0644, da9155_show_size, da9155_store_size);
+static DEVICE_ATTR(data, 0644, da9155_show_data, da9155_store_data);
+
+static struct attribute *da9155_attributes[] = {
+	&dev_attr_addr.attr,
+	&dev_attr_size.attr,
+	&dev_attr_data.attr,
+	NULL
+};
+
+static const struct attribute_group da9155_attr_group = {
+	.attrs = da9155_attributes,
+};
+
 static int da9155_charger_probe(struct i2c_client *client,
 	const struct i2c_device_id *id)
 {
@@ -483,7 +492,6 @@ static int da9155_charger_probe(struct i2c_client *client,
 
 	/* da9155_charger_initialize(charger); */
 	charger->cable_type = POWER_SUPPLY_TYPE_BATTERY;
-	charger->prev_cable_type = POWER_SUPPLY_TYPE_BATTERY;
 
 	ret = power_supply_register(charger->dev, &charger->psy_chg);
 	if (ret) {
@@ -497,7 +505,7 @@ static int da9155_charger_probe(struct i2c_client *client,
 
 		ret = request_threaded_irq(charger->chg_irq, NULL,
 			da9155_irq_handler,
-			IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+			IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 			"da9155-irq", charger);
 		if (ret < 0) {
 			pr_err("%s: Failed to Request IRQ(%d)\n", __func__, ret);
@@ -506,6 +514,11 @@ static int da9155_charger_probe(struct i2c_client *client,
 	}
 	device_init_wakeup(charger->dev, 1);
 
+	ret = sysfs_create_group(&charger->psy_chg.dev->kobj, &da9155_attr_group);
+	if (ret) {
+		dev_info(&client->dev,
+			"%s: sysfs_create_group failed\n", __func__);
+	}
 	pr_info("%s: DA9155 Charger Driver Loaded\n", __func__);
 
 	return 0;
@@ -530,6 +543,7 @@ static int da9155_charger_remove(struct i2c_client *client)
 		free_irq(charger->chg_irq, charger);
 	power_supply_unregister(&charger->psy_chg);
 	mutex_destroy(&charger->io_lock);
+	kfree(charger->pdata);
 	kfree(charger);
 
 	return 0;
@@ -543,8 +557,6 @@ static void da9155_charger_shutdown(struct i2c_client *client)
 		free_irq(charger->chg_irq, charger);
 	da9155_update_reg(client, DA9155_BUCK_CONT, 0, DA9155_BUCK_EN_MASK);
 	da9155_update_reg(client, DA9155_BUCK_IOUT, 0x7D, DA9155_BUCK_ILIM_MASK);
-	if (charger->cable_type != POWER_SUPPLY_TYPE_BATTERY)
-		da9155_mode_change(charger, DISABLE);
 }
 
 static const struct i2c_device_id da9155_charger_id_table[] = {

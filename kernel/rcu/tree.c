@@ -56,7 +56,6 @@
 #include <linux/random.h>
 #include <linux/ftrace_event.h>
 #include <linux/suspend.h>
-#include <linux/exynos-ss.h>
 
 #include "tree.h"
 #include "rcu.h"
@@ -1071,11 +1070,8 @@ static void print_other_cpu_stall(struct rcu_state *rsp)
 	 * See Documentation/RCU/stallwarn.txt for info on how to debug
 	 * RCU CPU stall warnings.
 	 */
-
-	exynos_ss_printkl((size_t)rsp->name, (size_t)rsp);
-	pr_auto(ASL1, "INFO: %s detected stalls on CPUs/tasks:",
-		   rsp->name);
-
+	pr_err("INFO: %s detected stalls on CPUs/tasks:",
+	       rsp->name);
 	print_cpu_stall_info_begin();
 	rcu_for_each_leaf_node(rsp, rnp) {
 		raw_spin_lock_irqsave(&rnp->lock, flags);
@@ -1130,10 +1126,7 @@ static void print_cpu_stall(struct rcu_state *rsp)
 	 * See Documentation/RCU/stallwarn.txt for info on how to debug
 	 * RCU CPU stall warnings.
 	 */
-
-	exynos_ss_printkl((size_t)rsp->name, (size_t)rsp);
-	pr_auto(ASL1, "INFO: %s self-detected stall on CPU", rsp->name);
-
+	pr_err("INFO: %s self-detected stall on CPU", rsp->name);
 	print_cpu_stall_info_begin();
 	print_cpu_stall_info(rsp, smp_processor_id());
 	print_cpu_stall_info_end();
@@ -2947,11 +2940,6 @@ static int synchronize_sched_expedited_cpu_stop(void *data)
  * restructure your code to batch your updates, and then use a single
  * synchronize_sched() instead.
  *
- * Note that it is illegal to call this function while holding any lock
- * that is acquired by a CPU-hotplug notifier.  And yes, it is also illegal
- * to call this function from a CPU-hotplug notifier.  Failing to observe
- * these restriction will result in deadlock.
- *
  * This implementation can be thought of as an application of ticket
  * locking to RCU, with sync_sched_expedited_started and
  * sync_sched_expedited_done taking on the roles of the halves
@@ -3001,7 +2989,12 @@ void synchronize_sched_expedited(void)
 	 */
 	snap = atomic_long_inc_return(&rsp->expedited_start);
 	firstsnap = snap;
-	get_online_cpus();
+	if (!try_get_online_cpus()) {
+		/* CPU hotplug operation in flight, fall back to normal GP. */
+		wait_rcu_gp(call_rcu_sched);
+		atomic_long_inc(&rsp->expedited_normal);
+		return;
+	}
 	WARN_ON_ONCE(cpu_is_offline(raw_smp_processor_id()));
 
 	/*
@@ -3048,7 +3041,12 @@ void synchronize_sched_expedited(void)
 		 * and they started after our first try, so their grace
 		 * period works for us.
 		 */
-		get_online_cpus();
+		if (!try_get_online_cpus()) {
+			/* CPU hotplug operation in flight, use normal GP. */
+			wait_rcu_gp(call_rcu_sched);
+			atomic_long_inc(&rsp->expedited_normal);
+			return;
+		}
 		snap = atomic_long_read(&rsp->expedited_start);
 		smp_mb(); /* ensure read is before try_stop_cpus(). */
 	}
@@ -3156,30 +3154,19 @@ static int rcu_pending(int cpu)
 }
 
 /*
- * Return true if the specified CPU has any callback.  If all_lazy is
- * non-NULL, store an indication of whether all callbacks are lazy.
- * (If there are no callbacks, all of them are deemed to be lazy.)
+ * Check to see if any future RCU-related work will need to be done
+ * by the current CPU, even if none need be done immediately, returning
+ * 1 if so.
  */
-static int __maybe_unused rcu_cpu_has_callbacks(int cpu, bool *all_lazy)
+static int __maybe_unused rcu_cpu_has_callbacks(int cpu)
 {
-	bool al = true;
-	bool hc = false;
-	struct rcu_data *rdp;
 	struct rcu_state *rsp;
 
-	for_each_rcu_flavor(rsp) {
-		rdp = per_cpu_ptr(rsp->rda, cpu);
-		if (!rdp->nxtlist)
-			continue;
-		hc = true;
-		if (rdp->qlen != rdp->qlen_lazy || !all_lazy) {
-			al = false;
-			break;
-		}
-	}
-	if (all_lazy)
-		*all_lazy = al;
-	return hc;
+	/* RCU callbacks either ready or pending? */
+	for_each_rcu_flavor(rsp)
+		if (per_cpu_ptr(rsp->rda, cpu)->nxtlist)
+			return 1;
+	return 0;
 }
 
 /*
@@ -3414,6 +3401,7 @@ rcu_init_percpu_data(int cpu, struct rcu_state *rsp)
 	rcu_sysidle_init_percpu_data(rdp->dynticks);
 	atomic_set(&rdp->dynticks->dynticks,
 		   (atomic_read(&rdp->dynticks->dynticks) & ~0x1) + 1);
+	rcu_prepare_for_idle_init(cpu);
 	raw_spin_unlock(&rnp->lock);		/* irqs remain disabled. */
 
 	/* Add CPU to rcu_node bitmasks. */
@@ -3482,6 +3470,7 @@ static int rcu_cpu_notify(struct notifier_block *self,
 	case CPU_DYING_FROZEN:
 		for_each_rcu_flavor(rsp)
 			rcu_cleanup_dying_cpu(rsp);
+		rcu_cleanup_after_idle(cpu);
 		break;
 	case CPU_DEAD:
 	case CPU_DEAD_FROZEN:

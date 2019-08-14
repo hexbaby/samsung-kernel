@@ -93,6 +93,27 @@ config INPUT_BMA150
 	  To compile this driver as a module, choose M here: the
 	  module will be called bma150.
 
+config INPUT_HBTP_INPUT
+	tristate "HBTP input driver support"
+	help
+	  This option enables an input driver for the host based touch
+	  processing.
+
+	  Say Y to enable HBTP input driver.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hbtp_input.
+
+config HBTP_INPUT_SECURE_TOUCH
+	bool "Secure Touch support for HBTP Input driver"
+	depends on INPUT_HBTP_INPUT
+	help
+	  This option enables the Secure Touch functionality of the HBTP
+	  Input driver.
+
+	  Say Y to enable this functionality.
+	  If unsure, say N.
+
 config INPUT_PCSPKR
 	tristate "PC Speaker support"
 	depends on PCSPKR_PLATFORM

@@ -106,10 +106,8 @@ static void ufshcd_pci_remove(struct pci_dev *pdev)
 
 	pm_runtime_forbid(&pdev->dev);
 	pm_runtime_get_noresume(&pdev->dev);
-
-	disable_irq(pdev->irq);
 	ufshcd_remove(hba);
-	pci_set_drvdata(pdev, NULL);
+	ufshcd_dealloc_host(hba);
 }
 
 /**
@@ -153,6 +151,7 @@ ufshcd_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	err = ufshcd_init(hba, mmio_base, pdev->irq);
 	if (err) {
 		dev_err(&pdev->dev, "Initialization failed\n");
+		ufshcd_dealloc_host(hba);
 		return err;
 	}
 
@@ -171,7 +170,7 @@ static const struct dev_pm_ops ufshcd_pci_pm_ops = {
 	.runtime_idle    = ufshcd_pci_runtime_idle,
 };
 
-static DEFINE_PCI_DEVICE_TABLE(ufshcd_pci_tbl) = {
+static const struct pci_device_id ufshcd_pci_tbl[] = {
 	{ PCI_VENDOR_ID_SAMSUNG, 0xC00C, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ }	/* terminate list */
 };

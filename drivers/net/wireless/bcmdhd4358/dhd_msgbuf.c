@@ -4,7 +4,7 @@
  * Provides type definitions and function prototypes used to link the
  * DHD OS, bus, and protocol modules.
  *
- * Copyright (C) 1999-2017, Broadcom Corporation
+ * Copyright (C) 1999-2016, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -24,7 +24,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_msgbuf.c 692310 2017-03-27 13:03:10Z $
+ * $Id: dhd_msgbuf.c 633981 2016-04-26 09:33:48Z $
  */
 #include <typedefs.h>
 #include <osl.h>
@@ -612,7 +612,7 @@ static INLINE uint32 dhd_pktid_map_avail_cnt(dhd_pktid_map_handle_t *handle);
 
 /* Allocate a unique pktid against which a pkt and some metadata is saved */
 static INLINE uint32 dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle,
-                                           void *pkt, uint8 buf_type);
+                                           void *pkt);
 static INLINE void dhd_pktid_map_save(dhd_pktid_map_handle_t *handle, void *pkt,
                        uint32 nkey, dmaaddr_t physaddr, uint32 len, uint8 dma,
                        uint8 buf_type);
@@ -709,7 +709,7 @@ typedef struct dhd_pktid_map {
 #define NATIVE_TO_PKTID_FINI(map)        dhd_pktid_map_fini(map)
 #define NATIVE_TO_PKTID_CLEAR(map)       dhd_pktid_map_clear(map)
 
-#define NATIVE_TO_PKTID_RSV(map, pkt, buf_type)    dhd_pktid_map_reserve((map), (pkt), (buf_type))
+#define NATIVE_TO_PKTID_RSV(map, pkt)    dhd_pktid_map_reserve((map), (pkt))
 #define NATIVE_TO_PKTID_SAVE(map, pkt, nkey, pa, len, dma, buf_type) \
 	dhd_pktid_map_save((map), (void *)(pkt), (nkey), (pa), (uint32)(len), \
 	(uint8)dma, (uint8)buf_type)
@@ -1167,7 +1167,7 @@ dhd_pktid_map_avail_cnt(dhd_pktid_map_handle_t *handle)
  * implying a depleted pool of pktids.
  */
 static INLINE uint32
-__dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt, uint8 buf_type)
+__dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt)
 {
 	uint32 nkey;
 	dhd_pktid_map_t *map;
@@ -1200,16 +1200,6 @@ __dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt, uint8 buf_typ
 
 #endif /* ! DHD_PKTIDMAP_FIFO */
 
-	if ((map->avail > map->items) ||
-		(nkey > DHD_PKIDMAP_ITEMS(map->items))) {
-		map->failures++;
-		DHD_ERROR(("%s:%d: failed to allocate a new pktid,"
-			" map->avail<%u>, nkey<%u>, buf_type<%u>\n",
-			__FUNCTION__, __LINE__, map->avail, nkey,
-			buf_type));
-		return DHD_PKTID_INVALID; /* failed alloc request */
-	}
-
 	map->avail--;
 
 	locker->inuse = TRUE; /* reserve this locker */
@@ -1226,7 +1216,7 @@ __dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt, uint8 buf_typ
 
 /* Wrapper that takes the required lock when called directly */
 static INLINE uint32
-dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt, uint8 buf_type)
+dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt)
 {
 	dhd_pktid_map_t *map;
 	unsigned long flags;
@@ -1235,7 +1225,7 @@ dhd_pktid_map_reserve(dhd_pktid_map_handle_t *handle, void *pkt, uint8 buf_type)
 	ASSERT(handle != NULL);
 	map = (dhd_pktid_map_t *)handle;
 	flags = DHD_PKTID_LOCK(map->pktid_lock);
-	ret = __dhd_pktid_map_reserve(handle, pkt, buf_type);
+	ret = __dhd_pktid_map_reserve(handle, pkt);
 	DHD_PKTID_UNLOCK(map->pktid_lock, flags);
 
 	return ret;
@@ -1252,12 +1242,6 @@ __dhd_pktid_map_save(dhd_pktid_map_handle_t *handle, void *pkt, uint32 nkey,
 	map = (dhd_pktid_map_t *)handle;
 
 	ASSERT((nkey != DHD_PKTID_INVALID) && (nkey <= DHD_PKIDMAP_ITEMS(map->items)));
-
-	if ((nkey == DHD_PKTID_INVALID) || (nkey > DHD_PKIDMAP_ITEMS(map->items))) {
-		DHD_ERROR(("%s:%d: Error! saving invalid pktid<%u> buf_type<%u>\n",
-			__FUNCTION__, __LINE__, nkey, buf_type));
-		return;
-	}
 
 	locker = &map->lockers[nkey];
 	ASSERT((locker->pkt == pkt) && (locker->inuse == TRUE));
@@ -1300,7 +1284,7 @@ dhd_pktid_map_alloc(dhd_pktid_map_handle_t *handle, void *pkt,
 
 	flags = DHD_PKTID_LOCK(map->pktid_lock);
 
-	nkey = __dhd_pktid_map_reserve(handle, pkt, buf_type);
+	nkey = __dhd_pktid_map_reserve(handle, pkt);
 	if (nkey != DHD_PKTID_INVALID) {
 		__dhd_pktid_map_save(handle, pkt, nkey, physaddr, len,
 			dma, buf_type);
@@ -1338,8 +1322,7 @@ dhd_pktid_map_free(dhd_pktid_map_handle_t *handle, uint32 nkey,
 	ASSERT((nkey != DHD_PKTID_INVALID) && (nkey <= DHD_PKIDMAP_ITEMS(map->items)));
 
 	if ((nkey == DHD_PKTID_INVALID) || (nkey > DHD_PKIDMAP_ITEMS(map->items))) {
-		DHD_ERROR(("%s:%d: Error! Try to free invalid pktid<%u>, buf_type<%u>\n",
-			__FUNCTION__, __LINE__, nkey, buf_type));
+		DHD_ERROR(("%s: PKTID %d is invalid\n", __FUNCTION__, nkey));
 		return NULL;
 	}
 
@@ -2730,16 +2713,10 @@ dhd_prot_txstatus_process(dhd_pub_t *dhd, void * buf, uint16 msglen)
 #endif /* DHD_PKTID_AUDIT_RING */
 
 	DHD_INFO(("txstatus for pktid 0x%04x\n", pktid));
-	if (prot->active_tx_count) {
+	if (prot->active_tx_count)
 		prot->active_tx_count--;
-
-		/* Release the Lock when no more tx packets are pending */
-		if (prot->active_tx_count == 0)
-			 DHD_TXFL_WAKE_UNLOCK(dhd);
-
-	} else {
+	else
 		DHD_ERROR(("Extra packets are freed\n"));
-	}
 
 	ASSERT(pktid != 0);
 	pkt = dhd_prot_packet_get(dhd, pktid, BUFF_TYPE_DATA_TX);
@@ -2984,7 +2961,7 @@ dhd_prot_txdata(dhd_pub_t *dhd, void *PKTBUF, uint8 ifidx)
 	DHD_GENERAL_LOCK(dhd, flags);
 
 	/* Create a unique 32-bit packet id */
-	pktid = NATIVE_TO_PKTID_RSV(map, PKTBUF, BUFF_TYPE_DATA_TX);
+	pktid = NATIVE_TO_PKTID_RSV(map, PKTBUF);
 	if (pktid == DHD_PKTID_INVALID) {
 		DHD_ERROR(("Pktid pool depleted.\n"));
 		/*
@@ -3002,7 +2979,10 @@ dhd_prot_txdata(dhd_pub_t *dhd, void *PKTBUF, uint8 ifidx)
 	if (txdesc == NULL) {
 		DHD_INFO(("%s:%d: HTOD Msgbuf Not available TxCount = %d\n",
 			__FUNCTION__, __LINE__, prot->active_tx_count));
-		goto err_free_pktid;
+		/* Free up the PKTID */
+		PKTID_TO_NATIVE(dhd->prot->pktid_map_handle, pktid, physaddr,
+			pktlen, BUFF_TYPE_NO_CHECK);
+		goto err_no_res_pktfree;
 	}
 
 	/* Extract the data pointer and length information */
@@ -3019,10 +2999,8 @@ dhd_prot_txdata(dhd_pub_t *dhd, void *PKTBUF, uint8 ifidx)
 	/* Map the data pointer to a DMA-able address */
 	physaddr = DMA_MAP(dhd->osh, PKTDATA(dhd->osh, PKTBUF), pktlen, DMA_TX, PKTBUF, 0);
 	if (PHYSADDRISZERO(physaddr)) {
-		DHD_ERROR(("%s: Something really bad, unless 0 is"
-			" a valid physaddr\n", __FUNCTION__));
+		DHD_ERROR(("Something really bad, unless 0 is a valid phyaddr\n"));
 		ASSERT(0);
-		goto err_rollback_idx;
 	}
 
 	/* No need to lock. Save the rest of the packet's metadata */
@@ -3068,12 +3046,8 @@ dhd_prot_txdata(dhd_pub_t *dhd, void *PKTBUF, uint8 ifidx)
 		meta_physaddr = DMA_MAP(dhd->osh, PKTDATA(dhd->osh, PKTBUF),
 			prot->tx_metadata_offset, DMA_RX, PKTBUF, 0);
 		if (PHYSADDRISZERO(meta_physaddr)) {
-			/* Unmap the data pointer to a DMA-able address */
-			DMA_UNMAP(dhd->osh, meta_physaddr, prot->tx_metadata_offset, DMA_RX, 0, 0);
-			DHD_ERROR(("%s: Something really bad, unless 0 is"
-				" a valid meta_physaddr\n", __FUNCTION__));
+			DHD_ERROR(("Something really bad, unless 0 is a valid phyaddr\n"));
 			ASSERT(0);
-			goto err_rollback_idx;
 		}
 
 		/* Adjust the data pointer back to original value */
@@ -3113,29 +3087,9 @@ dhd_prot_txdata(dhd_pub_t *dhd, void *PKTBUF, uint8 ifidx)
 
 	prot->active_tx_count++;
 
-	/*
-	 * Take a wake lock, do not sleep if we have atleast one packet
-	 * to finish.
-	 */
-	if (prot->active_tx_count == 1)
-		DHD_TXFL_WAKE_LOCK(dhd);
-
 	DHD_GENERAL_UNLOCK(dhd, flags);
 
 	return BCME_OK;
-
-err_rollback_idx:
-	/* roll back write pointer for unprocessed message */
-	if (RING_WRITE_PTR(msg_ring) == 0) {
-		RING_WRITE_PTR(msg_ring) = RING_MAX_ITEM(msg_ring) - 1;
-	} else {
-		RING_WRITE_PTR(msg_ring) -= 1;
-	}
-
-err_free_pktid:
-	/* Free up the PKTID */
-	PKTID_TO_NATIVE(dhd->prot->pktid_map_handle, pktid, physaddr,
-		pktlen, BUFF_TYPE_NO_CHECK);
 
 err_no_res_pktfree:
 
@@ -3518,33 +3472,20 @@ dhdmsgbuf_query_ioctl(dhd_pub_t *dhd, int ifidx, uint cmd, void *buf, uint len, 
 	dhd_prot_t *prot = dhd->prot;
 
 	int ret = 0;
-	uint copylen = 0;
 
 	DHD_TRACE(("%s: Enter\n", __FUNCTION__));
 
+	/* Respond "bcmerror" and "bcmerrorstr" with local cache */
 	if (cmd == WLC_GET_VAR && buf)
 	{
-		if (!len || !*(uint8 *)buf) {
-			DHD_ERROR(("%s(): Zero length bailing\n", __FUNCTION__));
-			ret = BCME_BADARG;
+		if (!strcmp((char *)buf, "bcmerrorstr"))
+		{
+			strncpy((char *)buf, bcmerrorstr(dhd->dongle_error), BCME_STRLEN);
 			goto done;
 		}
-
-		/* Respond "bcmerror" and "bcmerrorstr" with local cache */
-		copylen = MIN(len, BCME_STRLEN);
-
-		if ((len >= strlen("bcmerrorstr")) &&
-			(!strcmp((char *)buf, "bcmerrorstr"))) {
-
-			strncpy((char *)buf, bcmerrorstr(dhd->dongle_error), copylen);
-			*(uint8 *)((uint8 *)buf + (copylen - 1)) = '\0';
-
-			goto done;
-		} else if ((len >= strlen("bcmerror")) &&
-			!strcmp((char *)buf, "bcmerror")) {
-
-			*(uint32 *)(uint32 *)buf = dhd->dongle_error;
-
+		else if (!strcmp((char *)buf, "bcmerror"))
+		{
+			*(int *)buf = dhd->dongle_error;
 			goto done;
 		}
 	}
@@ -4449,32 +4390,14 @@ prot_get_src_addr(dhd_pub_t *dhd, msgbuf_ring_t * ring, uint16* available_len)
 	r_ptr = ring->ringstate->r_offset;
 	depth = ring->ringmem->max_item;
 
+	/* check for avail space */
 	*available_len = READ_AVAIL_SPACE(w_ptr, r_ptr, depth);
 	if (*available_len == 0)
 		return NULL;
 
 	if (*available_len > ring->ringmem->max_item) {
-		DHD_ERROR(("\r\n======================= \r\n"));
-		DHD_ERROR(("%s(): ring %p, ring->name %s, ring->max_item %d\r\n",
-			__FUNCTION__, ring, ring->name, ring->ringmem->max_item));
-		DHD_ERROR(("wr: %d,  rd: %d,  depth: %d  \r\n", w_ptr, r_ptr, depth));
-		DHD_ERROR(("dhd->busstate %d bus->wait_for_d3_ack %d \r\n",
-			dhd->busstate, dhd->bus->wait_for_d3_ack));
-		DHD_ERROR(("\r\n======================= \r\n"));
-#ifdef SUPPORT_LINKDOWN_RECOVERY
-		if (w_ptr >= ring->ringmem->max_item) {
-			dhd->bus->read_shm_fail = true;
-		}
-#else
-#ifdef DHD_FW_COREDUMP
-	if (dhd->memdump_enabled) {
-		/* collect core dump */
-		dhd->memdump_type = DUMP_TYPE_RESUMED_ON_INVALID_RING_RDWR;
-		dhd_bus_mem_dump(dhd);
-	}
-#endif /* DHD_FW_COREDUMP */
-#endif /* SUPPORT_LINKDOWN_RECOVERY */
-
+		DHD_ERROR(("%s: *available_len %d, ring->ringmem->max_item %d\n",
+			__FUNCTION__, *available_len, ring->ringmem->max_item));
 		return NULL;
 	}
 
@@ -4665,29 +4588,21 @@ void dhd_prot_print_flow_ring(dhd_pub_t *dhd, void *msgbuf_flow_info,
 
 void dhd_prot_print_info(dhd_pub_t *dhd, struct bcmstrbuf *strbuf)
 {
-	dhd_prot_t *prot = dhd->prot;
-	bcm_bprintf(strbuf,
-		"%8s %4s %4s %5s %17s %17s %7s\n",
-		"Type", "RBP", "RD", "WR", "BASE(VA)", "BASE(PA)", "SIZE");
-	bcm_bprintf(strbuf, "%8s %4s", "CtrlPost", "NA");
-	dhd_prot_print_flow_ring(dhd, prot->h2dring_ctrl_subn, strbuf,
-		"%5d %5d %17p %8x:%8x %7d\n");
-	bcm_bprintf(strbuf, "%8s %4s", "CtrlCpl", "NA");
-	dhd_prot_print_flow_ring(dhd, prot->d2hring_ctrl_cpln, strbuf,
-		"%5d %5d %17p %8x:%8x %7d\n");
-	bcm_bprintf(strbuf, "%8s %4d", "RxPost", prot->rxbufpost);
-	dhd_prot_print_flow_ring(dhd, prot->h2dring_rxp_subn, strbuf,
-		"%5d %5d %17p %8x:%8x %7d\n");
-	bcm_bprintf(strbuf, "%8s %4s", "RxCpl", "NA");
-	dhd_prot_print_flow_ring(dhd, prot->d2hring_rx_cpln, strbuf,
-		"%5d %5d %17p %8x:%8x %7d\n");
+	bcm_bprintf(strbuf, "CtrlPost: ");
+	dhd_prot_print_flow_ring(dhd, dhd->prot->h2dring_ctrl_subn, strbuf, NULL);
+	bcm_bprintf(strbuf, "CtrlCpl: ");
+	dhd_prot_print_flow_ring(dhd, dhd->prot->d2hring_ctrl_cpln, strbuf, NULL);
+	bcm_bprintf(strbuf, "RxPost: ");
+	bcm_bprintf(strbuf, "RBP %d ", dhd->prot->rxbufpost);
+	dhd_prot_print_flow_ring(dhd, dhd->prot->h2dring_rxp_subn, strbuf, NULL);
+	bcm_bprintf(strbuf, "RxCpl: ");
+	dhd_prot_print_flow_ring(dhd, dhd->prot->d2hring_rx_cpln, strbuf, NULL);
 	if (dhd_bus_is_txmode_push(dhd->bus)) {
 		bcm_bprintf(strbuf, "TxPost: ");
-		dhd_prot_print_flow_ring(dhd, prot->h2dring_txp_subn, strbuf, NULL);
+		dhd_prot_print_flow_ring(dhd, dhd->prot->h2dring_txp_subn, strbuf, NULL);
 	}
-	bcm_bprintf(strbuf, "%8s %4s", "TxCpl", "NA");
-	dhd_prot_print_flow_ring(dhd, prot->d2hring_tx_cpln, strbuf,
-		"%5d %5d %17p %8x:%8x %7d\n");
+	bcm_bprintf(strbuf, "TxCpl: ");
+	dhd_prot_print_flow_ring(dhd, dhd->prot->d2hring_tx_cpln, strbuf, NULL);
 	bcm_bprintf(strbuf, "active_tx_count %d	 pktidmap_avail %d\n",
 		dhd->prot->active_tx_count,
 		dhd_pktid_map_avail_cnt(dhd->prot->pktid_map_handle));

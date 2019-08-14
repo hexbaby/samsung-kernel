@@ -3,7 +3,7 @@
 #include <linux/notifier.h>
 #include <linux/muic/muic.h>
 #include <linux/muic/muic_notifier.h>
-#include <linux/sec_sysfs.h>
+#include <linux/sec_class.h>
 
 /*
   * The src & dest addresses of the noti.
@@ -105,12 +105,6 @@ static int muic_notifier_notify(void)
 	pr_info("%s: CMD=%d, DATA=%d\n", __func__, muic_notifier.cxt.attach,
 			muic_notifier.cxt.cable_type);
 
-#ifdef CONFIG_SEC_FACTORY
-	if (muic_notifier.cxt.attach != 0)
-		muic_send_attached_muic_cable_intent(muic_notifier.cxt.cable_type);
-	else
-		muic_send_attached_muic_cable_intent(0);
-#endif
 	pcxt = muic_uses_new_noti ? &(muic_notifier.cxt) : \
 			(void *)&(muic_notifier.attached_dev);
 
@@ -183,7 +177,6 @@ void muic_notifier_logically_detach_attached_dev(muic_attached_dev_t cur_dev)
 
 	__set_noti_cxt(0, ATTACHED_DEV_NONE_MUIC);
 }
-
 #ifdef CONFIG_CCIC_NOTIFIER
 extern int ccic_notifier_init(void);
 #endif
@@ -202,19 +195,34 @@ static int __init muic_notifier_init(void)
 
 #endif
 
-	switch_device = sec_device_create(NULL, "switch");
+	switch_device = device_create(sec_class, NULL, 0, NULL, "switch");
 	if (IS_ERR(switch_device)) {
-		pr_err("%s Failed to create device(switch)!\n", __func__);
-		ret = -ENODEV;
+		pr_err("(%s): failed to created device (switch_device)!\n",
+				__func__);
+		return -ENODEV;
+	}
+#if 0
+	ret = switch_dev_register(&switch_dock);
+	if (ret < 0) {
+		pr_err("Failed to register dock switch. %d\n",
+				ret);
 		goto out;
 	}
-
+#endif
 	BLOCKING_INIT_NOTIFIER_HEAD(&(muic_notifier.notifier_call_chain));
 	__set_noti_cxt(0 ,ATTACHED_DEV_UNKNOWN_MUIC);
 
+#ifdef CONFIG_CCIC_NOTIFIER
+	ccic_notifier_init();
+#endif
+#ifdef CONFIG_USB_TYPEC_MANAGER_NOTIFIER
+	manager_notifier_init();
+#endif
+	
+#if 0
 out:
+#endif
 	return ret;
 }
-
 device_initcall(muic_notifier_init);
 

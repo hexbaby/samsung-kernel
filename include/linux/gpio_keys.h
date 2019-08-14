@@ -1,6 +1,8 @@
 #ifndef _GPIO_KEYS_H
 #define _GPIO_KEYS_H
 
+#define GPIO_KEYS_DEV_NAME "gpio-keys"
+
 struct device;
 
 /**
@@ -25,7 +27,6 @@ struct gpio_keys_button {
 	const char *desc;
 	unsigned int type;
 	int wakeup;
-	int always_wakeup;
 	int debounce_interval;
 	bool can_disable;
 	int value;
@@ -50,9 +51,16 @@ struct gpio_keys_platform_data {
 	unsigned int rep:1;
 	int (*enable)(struct device *dev);
 	void (*disable)(struct device *dev);
-	const char *name;
+	const char *name;		/* input device name */
+#ifdef CONFIG_SENSORS_HALL
+	int gpio_flip_cover;
+#endif
+	bool use_syscore;
 };
 
-extern bool wakeup_by_key(void);
+#if defined(CONFIG_SEC_PM)
+extern int get_pkey_press(void);
+extern int get_vdkey_press(void);
+#endif
 
 #endif

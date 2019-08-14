@@ -524,6 +524,11 @@ static void cpufreq_allstats_create(unsigned int cpu,
 	struct all_cpufreq_stats *all_stat;
 	bool sort_needed = false;
 
+	if (!all_freq_table) {
+		pr_warn("all_freq_table is not initialized\n");
+		return;
+	}
+
 	all_stat = kzalloc(sizeof(struct all_cpufreq_stats),
 			GFP_KERNEL);
 	if (!all_stat) {
@@ -682,16 +687,20 @@ static int __init cpufreq_stats_init(void)
 	if (ret)
 		return ret;
 
+	get_online_cpus();
 	for_each_online_cpu(cpu)
 		cpufreq_stats_create_table(cpu);
+	put_online_cpus();
 
 	ret = cpufreq_register_notifier(&notifier_trans_block,
 				CPUFREQ_TRANSITION_NOTIFIER);
 	if (ret) {
 		cpufreq_unregister_notifier(&notifier_policy_block,
 				CPUFREQ_POLICY_NOTIFIER);
+		get_online_cpus();
 		for_each_online_cpu(cpu)
 			cpufreq_stats_free_table(cpu);
+		put_online_cpus();
 		return ret;
 	}
 

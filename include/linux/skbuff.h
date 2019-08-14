@@ -197,7 +197,6 @@ struct sk_buff;
 #else
 #define MAX_SKB_FRAGS (65536/PAGE_SIZE + 1)
 #endif
-extern int sysctl_max_skb_frags;
 
 typedef struct skb_frag_struct skb_frag_t;
 
@@ -614,6 +613,7 @@ struct sk_buff {
 #endif
 	__u8			ipvs_property:1;
 	__u8			inner_protocol_type:1;
+	__u8			fast_forwarded:1;
 	/* 4 or 6 bit hole */
 
 #ifdef CONFIG_NET_SCHED
@@ -641,9 +641,6 @@ struct sk_buff {
 #ifdef CONFIG_NETWORK_SECMARK
 	__u32			secmark;
 #endif
-
-	__u32			priomark;
-
 	union {
 		__u32		mark;
 		__u32		dropcount;
@@ -3134,13 +3131,6 @@ static inline void nf_reset_trace(struct sk_buff *skb)
 {
 #if IS_ENABLED(CONFIG_NETFILTER_XT_TARGET_TRACE) || defined(CONFIG_NF_TABLES)
 	skb->nf_trace = 0;
-#endif
-}
-
-static inline void ipvs_reset(struct sk_buff *skb)
-{
-#if IS_ENABLED(CONFIG_IP_VS)
-	skb->ipvs_property = 0;
 #endif
 }
 

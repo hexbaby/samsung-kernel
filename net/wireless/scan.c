@@ -438,14 +438,11 @@ static int cmp_bss(struct cfg80211_bss *a,
 	int i, r;
 
 #if !(defined(CONFIG_BCM4335) || defined(CONFIG_BCM4335_MODULE) \
-	|| defined(CONFIG_BCM4339) || defined(CONFIG_BCM4339_MODULE) \
-	|| defined(CONFIG_BCM43438) || defined(CONFIG_BCM43438_MODULE) \
-	|| defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) \
-	|| defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) \
-	|| defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) \
-	|| defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) \
-	|| defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE) \
-	|| defined(CONFIG_BCM4359) || defined(CONFIG_BCM4359_MODULE))
+        || defined(CONFIG_BCM4339) || defined(CONFIG_BCM4339_MODULE) \
+        || defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) \
+        || defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) \
+        || defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE) \
+        || defined(CONFIG_BCM4359) || defined(CONFIG_BCM4359_MODULE))
 	if (a->channel != b->channel)
 		return b->channel->center_freq - a->channel->center_freq;
 #endif /* CONFIG_BCM43xx */
@@ -489,14 +486,11 @@ static int cmp_bss(struct cfg80211_bss *a,
 		return r;
 
 #if (defined(CONFIG_BCM4335) || defined(CONFIG_BCM4335_MODULE) \
-	|| defined(CONFIG_BCM4339) || defined(CONFIG_BCM4339_MODULE) \
-	|| defined(CONFIG_BCM43438) || defined(CONFIG_BCM43438_MODULE) \
-	|| defined(CONFIG_BCM43454) || defined(CONFIG_BCM43454_MODULE) \
-	|| defined(CONFIG_BCM43455) || defined(CONFIG_BCM43455_MODULE) \
-	|| defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) \
-	|| defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) \
-	|| defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE) \
-	|| defined(CONFIG_BCM4359) || defined(CONFIG_BCM4359_MODULE))
+        || defined(CONFIG_BCM4339) || defined(CONFIG_BCM4339_MODULE) \
+        || defined(CONFIG_BCM4354) || defined(CONFIG_BCM4354_MODULE) \
+        || defined(CONFIG_BCM4356) || defined(CONFIG_BCM4356_MODULE) \
+        || defined(CONFIG_BCM4358) || defined(CONFIG_BCM4358_MODULE) \
+        || defined(CONFIG_BCM4359) || defined(CONFIG_BCM4359_MODULE))
 	if (a->channel != b->channel)
 		return b->channel->center_freq - a->channel->center_freq;
 #endif /* CONFIG_BCM43xx */
@@ -551,24 +545,78 @@ static int cmp_bss(struct cfg80211_bss *a,
 	}
 }
 
+static bool cfg80211_bss_type_match(u16 capability,
+				    enum ieee80211_band band,
+				    enum ieee80211_bss_type bss_type)
+{
+	bool ret = true;
+	u16 mask, val;
+
+	if (bss_type == IEEE80211_BSS_TYPE_ANY)
+		return ret;
+
+	if (band == IEEE80211_BAND_60GHZ) {
+		mask = WLAN_CAPABILITY_DMG_TYPE_MASK;
+		switch (bss_type) {
+		case IEEE80211_BSS_TYPE_ESS:
+			val = WLAN_CAPABILITY_DMG_TYPE_AP;
+			break;
+		case IEEE80211_BSS_TYPE_PBSS:
+			val = WLAN_CAPABILITY_DMG_TYPE_PBSS;
+			break;
+		case IEEE80211_BSS_TYPE_IBSS:
+			val = WLAN_CAPABILITY_DMG_TYPE_IBSS;
+			break;
+		default:
+			return false;
+		}
+	} else {
+		mask = WLAN_CAPABILITY_ESS | WLAN_CAPABILITY_IBSS;
+		switch (bss_type) {
+		case IEEE80211_BSS_TYPE_ESS:
+			val = WLAN_CAPABILITY_ESS;
+			break;
+		case IEEE80211_BSS_TYPE_IBSS:
+			val = WLAN_CAPABILITY_IBSS;
+			break;
+		case IEEE80211_BSS_TYPE_MBSS:
+			val = 0;
+			break;
+		default:
+			return false;
+		}
+	}
+
+	ret = ((capability & mask) == val);
+	return ret;
+}
+
 /* Returned bss is reference counted and must be cleaned up appropriately. */
 struct cfg80211_bss *cfg80211_get_bss(struct wiphy *wiphy,
 				      struct ieee80211_channel *channel,
 				      const u8 *bssid,
 				      const u8 *ssid, size_t ssid_len,
-				      u16 capa_mask, u16 capa_val)
+				      enum ieee80211_bss_type bss_type,
+				      enum ieee80211_privacy privacy)
 {
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
 	struct cfg80211_internal_bss *bss, *res = NULL;
 	unsigned long now = jiffies;
+	int bss_privacy;
 
-	trace_cfg80211_get_bss(wiphy, channel, bssid, ssid, ssid_len, capa_mask,
-			       capa_val);
+	trace_cfg80211_get_bss(wiphy, channel, bssid, ssid, ssid_len, bss_type,
+			       privacy);
 
 	spin_lock_bh(&rdev->bss_lock);
 
 	list_for_each_entry(bss, &rdev->bss_list, list) {
-		if ((bss->pub.capability & capa_mask) != capa_val)
+		if (!cfg80211_bss_type_match(bss->pub.capability,
+					     bss->pub.channel->band, bss_type))
+			continue;
+
+		bss_privacy = (bss->pub.capability & WLAN_CAPABILITY_PRIVACY);
+		if ((privacy == IEEE80211_PRIVACY_ON && !bss_privacy) ||
+		    (privacy == IEEE80211_PRIVACY_OFF && bss_privacy))
 			continue;
 		if (channel && bss->pub.channel != channel)
 			continue;
@@ -916,6 +964,7 @@ cfg80211_inform_bss_width(struct wiphy *wiphy,
 	struct cfg80211_bss_ies *ies;
 	struct ieee80211_channel *channel;
 	struct cfg80211_internal_bss tmp = {}, *res;
+	int bss_type;
 	bool signal_valid;
 
 	if (WARN_ON(!wiphy))
@@ -970,8 +1019,15 @@ cfg80211_inform_bss_width(struct wiphy *wiphy,
 	if (!res)
 		return NULL;
 
-	if (res->pub.capability & WLAN_CAPABILITY_ESS)
-		regulatory_hint_found_beacon(wiphy, channel, gfp);
+	if (channel->band == IEEE80211_BAND_60GHZ) {
+		bss_type = res->pub.capability & WLAN_CAPABILITY_DMG_TYPE_MASK;
+		if (bss_type == WLAN_CAPABILITY_DMG_TYPE_AP ||
+		    bss_type == WLAN_CAPABILITY_DMG_TYPE_PBSS)
+			regulatory_hint_found_beacon(wiphy, channel, gfp);
+	} else {
+		if (res->pub.capability & WLAN_CAPABILITY_ESS)
+			regulatory_hint_found_beacon(wiphy, channel, gfp);
+	}
 
 	trace_cfg80211_return_bss(&res->pub);
 	/* cfg80211_bss_update gives us a referenced result */
@@ -993,6 +1049,7 @@ cfg80211_inform_bss_width_frame(struct wiphy *wiphy,
 	bool signal_valid;
 	size_t ielen = len - offsetof(struct ieee80211_mgmt,
 				      u.probe_resp.variable);
+	int bss_type;
 
 	BUILD_BUG_ON(offsetof(struct ieee80211_mgmt, u.probe_resp.variable) !=
 			offsetof(struct ieee80211_mgmt, u.beacon.variable));
@@ -1045,8 +1102,15 @@ cfg80211_inform_bss_width_frame(struct wiphy *wiphy,
 	if (!res)
 		return NULL;
 
-	if (res->pub.capability & WLAN_CAPABILITY_ESS)
-		regulatory_hint_found_beacon(wiphy, channel, gfp);
+	if (channel->band == IEEE80211_BAND_60GHZ) {
+		bss_type = res->pub.capability & WLAN_CAPABILITY_DMG_TYPE_MASK;
+		if (bss_type == WLAN_CAPABILITY_DMG_TYPE_AP ||
+		    bss_type == WLAN_CAPABILITY_DMG_TYPE_PBSS)
+			regulatory_hint_found_beacon(wiphy, channel, gfp);
+	} else {
+		if (res->pub.capability & WLAN_CAPABILITY_ESS)
+			regulatory_hint_found_beacon(wiphy, channel, gfp);
+	}
 
 	trace_cfg80211_return_bss(&res->pub);
 	/* cfg80211_bss_update gives us a referenced result */
@@ -1241,6 +1305,8 @@ int cfg80211_wext_siwscan(struct net_device *dev,
 	for (i = 0; i < IEEE80211_NUM_BANDS; i++)
 		if (wiphy->bands[i])
 			creq->rates[i] = (1 << wiphy->bands[i]->n_bitrates) - 1;
+
+	eth_broadcast_addr(creq->bssid);
 
 	rdev->scan_req = creq;
 	err = rdev_scan(rdev, creq);

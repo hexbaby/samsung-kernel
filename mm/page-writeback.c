@@ -525,9 +525,9 @@ static unsigned long dirty_freerun_ceiling(unsigned long thresh,
 					   unsigned long bg_thresh)
 {
 #ifdef CONFIG_LARGE_DIRTY_BUFFER
-	return (3 * thresh + bg_thresh) / 4;
+        return (3 * thresh + bg_thresh) / 4;
 #else
-	return (thresh + bg_thresh) / 2;
+        return (thresh + bg_thresh) / 2;
 #endif
 }
 
@@ -1670,6 +1670,12 @@ void throttle_vm_writeout(gfp_t gfp_mask)
                 if (global_page_state(NR_UNSTABLE_NFS) +
 			global_page_state(NR_WRITEBACK) <= dirty_thresh)
                         	break;
+		/* Try safe version */
+		else if (unlikely(global_page_state_snapshot(NR_UNSTABLE_NFS) +
+			global_page_state_snapshot(NR_WRITEBACK) <=
+				dirty_thresh))
+				break;
+
                 congestion_wait(BLK_RW_ASYNC, HZ/10);
 
 		/*
@@ -2372,7 +2378,7 @@ int test_clear_page_writeback(struct page *page)
 		dec_zone_page_state(page, NR_WRITEBACK);
 		inc_zone_page_state(page, NR_WRITTEN);
 	}
-	mem_cgroup_end_page_stat(memcg, locked, memcg_flags);
+	mem_cgroup_end_page_stat(memcg, &locked, &memcg_flags);
 	return ret;
 }
 
@@ -2414,7 +2420,7 @@ int __test_set_page_writeback(struct page *page, bool keep_write)
 		mem_cgroup_inc_page_stat(memcg, MEM_CGROUP_STAT_WRITEBACK);
 		inc_zone_page_state(page, NR_WRITEBACK);
 	}
-	mem_cgroup_end_page_stat(memcg, locked, memcg_flags);
+	mem_cgroup_end_page_stat(memcg, &locked, &memcg_flags);
 	return ret;
 
 }

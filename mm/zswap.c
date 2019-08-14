@@ -46,6 +46,7 @@
 #include <linux/jiffies.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
+#include <linux/show_mem_notifier.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/zswap.h>
@@ -54,7 +55,7 @@
 * statistics
 **********************************/
 /* Total bytes used by the compressed storage */
-static u64 zswap_pool_total_size;
+u64 zswap_pool_total_size;
 /* Number of memory pages used by the compressed pool */
 u64 zswap_pool_pages;
 /* The number of compressed pages currently stored in zswap */
@@ -1263,6 +1264,27 @@ static int __init zswap_debugfs_init(void)
 static void __exit zswap_debugfs_exit(void) { }
 #endif
 
+static int zswap_size_notifier(struct notifier_block *nb,
+					unsigned long is_simple, void *data)
+{
+	struct seq_file *s;
+
+	s = (struct seq_file *)data;
+	if (!is_simple)
+		return 0;
+	if (s != NULL)
+		seq_printf(s, "ZSwapDevice:    %8lu kB\n",
+			(unsigned long)zswap_pool_pages << (PAGE_SHIFT - 10));
+	else
+		printk("ZSwapDevice:%lukB ",
+			(unsigned long)zswap_pool_pages << (PAGE_SHIFT - 10));
+	return 0;
+}
+
+static struct notifier_block zswap_size_nb = {
+	.notifier_call = zswap_size_notifier,
+};
+
 /*********************************
 * module init and exit
 **********************************/
@@ -1307,6 +1329,8 @@ static int __init init_zswap(void)
 	frontswap_register_ops(&zswap_frontswap_ops);
 	if (zswap_debugfs_init())
 		pr_warn("debugfs initialization failed\n");
+
+	show_mem_notifier_register(&zswap_size_nb);
 	return 0;
 pcpufail:
 	zswap_comp_exit();

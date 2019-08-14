@@ -23,6 +23,7 @@
 #include <linux/dbmdx.h>
 #include <sound/dbmdx-export.h>
 #include "dbmdx-customer-def.h"
+#include <linux/wakelock.h>
 
 #if defined(CONFIG_DBMDX_NO_DTS_SUPPORT)
 #if IS_ENABLED(CONFIG_OF)
@@ -30,46 +31,9 @@
 #endif /* CONFIG_OF */
 #endif
 
-#ifndef DBMD2_VA_FIRMWARE_NAME
-#define DBMD2_VA_FIRMWARE_NAME			"dbmd2_va_fw.bin"
-#endif
-
-#ifndef DBMD2_VQE_FIRMWARE_NAME
-#define DBMD2_VQE_FIRMWARE_NAME			"dbmd2_vqe_fw.bin"
-#endif
-
-#ifndef DBMD2_VQE_OVERLAY_FIRMWARE_NAME
-#define DBMD2_VQE_OVERLAY_FIRMWARE_NAME		"dbmd2_vqe_overlay_fw.bin"
-#endif
-
-#ifndef DBMD4_VA_FIRMWARE_NAME
-#define DBMD4_VA_FIRMWARE_NAME			"dbmd4_va_fw.bin"
-#endif
-
-#ifndef DBMDX_VT_GRAM_NAME
-#define DBMDX_VT_GRAM_NAME			"voice_grammar.bin"
-#endif
-
-#ifndef DBMDX_VT_NET_NAME
-#define DBMDX_VT_NET_NAME			"voice_net.bin"
-#endif
-
-#ifndef DBMDX_VC_GRAM_NAME
-#define DBMDX_VC_GRAM_NAME			"vc_grammar.bin"
-#endif
-
-#ifndef DBMDX_VC_NET_NAME
-#define DBMDX_VC_NET_NAME			"vc_net.bin"
-#endif
-
-#ifndef DBMDX_VC_OKG_NAME
-#define DBMDX_VC_OKG_NAME			"okg_amodel.bin"
-#endif
-
-
 #define MAX_REQ_SIZE				8192
 
-#define DBMDX_AMODEL_HEADER_SIZE		12
+#define DBMDX_AMODEL_HEADER_SIZE		10
 
 #define DBMDX_MSLEEP_WAKEUP			35
 #define DBMDX_MSLEEP_HIBARNATE			20
@@ -78,16 +42,13 @@
 #define DBMDX_MSLEEP_REQUEST_FW_FAIL		200
 #define DBMDX_MSLEEP_ON_SV_INTERRUPT		100
 #define DBMDX_MSLEEP_PCM_STREAMING_WORK		100
-#define DBMDX_MSLEEP_DBG_MODE_CMD_RX		10
-#define DBMDX_MSLEEP_DBG_MODE_CMD_TX		10
-#define DBMDX_MSLEEP_DBG_AFTER_DETECTION	50
 
 #define DBMDX_USLEEP_VQE_ALIVE			21000
 #define DBMDX_USLEEP_VQE_ALIVE_ON_FAIL		10000
 #define DBMDX_USLEEP_NO_SAMPLES			10000
 #define DBMDX_USLEEP_SET_MODE			15000
 #define DBMDX_USLEEP_AMODEL_HEADER		2000
-#define DBMDX_USLEEP_AFTER_LOAD_AMODEL		10000
+
 
 
 #define DBMDX_MSLEEP_UART_PROBE			50
@@ -103,7 +64,7 @@
 #define DBMDX_USLEEP_UART_D2_BEFORE_RESET	10000
 #define DBMDX_USLEEP_UART_D2_AFTER_RESET	15000
 #define DBMDX_USLEEP_UART_D4_AFTER_RESET	15000
-#define DBMDX_USLEEP_UART_D4_AFTER_LOAD_FW	10000
+#define DBMDX_USLEEP_UART_D4_AFTER_LOAD_FW	1000
 
 #define DBMDX_MSLEEP_SPI_VQE_SYS_CFG_CMD	60
 #define DBMDX_MSLEEP_SPI_FINISH_BOOT_1		10
@@ -114,7 +75,6 @@
 #define DBMDX_MSLEEP_SPI_D2_BEFORE_FW_CHECKSUM	20
 #define DBMDX_MSLEEP_SPI_D4_AFTER_RESET_32K	85
 #define DBMDX_MSLEEP_SPI_D4_AFTER_PLL_CHANGE	80
-#define DBMDX_MSLEEP_SPI_D2_AFTER_PLL_CHANGE	5
 
 #define DBMDX_USLEEP_SPI_VQE_CMD_AFTER_SEND	20000
 #define DBMDX_USLEEP_SPI_VA_CMD_AFTER_SEND	500
@@ -122,10 +82,9 @@
 #define DBMDX_USLEEP_SPI_VA_CMD_AFTER_BOOT	1000
 #define DBMDX_USLEEP_SPI_AFTER_CHUNK_READ	1000
 #define DBMDX_USLEEP_SPI_AFTER_LOAD_AMODEL	10000
-#define DBMDX_USLEEP_SPI_D2_AFTER_RESET		5000
+#define DBMDX_USLEEP_SPI_D2_AFTER_RESET		15000
 #define DBMDX_USLEEP_SPI_D2_AFTER_SBL		10000
 #define DBMDX_USLEEP_SPI_D2_AFTER_BOOT		10000
-#define DBMDX_USLEEP_SPI_D4_AFTER_BOOT		10000
 #define DBMDX_USLEEP_SPI_D4_AFTER_RESET		15000
 #define DBMDX_USLEEP_SPI_D4_POST_PLL		2000
 
@@ -156,37 +115,28 @@ struct chip_interface;
 enum dbmdx_firmware_active {
 	/* firmware pre-boot */
 	DBMDX_FW_PRE_BOOT = 0,
-	/* va firmware was powered off */
-	DBMDX_FW_POWER_OFF_VA,
 	/* voice authentication */
 	DBMDX_FW_VA,
 	/* voice quality enhancement */
 	DBMDX_FW_VQE,
-	/* max supported firmwares */
-	DBMDX_FW_MAX
 };
 
+enum dbmdx_clocks {
+	DBMDX_CLK_CONSTANT = 0,
+	DBMDX_CLK_MASTER,
+};
 
 enum dbmdx_audio_channel_operation {
 	AUDIO_CHANNEL_OP_COPY = 0,
-	AUDIO_CHANNEL_OP_DUPLICATE_1_TO_2,
-	AUDIO_CHANNEL_OP_DUPLICATE_1_TO_4,
-	AUDIO_CHANNEL_OP_DUPLICATE_2_TO_4,
-	AUDIO_CHANNEL_OP_TRUNCATE_2_TO_1,
-	AUDIO_CHANNEL_OP_TRUNCATE_4_TO_1,
-	AUDIO_CHANNEL_OP_TRUNCATE_4_TO_2,
-	AUDIO_CHANNEL_OP_MAX = AUDIO_CHANNEL_OP_TRUNCATE_4_TO_2
+	AUDIO_CHANNEL_OP_DUPLICATE_MONO,
+	AUDIO_CHANNEL_OP_TRUNCATE_PRIMARY,
+	AUDIO_CHANNEL_OP_MAX = AUDIO_CHANNEL_OP_TRUNCATE_PRIMARY
 };
 
 struct va_flags {
 	int	irq_inuse;
 	int	a_model_loaded;
 	int	amodel_len;
-#ifdef DMBDX_OKG_AMODEL_SUPPORT
-	int	okg_a_model_loaded;
-	int	okg_amodel_len;
-	bool	okg_a_model_enabled;
-#endif
 	int	buffering;
 	int	pcm_worker_active;
 	int	pcm_streaming_active;
@@ -194,10 +144,7 @@ struct va_flags {
 	int	sleep_not_allowed;
 	int	auto_detection_disabled;
 	int	padded_cmds_disabled;
-	bool	capture_on_detect_disabled;
 	bool	reconfigure_mic_on_vad_change;
-	bool	disabling_mics_not_allowed;
-	bool	microphones_enabled;
 	int	cancel_pm_work;
 	unsigned int	mode;
 };
@@ -206,15 +153,6 @@ struct vqe_flags {
 	int	in_call;
 	int	use_case;
 	int	speaker_volume_level;
-};
-
-struct vqe_fw_info {
-	u16	major;
-	u16	minor;
-	u16	version;
-	u16	patch;
-	u16	debug;
-	u16	tuning;
 };
 
 enum dbmd2_xtal_id {
@@ -229,15 +167,10 @@ enum dbmd2_xtal_id {
 };
 
 enum dbmdx_load_amodel_mode {
-	LOAD_AMODEL_PRIMARY = 0,
-	LOAD_AMODEL_2NDARY = 1,
+	LOAD_AMODEL_PRIMARY,
+	LOAD_AMODEL_2NDARY,
 	LOAD_AMODEL_CUSTOM,
-#ifdef DMBDX_OKG_AMODEL_SUPPORT
-	LOAD_AMODEL_OKG = 4,
-	LOAD_AMODEL_MAX = LOAD_AMODEL_OKG
-#else
 	LOAD_AMODEL_MAX = LOAD_AMODEL_CUSTOM
-#endif
 };
 
 enum dbmdx_states {
@@ -285,6 +218,7 @@ struct dbmdx_private {
 	struct dbmdx_platform_data		*pdata;
 	/* lock for private data */
 	struct mutex			p_lock;
+	struct wake_lock		ps_nosuspend_wl;
 	enum dbmdx_firmware_active	active_fw;
 	enum dbmdx_power_modes		power_mode;
 	enum dbmdx_active_interface	active_interface;
@@ -298,7 +232,8 @@ struct dbmdx_private {
 	struct firmware			*dspg_net;
 	bool				asleep;
 	bool				device_ready;
-	struct clk			*clocks[DBMDX_NR_OF_CLKS];
+	struct clk			*constant_clk;
+	struct clk			*master_clk;
 	struct regulator		*vregulator;
 	struct work_struct		sv_work;
 	struct work_struct		pcm_streaming_work;
@@ -334,20 +269,8 @@ struct dbmdx_private {
 	u32				va_backlog_length;
 	u32				va_last_word_id;
 	bool				va_capture_on_detect;
-#ifdef DMBDX_OKG_AMODEL_SUPPORT
-	bool				okg_a_model_support;
-#endif
-	bool				sv_a_model_support;
-	bool				sleep_disabled;
-	int				va_debug_mode;
-
-	int				va_cur_digital_mic_digital_gain;
-	int				va_cur_analog_mic_analog_gain;
-	int				va_cur_analog_mic_digital_gain;
-
-	unsigned int			num_dais;
-	struct snd_soc_dai_driver	*dais;
-	int				remote_codec_in_use;
+	int				va_cur_analog_gain;
+	int				va_cur_digital_gain;
 
 	u8				read_audio_buf[MAX_REQ_SIZE + 8];
 	struct snd_pcm_substream	*active_substream;
@@ -375,8 +298,6 @@ struct dbmdx_private {
 			    enum dbmdx_va_speeds speed);
 	unsigned long (*clk_get_rate)(struct dbmdx_private *p,
 				      enum dbmdx_clocks clk);
-	long (*clk_set_rate)(struct dbmdx_private *p,
-			     enum dbmdx_clocks clk);
 	int (*clk_enable)(struct dbmdx_private *p, enum dbmdx_clocks clk);
 	int (*clk_disable)(struct dbmdx_private *p, enum dbmdx_clocks clk);
 
@@ -397,9 +318,8 @@ struct chip_interface {
 	/* prepare booting (e.g. increase speed) */
 	int (*prepare_boot)(struct dbmdx_private *p);
 	/* send firmware to the chip and boot it */
-	int (*boot)(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw);
+	int (*boot)(const struct firmware *fw, struct dbmdx_private *p,
+		    const void *checksum, size_t chksum_len, int load_fw);
 	/* finish booting */
 	int (*finish_boot)(struct dbmdx_private *p);
 	/* dump chip state */
@@ -420,11 +340,6 @@ struct chip_interface {
 	/* send command in VA protocol format to the chip */
 	ssize_t (*send_cmd_va)(struct dbmdx_private *p,
 				  u32 command, u16 *response);
-	/* send command in boot protocol format to the chip */
-	int (*send_cmd_boot)(struct dbmdx_private *p, u32 command);
-	/* verify boot checksum */
-	int (*verify_boot_checksum)(struct dbmdx_private *p,
-	const void *checksum, size_t chksum_len);
 	/* prepare buffering of audio data (e.g. increase speed) */
 	int (*prepare_buffering)(struct dbmdx_private *p);
 	/* read audio data */
@@ -453,10 +368,6 @@ struct chip_interface {
 	int (*set_read_chunk_size)(struct dbmdx_private *p, u32 size);
 	/* Set Write Chunk Size */
 	int (*set_write_chunk_size)(struct dbmdx_private *p, u32 size);
-	/* Resume Chip Interface */
-	void (*resume)(struct dbmdx_private *p);
-	/* Suspend Chip Interface */
-	void (*suspend)(struct dbmdx_private *p);
 
 	/* private data */
 	void *pdata;

@@ -77,8 +77,6 @@
 
 struct kmem_cache *skbuff_head_cache __read_mostly;
 static struct kmem_cache *skbuff_fclone_cache __read_mostly;
-int sysctl_max_skb_frags __read_mostly = MAX_SKB_FRAGS;
-EXPORT_SYMBOL(sysctl_max_skb_frags);
 
 /**
  *	skb_panic - private function for out-of-line support
@@ -205,6 +203,9 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	struct sk_buff *skb;
 	u8 *data;
 	bool pfmemalloc;
+
+	if (IS_ENABLED(CONFIG_FORCE_ALLOC_FROM_DMA_ZONE))
+		gfp_mask |= GFP_DMA;
 
 	cache = (flags & SKB_ALLOC_FCLONE)
 		? skbuff_fclone_cache : skbuff_head_cache;
@@ -363,6 +364,9 @@ static void *__netdev_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
 	int order;
 	unsigned long flags;
 
+	if (IS_ENABLED(CONFIG_FORCE_ALLOC_FROM_DMA_ZONE))
+		gfp_mask |= GFP_DMA;
+
 	local_irq_save(flags);
 	nc = this_cpu_ptr(&netdev_alloc_cache);
 	if (unlikely(!nc->frag.page)) {
@@ -439,6 +443,7 @@ EXPORT_SYMBOL(netdev_alloc_frag);
  *
  *	%NULL is returned if there is no free memory.
  */
+#ifndef CONFIG_DISABLE_NET_SKB_FRAG_CACHE
 struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
 				   unsigned int length, gfp_t gfp_mask)
 {
@@ -469,6 +474,22 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
 	}
 	return skb;
 }
+#else
+struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
+				   unsigned int length, gfp_t gfp_mask)
+{
+	struct sk_buff *skb = NULL;
+
+	skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask,
+			  SKB_ALLOC_RX, NUMA_NO_NODE);
+	if (likely(skb)) {
+		skb_reserve(skb, NET_SKB_PAD);
+		skb->dev = dev;
+	}
+	return skb;
+}
+#endif
+
 EXPORT_SYMBOL(__netdev_alloc_skb);
 
 void skb_add_rx_frag(struct sk_buff *skb, int i, struct page *page, int off,
@@ -3623,14 +3644,13 @@ void skb_complete_tx_timestamp(struct sk_buff *skb,
 {
 	struct sock *sk = skb->sk;
 
-	/* Take a reference to prevent skb_orphan() from freeing the socket,
-	 * but only if the socket refcount is not zero.
-	 */
-	if (likely(atomic_inc_not_zero(&sk->sk_refcnt))) {
-		*skb_hwtstamps(skb) = *hwtstamps;
-		__skb_complete_tx_timestamp(skb, sk, SCM_TSTAMP_SND);
-		sock_put(sk);
-	}
+	/* take a reference to prevent skb_orphan() from freeing the socket */
+	sock_hold(sk);
+
+	*skb_hwtstamps(skb) = *hwtstamps;
+	__skb_complete_tx_timestamp(skb, sk, SCM_TSTAMP_SND);
+
+	sock_put(sk);
 }
 EXPORT_SYMBOL_GPL(skb_complete_tx_timestamp);
 
@@ -3668,7 +3688,7 @@ void skb_complete_wifi_ack(struct sk_buff *skb, bool acked)
 {
 	struct sock *sk = skb->sk;
 	struct sock_exterr_skb *serr;
-	int err = 1;
+	int err;
 
 	skb->wifi_acked_valid = 1;
 	skb->wifi_acked = acked;
@@ -3678,15 +3698,14 @@ void skb_complete_wifi_ack(struct sk_buff *skb, bool acked)
 	serr->ee.ee_errno = ENOMSG;
 	serr->ee.ee_origin = SO_EE_ORIGIN_TXSTATUS;
 
-	/* Take a reference to prevent skb_orphan() from freeing the socket,
-	 * but only if the socket refcount is not zero.
-	 */
-	if (likely(atomic_inc_not_zero(&sk->sk_refcnt))) {
-		err = sock_queue_err_skb(sk, skb);
-		sock_put(sk);
-	}
+	/* take a reference to prevent skb_orphan() from freeing the socket */
+	sock_hold(sk);
+
+	err = sock_queue_err_skb(sk, skb);
 	if (err)
 		kfree_skb(skb);
+
+	sock_put(sk);
 }
 EXPORT_SYMBOL_GPL(skb_complete_wifi_ack);
 
@@ -4075,7 +4094,6 @@ void skb_scrub_packet(struct sk_buff *skb, bool xnet)
 	if (!xnet)
 		return;
 
-	ipvs_reset(skb);
 	skb_orphan(skb);
 	skb->mark = 0;
 }

@@ -48,9 +48,13 @@
 #include <linux/nodemask.h>
 #include <linux/moduleparam.h>
 #include <linux/uaccess.h>
-#include <linux/exynos-ss.h>
+#include <linux/bug.h>
 
 #include "workqueue_internal.h"
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
+
 
 enum {
 	/*
@@ -282,7 +286,7 @@ static bool wq_power_efficient;
 module_param_named(power_efficient, wq_power_efficient, bool, 0444);
 
 static bool wq_numa_enabled;		/* unbound NUMA affinity enabled */
-
+static unsigned int need_rebind = 0; 
 /* buf for wq_update_unbound_numa_attrs(), protected by CPU hotplug exclusion */
 static struct workqueue_attrs *wq_update_unbound_numa_attrs_buf;
 
@@ -624,35 +628,6 @@ static void set_work_pool_and_clear_pending(struct work_struct *work,
 	 */
 	smp_wmb();
 	set_work_data(work, (unsigned long)pool_id << WORK_OFFQ_POOL_SHIFT, 0);
-	/*
-	 * The following mb guarantees that previous clear of a PENDING bit
-	 * will not be reordered with any speculative LOADS or STORES from
-	 * work->current_func, which is executed afterwards.  This possible
-	 * reordering can lead to a missed execution on attempt to qeueue
-	 * the same @work.  E.g. consider this case:
-	 *
-	 *   CPU#0                         CPU#1
-	 *   ----------------------------  --------------------------------
-	 *
-	 * 1  STORE event_indicated
-	 * 2  queue_work_on() {
-	 * 3    test_and_set_bit(PENDING)
-	 * 4 }                             set_..._and_clear_pending() {
-	 * 5                                 set_work_data() # clear bit
-	 * 6                                 smp_mb()
-	 * 7                               work->current_func() {
-	 * 8				      LOAD event_indicated
-	 *				   }
-	 *
-	 * Without an explicit full barrier speculative LOAD on line 8 can
-	 * be executed before CPU#0 does STORE on line 1.  If that happens,
-	 * CPU#0 observes the PENDING bit is still set and new execution of
-	 * a @work is not queued in a hope, that CPU#1 will eventually
-	 * finish the queued @work.  Meanwhile CPU#1 does not see
-	 * event_indicated is set, because speculative LOAD was executed
-	 * before actual STORE.
-	 */
-	smp_mb();
 }
 
 static void clear_work_data(struct work_struct *work)
@@ -1453,7 +1428,6 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 	struct timer_list *timer = &dwork->timer;
 	struct work_struct *work = &dwork->work;
 
-	WARN_ON_ONCE(!wq);
 	WARN_ON_ONCE(timer->function != delayed_work_timer_fn ||
 		     timer->data != (unsigned long)dwork);
 	WARN_ON_ONCE(timer_pending(timer));
@@ -1729,7 +1703,9 @@ static struct worker *create_worker(struct worker_pool *pool)
 		goto fail;
 
 	set_user_nice(worker->task, pool->attrs->nice);
-	kthread_bind_mask(worker->task, pool->attrs->cpumask);
+
+	/* prevent userland from meddling with cpumask of workqueue workers */
+	worker->task->flags |= PF_NO_SETAFFINITY;
 
 	/* successful, attach the worker to the pool */
 	worker_attach_to_pool(worker, pool);
@@ -2040,9 +2016,15 @@ __acquires(&pool->lock)
 	lock_map_acquire_read(&pwq->wq->lockdep_map);
 	lock_map_acquire(&lockdep_map);
 	trace_workqueue_execute_start(work);
-	exynos_ss_work(worker, work, worker->current_func, ESS_FLAG_IN);
+#ifdef CONFIG_SEC_DEBUG
+	if ((unsigned long)worker->current_func > PAGE_OFFSET) {
+		secdbg_sched_msg("@%pS", worker->current_func);
+	} else {
+		secdbg_sched_msg("M:0x%lx", (unsigned long)worker->current_func);
+	}
+#endif
+
 	worker->current_func(work);
-	exynos_ss_work(worker, work, worker->current_func, ESS_FLAG_OUT);
 	/*
 	 * While we must be careful to not use "work" after this, the trace
 	 * point will only record its address.
@@ -2057,6 +2039,7 @@ __acquires(&pool->lock)
 		       current->comm, preempt_count(), task_pid_nr(current),
 		       worker->current_func);
 		debug_show_held_locks(current);
+		BUG_ON(PANIC_CORRUPTION);
 		dump_stack();
 	}
 
@@ -3257,7 +3240,7 @@ int workqueue_sysfs_register(struct workqueue_struct *wq)
 	 * attributes breaks ordering guarantee.  Disallow exposing ordered
 	 * workqueues.
 	 */
-	if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
+	if (WARN_ON(wq->flags & __WQ_ORDERED))
 		return -EINVAL;
 
 	wq->wq_dev = wq_dev = kzalloc(sizeof(*wq_dev), GFP_KERNEL);
@@ -3832,12 +3815,8 @@ int apply_workqueue_attrs(struct workqueue_struct *wq,
 		return -EINVAL;
 
 	/* creating multiple pwqs breaks ordering guarantee */
-	if (!list_empty(&wq->pwqs)) {
-		if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
-			return -EINVAL;
-
-		wq->flags &= ~__WQ_ORDERED;
-	}
+	if (WARN_ON((wq->flags & __WQ_ORDERED) && !list_empty(&wq->pwqs)))
+		return -EINVAL;
 
 	pwq_tbl = kzalloc(nr_node_ids * sizeof(pwq_tbl[0]), GFP_KERNEL);
 	new_attrs = alloc_workqueue_attrs(GFP_KERNEL);
@@ -4081,16 +4060,6 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	struct workqueue_struct *wq;
 	struct pool_workqueue *pwq;
 
-	/*
-	 * Unbound && max_active == 1 used to imply ordered, which is no
-	 * longer the case on NUMA machines due to per-node pools.  While
-	 * alloc_ordered_workqueue() is the right way to create an ordered
-	 * workqueue, keep the previous behavior to avoid subtle breakages
-	 * on NUMA.
-	 */
-	if ((flags & WQ_UNBOUND) && max_active == 1)
-		flags |= __WQ_ORDERED;
-
 	/* see the comment above the definition of WQ_POWER_EFFICIENT */
 	if ((flags & WQ_POWER_EFFICIENT) && wq_power_efficient)
 		flags |= WQ_UNBOUND;
@@ -4152,7 +4121,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 		}
 
 		wq->rescuer = rescuer;
-		kthread_bind_mask(rescuer->task, cpu_possible_mask);
+		rescuer->task->flags |= PF_NO_SETAFFINITY;
 		wake_up_process(rescuer->task);
 	}
 
@@ -4283,14 +4252,13 @@ void workqueue_set_max_active(struct workqueue_struct *wq, int max_active)
 	struct pool_workqueue *pwq;
 
 	/* disallow meddling with max_active for ordered workqueues */
-	if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
+	if (WARN_ON(wq->flags & __WQ_ORDERED))
 		return;
 
 	max_active = wq_clamp_max_active(max_active, wq->flags, wq->name);
 
 	mutex_lock(&wq->mutex);
 
-	wq->flags &= ~__WQ_ORDERED;
 	wq->saved_max_active = max_active;
 
 	for_each_pwq(pwq, wq)
@@ -4538,10 +4506,13 @@ static void wq_unbind_fn(struct work_struct *work)
 /**
  * rebind_workers - rebind all workers of a pool to the associated CPU
  * @pool: pool of interest
+ * @force: if it is true, replace WORKER_UNBOUND with WORKER_REBOUND
+ * irrespective of flags of workers. Otherwise, replace the flags only
+ * when workers have WORKER_UNBOUND flag.
  *
  * @pool->cpu is coming online.  Rebind all workers to the CPU.
  */
-static void rebind_workers(struct worker_pool *pool)
+static void rebind_workers(struct worker_pool *pool, bool force)
 {
 	struct worker *worker;
 
@@ -4559,17 +4530,6 @@ static void rebind_workers(struct worker_pool *pool)
 						  pool->attrs->cpumask) < 0);
 
 	spin_lock_irq(&pool->lock);
-
-	/*
-	 * XXX: CPU hotplug notifiers are weird and can call DOWN_FAILED
-	 * w/o preceding DOWN_PREPARE.  Work around it.  CPU hotplug is
-	 * being reworked and this can go away in time.
-	 */
-	if (!(pool->flags & POOL_DISASSOCIATED)) {
-		spin_unlock_irq(&pool->lock);
-		return;
-	}
-
 	pool->flags &= ~POOL_DISASSOCIATED;
 
 	for_each_pool_worker(worker, pool) {
@@ -4601,10 +4561,12 @@ static void rebind_workers(struct worker_pool *pool)
 		 * fail incorrectly leading to premature concurrency
 		 * management operations.
 		 */
-		WARN_ON_ONCE(!(worker_flags & WORKER_UNBOUND));
-		worker_flags |= WORKER_REBOUND;
-		worker_flags &= ~WORKER_UNBOUND;
-		ACCESS_ONCE(worker->flags) = worker_flags;
+		if (force || (worker_flags & WORKER_UNBOUND)) {
+			WARN_ON_ONCE(!(worker_flags & WORKER_UNBOUND));
+			worker_flags |= WORKER_REBOUND;
+			worker_flags &= ~WORKER_UNBOUND;
+			ACCESS_ONCE(worker->flags) = worker_flags;
+		}
 	}
 
 	spin_unlock_irq(&pool->lock);
@@ -4666,6 +4628,9 @@ static int workqueue_cpu_up_callback(struct notifier_block *nfb,
 		break;
 
 	case CPU_DOWN_FAILED:
+		if (!(need_rebind&(1<<cpu))) 
+		return NOTIFY_OK; 
+		/* fall through */ 
 	case CPU_ONLINE:
 		mutex_lock(&wq_pool_mutex);
 
@@ -4673,7 +4638,9 @@ static int workqueue_cpu_up_callback(struct notifier_block *nfb,
 			mutex_lock(&pool->attach_mutex);
 
 			if (pool->cpu == cpu)
-				rebind_workers(pool);
+				rebind_workers(pool,
+					(action & ~CPU_TASKS_FROZEN)
+						!= CPU_DOWN_FAILED);
 			else if (pool->cpu < 0)
 				restore_unbound_workers_cpumask(pool, cpu);
 
@@ -4685,6 +4652,7 @@ static int workqueue_cpu_up_callback(struct notifier_block *nfb,
 			wq_update_unbound_numa(wq, cpu, true);
 
 		mutex_unlock(&wq_pool_mutex);
+		need_rebind &= ~(1<<cpu); 
 		break;
 	}
 	return NOTIFY_OK;
@@ -4716,6 +4684,7 @@ static int workqueue_cpu_down_callback(struct notifier_block *nfb,
 
 		/* wait for per-cpu unbinding to finish */
 		flush_work(&unbind_work);
+		need_rebind |= 1<<cpu; 
 		destroy_work_on_stack(&unbind_work);
 		break;
 	}

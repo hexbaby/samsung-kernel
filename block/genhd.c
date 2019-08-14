@@ -519,7 +519,7 @@ static void register_disk(struct gendisk *disk)
 	int err;
 
 #ifdef CONFIG_BLOCK_SUPPORT_STLOG
-	int major 		= disk->major;	
+	int major 		= disk->major;
 	int first_minor 	= disk->first_minor;
 #endif
 
@@ -573,13 +573,13 @@ exit:
 	/* announce disk after possible partitions are created */
 	dev_set_uevent_suppress(ddev, 0);
 	kobject_uevent(&ddev->kobj, KOBJ_ADD);
-	ST_LOG("<%s> KOBJ_ADD %d:%d", __func__, major, first_minor);
+	ST_LOG("<%s> KOBJ_ADD %d:%d",__func__,major,first_minor);
 
 	/* announce possible partitions */
 	disk_part_iter_init(&piter, disk, 0);
 	while ((part = disk_part_iter_next(&piter))) {
 		kobject_uevent(&part_to_dev(part)->kobj, KOBJ_ADD);
-		ST_LOG("<%s> KOBJ_ADD %d:%d", __func__, major, first_minor + part->partno);
+		ST_LOG("<%s> KOBJ_ADD %d:%d",__func__,major,first_minor+part->partno);
 	}
 	disk_part_iter_exit(&piter);
 }
@@ -651,7 +651,7 @@ void del_gendisk(struct gendisk *disk)
 	struct disk_part_iter piter;
 	struct hd_struct *part;
 
-#ifdef CONFIG_BLOCK_SUPPORT_STLOG
+#ifdef CONFIG_BLOCK_SUPPORT_STLOG	
 	struct device *dev;
 #endif
 
@@ -685,11 +685,10 @@ void del_gendisk(struct gendisk *disk)
 		sysfs_remove_link(block_depr, dev_name(disk_to_dev(disk)));
 	pm_runtime_set_memalloc_noio(disk_to_dev(disk), false);
 #ifdef CONFIG_BLOCK_SUPPORT_STLOG
-	dev = disk_to_dev(disk);
+	dev=disk_to_dev(disk);
 	ST_LOG("<%s> KOBJ_REMOVE %d:%d %s",
-		__func__, MAJOR(dev->devt), MINOR(dev->devt), dev->kobj.name);
+		__func__,MAJOR(dev->devt),MINOR(dev->devt),dev->kobj.name);
 #endif
-
 	device_del(disk_to_dev(disk));
 }
 EXPORT_SYMBOL(del_gendisk);
@@ -1155,12 +1154,10 @@ static int disk_uevent(struct device *dev, struct kobj_uevent_env *env)
 	disk_part_iter_exit(&piter);
 	add_uevent_var(env, "NPARTS=%u", cnt);
 #ifdef CONFIG_USB_STORAGE_DETECT
-	if (disk->flags & GENHD_FL_IF_USB) {
-		add_uevent_var(env, "MEDIAPRST=%d",
-			(disk->flags & GENHD_FL_MEDIA_PRESENT) ? 1 : 0);
-		pr_info("%s %d, disk flag media_present=%d, cnt=%d\n",
-			__func__, __LINE__,
-			(disk->flags & GENHD_FL_MEDIA_PRESENT), cnt);
+	if (disk->interfaces == GENHD_IF_USB) {
+		add_uevent_var(env, "MEDIAPRST=%d", disk->media_present);
+		pr_info("%s %d, disk->media_present=%d, cnt=%d, disk->disk_name=%s\n",
+				__func__, __LINE__, disk->media_present, cnt, disk->disk_name);
 	}
 #endif
 	return 0;
@@ -1189,6 +1186,7 @@ static struct device_type disk_type = {
 };
 
 #ifdef CONFIG_PROC_FS
+#define PG2KB(x) ((unsigned long)((x) << (PAGE_SHIFT - 10)))
 /*
  * aggregate disk stat collector.  Uses the same stats that the sysfs
  * entries do, above, but makes them available through one seq_file.
@@ -1203,6 +1201,11 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 	struct hd_struct *hd;
 	char buf[BDEVNAME_SIZE];
 	int cpu;
+	u64 uptime;
+	unsigned long thresh = 0;
+	unsigned long bg_thresh = 0;
+	struct backing_dev_info *bdi;
+	unsigned int nread, nwrite;
 
 	/*
 	if (&disk_to_dev(gp)->kobj.entry == block_class.devices.next)
@@ -1212,67 +1215,7 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 				"\n\n");
 	*/
 
-	disk_part_iter_init(&piter, gp, DISK_PITER_INCL_EMPTY_PART0);
-	while ((hd = disk_part_iter_next(&piter))) {
-		cpu = part_stat_lock();
-		part_round_stats(cpu, hd);
-		part_stat_unlock();
-		seq_printf(seqf, "%4d %7d %s %lu %lu %lu "
-			   "%u %lu %lu %lu %u %u %u %u\n",
-			   MAJOR(part_devt(hd)), MINOR(part_devt(hd)),
-			   disk_name(gp, hd->partno, buf),
-			   part_stat_read(hd, ios[READ]),
-			   part_stat_read(hd, merges[READ]),
-			   part_stat_read(hd, sectors[READ]),
-			   jiffies_to_msecs(part_stat_read(hd, ticks[READ])),
-			   part_stat_read(hd, ios[WRITE]),
-			   part_stat_read(hd, merges[WRITE]),
-			   part_stat_read(hd, sectors[WRITE]),
-			   jiffies_to_msecs(part_stat_read(hd, ticks[WRITE])),
-			   part_in_flight(hd),
-			   jiffies_to_msecs(part_stat_read(hd, io_ticks)),
-			   jiffies_to_msecs(part_stat_read(hd, time_in_queue))
-			);
-	}
-	disk_part_iter_exit(&piter);
-
-	return 0;
-}
-
-static const struct seq_operations diskstats_op = {
-	.start	= disk_seqf_start,
-	.next	= disk_seqf_next,
-	.stop	= disk_seqf_stop,
-	.show	= diskstats_show
-};
-
-static int diskstats_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &diskstats_op);
-}
-
-static const struct file_operations proc_diskstats_operations = {
-	.open		= diskstats_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
-};
-
-#define PG2KB(x) ((unsigned long)((x) << (PAGE_SHIFT - 10)))
-static int iostats_show(struct seq_file *seqf, void *v)
-{
-	struct gendisk *gp = v;
-	struct disk_part_iter piter;
-	struct hd_struct *hd;
-	char buf[BDEVNAME_SIZE];
-	int cpu;
-	u64 uptime;
-	unsigned long thresh = 0;
-	unsigned long bg_thresh = 0;
-	struct backing_dev_info *bdi;
-	unsigned int nread, nwrite;
-
-	/* Enhanced diskstats for IOD V 2.2 */
+	/* Enhanced diskstats for IOD V 2.1 */
 	global_dirty_limits(&bg_thresh, &thresh);
 
 	disk_part_iter_init(&piter, gp, DISK_PITER_INCL_EMPTY_PART0);
@@ -1328,20 +1271,20 @@ static int iostats_show(struct seq_file *seqf, void *v)
 	return 0;
 }
 
-static const struct seq_operations iostats_op = {
+static const struct seq_operations diskstats_op = {
 	.start	= disk_seqf_start,
 	.next	= disk_seqf_next,
 	.stop	= disk_seqf_stop,
-	.show	= iostats_show
+	.show	= diskstats_show
 };
 
-static int iostats_open(struct inode *inode, struct file *file)
+static int diskstats_open(struct inode *inode, struct file *file)
 {
-	return seq_open(file, &iostats_op);
+	return seq_open(file, &diskstats_op);
 }
 
-static const struct file_operations proc_iostats_operations = {
-	.open		= iostats_open,
+static const struct file_operations proc_diskstats_operations = {
+	.open		= diskstats_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= seq_release,
@@ -1349,7 +1292,6 @@ static const struct file_operations proc_iostats_operations = {
 
 static int __init proc_genhd_init(void)
 {
-	proc_create("iostats", 0, NULL, &proc_iostats_operations);
 	proc_create("diskstats", 0, NULL, &proc_diskstats_operations);
 	proc_create("partitions", 0, NULL, &proc_partitions_operations);
 	return 0;
@@ -1768,12 +1710,12 @@ static void disk_check_events(struct disk_events *ev,
 	int nr_events = 0, i;
 
 #ifdef CONFIG_USB_STORAGE_DETECT
-	if (!(disk->flags & GENHD_FL_IF_USB))
+	events = 0;
+	if (disk->interfaces != GENHD_IF_USB)
 		/* check events */
 		events = disk->fops->check_events(disk, clearing);
-	else
-		events = 0;
 #else
+	/* check events */
 	events = disk->fops->check_events(disk, clearing);
 #endif
 
@@ -1801,15 +1743,11 @@ static void disk_check_events(struct disk_events *ev,
 			envp[nr_events++] = disk_uevents[i];
 
 #ifdef CONFIG_USB_STORAGE_DETECT
-	if (!(disk->flags & GENHD_FL_IF_USB)) {
-		if (nr_events)
-			kobject_uevent_env(&disk_to_dev(disk)->kobj,
-					KOBJ_CHANGE, envp);
-	}
+	if (nr_events && disk->interfaces != GENHD_IF_USB)
+		kobject_uevent_env(&disk_to_dev(disk)->kobj, KOBJ_CHANGE, envp);
 #else
 	if (nr_events)
-		kobject_uevent_env(&disk_to_dev(disk)->kobj,
-				KOBJ_CHANGE, envp);
+		kobject_uevent_env(&disk_to_dev(disk)->kobj, KOBJ_CHANGE, envp);
 #endif
 }
 

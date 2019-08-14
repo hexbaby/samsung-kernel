@@ -27,6 +27,12 @@
 #include "sd.h"
 #include "sd_ops.h"
 
+#define UHS_SDR104_MIN_DTR	(100 * 1000 * 1000)
+#define UHS_DDR50_MIN_DTR	(50 * 1000 * 1000)
+#define UHS_SDR50_MIN_DTR	(50 * 1000 * 1000)
+#define UHS_SDR25_MIN_DTR	(25 * 1000 * 1000)
+#define UHS_SDR12_MIN_DTR	(12.5 * 1000 * 1000)
+
 static const unsigned int tran_exp[] = {
 	10000,		100000,		1000000,	10000000,
 	0,		0,		0,		0
@@ -371,9 +377,9 @@ int mmc_sd_switch_hs(struct mmc_card *card)
 		goto out;
 
 	if ((status[16] & 0xF) != 1) {
-		pr_warn("%s: Problem switching card into high-speed mode!\n",
-			mmc_hostname(card->host));
-		err = 0;
+		pr_warn("%s: Problem switching card into high-speed mode!, status:%x\n",
+			mmc_hostname(card->host), (status[16] & 0xF));
+		err = -EBUSY;
 	} else {
 		err = 1;
 	}
@@ -460,18 +466,22 @@ static void sd_update_bus_speed_mode(struct mmc_card *card)
 	}
 
 	if ((card->host->caps & MMC_CAP_UHS_SDR104) &&
-	    (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104)) {
+	    (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104) &&
+	    (card->host->f_max > UHS_SDR104_MIN_DTR)) {
 			card->sd_bus_speed = UHS_SDR104_BUS_SPEED;
 	} else if ((card->host->caps & MMC_CAP_UHS_DDR50) &&
-		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_DDR50)) {
+		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_DDR50) &&
+		    (card->host->f_max > UHS_DDR50_MIN_DTR)) {
 			card->sd_bus_speed = UHS_DDR50_BUS_SPEED;
 	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
 		    MMC_CAP_UHS_SDR50)) && (card->sw_caps.sd3_bus_mode &
-		    SD_MODE_UHS_SDR50)) {
+		    SD_MODE_UHS_SDR50) &&
+		    (card->host->f_max > UHS_SDR50_MIN_DTR)) {
 			card->sd_bus_speed = UHS_SDR50_BUS_SPEED;
 	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
 		    MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR25)) &&
-		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR25)) {
+		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR25) &&
+		 (card->host->f_max > UHS_SDR25_MIN_DTR)) {
 			card->sd_bus_speed = UHS_SDR25_BUS_SPEED;
 	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
 		    MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR25 |
@@ -515,15 +525,17 @@ static int sd_set_bus_speed_mode(struct mmc_card *card, u8 *status)
 	if (err)
 		return err;
 
-	if ((status[16] & 0xF) != card->sd_bus_speed)
-		pr_warn("%s: Problem setting bus speed mode!\n",
-			mmc_hostname(card->host));
-	else {
+	if ((status[16] & 0xF) != card->sd_bus_speed) {
+		pr_warn("%s: Problem setting bus speed mode(%u)! max_dtr:%u, timing:%u, status:%x\n",
+			mmc_hostname(card->host), card->sd_bus_speed,
+			card->sw_caps.uhs_max_dtr, timing, (status[16] & 0xF));
+		err = -EBUSY;
+	} else {
 		mmc_set_timing(card->host, timing);
 		mmc_set_clock(card->host, card->sw_caps.uhs_max_dtr);
 	}
 
-	return 0;
+	return err;
 }
 
 /* Get host's max current setting at its current voltage */
@@ -604,6 +616,64 @@ static int sd_set_current_limit(struct mmc_card *card, u8 *status)
 	return 0;
 }
 
+/**
+ * mmc_sd_change_bus_speed() - Change SD card bus frequency at runtime
+ * @host: pointer to mmc host structure
+ * @freq: pointer to desired frequency to be set
+ *
+ * Change the SD card bus frequency at runtime after the card is
+ * initialized. Callers are expected to make sure of the card's
+ * state (DATA/RCV/TRANSFER) beforing changing the frequency at runtime.
+ *
+ * If the frequency to change is greater than max. supported by card,
+ * *freq is changed to max. supported by card and if it is less than min.
+ * supported by host, *freq is changed to min. supported by host.
+ */
+static int mmc_sd_change_bus_speed(struct mmc_host *host, unsigned long *freq)
+{
+	int err = 0;
+	struct mmc_card *card;
+
+	mmc_claim_host(host);
+	/*
+	 * Assign card pointer after claiming host to avoid race
+	 * conditions that may arise during removal of the card.
+	 */
+	card = host->card;
+
+	/* sanity checks */
+	if (!card || !freq) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	mmc_set_clock(host, (unsigned int) (*freq));
+
+	if (!mmc_host_is_spi(card->host) && mmc_card_uhs(card)
+			&& card->host->ops->execute_tuning) {
+		/*
+		 * We try to probe host driver for tuning for any
+		 * frequency, it is host driver responsibility to
+		 * perform actual tuning only when required.
+		 */
+		mmc_host_clk_hold(card->host);
+		err = card->host->ops->execute_tuning(card->host,
+				MMC_SEND_TUNING_BLOCK);
+		mmc_host_clk_release(card->host);
+
+		if (err) {
+			pr_warn("%s: %s: tuning execution failed %d. Restoring to previous clock %lu\n",
+				   mmc_hostname(card->host), __func__, err,
+				   host->clk_scaling.curr_freq);
+			mmc_set_clock(host, host->clk_scaling.curr_freq);
+		}
+	}
+
+out:
+	mmc_release_host(host);
+	return err;
+}
+
 /*
  * UHS-I specific initialization procedure
  */
@@ -660,24 +730,13 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 	 * SPI mode doesn't define CMD19 and tuning is only valid for SDR50 and
 	 * SDR104 mode SD-cards. Note that tuning is mandatory for SDR104.
 	 */
-	if (!mmc_host_is_spi(card->host) &&
-		(card->host->ios.timing == MMC_TIMING_UHS_SDR50 ||
-		 card->host->ios.timing == MMC_TIMING_UHS_DDR50 ||
-		 card->host->ios.timing == MMC_TIMING_UHS_SDR104)) {
-		err = mmc_execute_tuning(card);
-
-		/*
-		 * As SD Specifications Part1 Physical Layer Specification
-		 * Version 3.01 says, CMD19 tuning is available for unlocked
-		 * cards in transfer state of 1.8V signaling mode. The small
-		 * difference between v3.00 and 3.01 spec means that CMD19
-		 * tuning is also available for DDR50 mode.
-		 */
-		if (err && card->host->ios.timing == MMC_TIMING_UHS_DDR50) {
-			pr_warn("%s: ddr50 tuning failed\n",
-				mmc_hostname(card->host));
-			err = 0;
-		}
+	if (!mmc_host_is_spi(card->host) && card->host->ops->execute_tuning &&
+			(card->sd_bus_speed == UHS_SDR50_BUS_SPEED ||
+			 card->sd_bus_speed == UHS_SDR104_BUS_SPEED)) {
+		mmc_host_clk_hold(card->host);
+		err = card->host->ops->execute_tuning(card->host,
+						      MMC_SEND_TUNING_BLOCK);
+		mmc_host_clk_release(card->host);
 	}
 
 out:
@@ -859,7 +918,7 @@ int mmc_sd_setup_card(struct mmc_host *host, struct mmc_card *card,
 			if (!err) {
 				if (retries > 1) {
 					printk(KERN_WARNING
-					       "%s: recovered\n", 
+					       "%s: recovered\n",
 					       mmc_hostname(host));
 				}
 				break;
@@ -916,7 +975,10 @@ unsigned mmc_sd_get_max_clock(struct mmc_card *card)
 {
 	unsigned max_dtr = (unsigned int)-1;
 
-	if (mmc_card_hs(card)) {
+	if (mmc_card_uhs(card)) {
+		if (max_dtr > card->sw_caps.uhs_max_dtr)
+			max_dtr = card->sw_caps.uhs_max_dtr;
+	} else if (mmc_card_hs(card)) {
 		if (max_dtr > card->sw_caps.hs_max_dtr)
 			max_dtr = card->sw_caps.hs_max_dtr;
 	} else if (max_dtr > card->csd.max_dtr) {
@@ -972,6 +1034,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		err = mmc_send_relative_addr(host, &card->rca);
 		if (err)
 			goto free_card;
+		host->card = card;
 	}
 
 	if (!oldcard) {
@@ -1035,12 +1098,16 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		}
 	}
 
-	host->card = card;
+	card->clk_scaling_highest = mmc_sd_get_max_clock(card);
+	card->clk_scaling_lowest = host->f_min;
+
 	return 0;
 
 free_card:
-	if (!oldcard)
+	if (!oldcard) {
+		host->card = NULL;
 		mmc_remove_card(card);
+	}
 
 	return err;
 }
@@ -1053,8 +1120,12 @@ static void mmc_sd_remove(struct mmc_host *host)
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
+	mmc_exit_clk_scaling(host);
 	mmc_remove_card(host->card);
+
+	mmc_claim_host(host);
 	host->card = NULL;
+	mmc_release_host(host);
 }
 
 /*
@@ -1062,6 +1133,31 @@ static void mmc_sd_remove(struct mmc_host *host)
  */
 static int mmc_sd_alive(struct mmc_host *host)
 {
+	int err = 0;
+
+	err = mmc_send_status(host->card, NULL);
+	/*
+	 * if mmc_send_status() returns error even card is presented 
+	 * It needs to re-initialize the card and send status CMD again.
+	 *   1. set the MMC_BUSRESUME_NEEDS_RESUME to run mmc_resume_bus
+	 *   2. set suspended status to re-init
+	 *   3. set to MMC_POWER_UP to set LEGACY
+	 *   4. set runtime pm to disable that is already enabled
+	 */
+	if (err && host->card && mmc_bus_manual_resume(host)) {
+		pr_err("%s: resume_bus: info(E:%d,F:%d,P:%d,S:%d,RD:%d)\n",
+				mmc_hostname(host), err, host->bus_resume_flags,
+				host->ios.power_mode,
+				(mmc_card_suspended(host->card) ? 1 : 0),
+				host->rescan_disable);
+		host->bus_resume_flags |= MMC_BUSRESUME_NEEDS_RESUME;
+		mmc_card_set_suspended(host->card);
+		host->ios.power_mode = MMC_POWER_UP;
+		pm_runtime_disable(&host->card->dev);
+		mmc_resume_bus(host);
+	} else
+		return err;
+
 	return mmc_send_status(host->card, NULL);
 }
 
@@ -1078,6 +1174,7 @@ static void mmc_sd_detect(struct mmc_host *host)
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
+#if defined(CONFIG_SEC_HYBRID_TRAY)
 	if (host->ops->get_cd && host->ops->get_cd(host) == 0) {
 		mmc_card_set_removed(host->card);
 		mmc_sd_remove(host);
@@ -1086,9 +1183,10 @@ static void mmc_sd_detect(struct mmc_host *host)
 		mmc_detach_bus(host);
 		mmc_power_off(host);
 		mmc_release_host(host);
-		pr_err("%s: card(tray) removed...\n", __func__);
+		pr_err("%s: card(tray) is removed...\n", mmc_hostname(host));
 		return;
 	}
+#endif
 
 	mmc_get_card(host->card);
 
@@ -1108,6 +1206,7 @@ static void mmc_sd_detect(struct mmc_host *host)
 	if (!retries) {
 		printk(KERN_ERR "%s(%s): Unable to re-detect card (%d)\n",
 		       __func__, mmc_hostname(host), err);
+		err = _mmc_detect_card_removed(host);
 	}
 #else
 	err = _mmc_detect_card_removed(host);
@@ -1131,6 +1230,13 @@ static int _mmc_sd_suspend(struct mmc_host *host)
 
 	BUG_ON(!host);
 	BUG_ON(!host->card);
+
+	err = mmc_suspend_clk_scaling(host);
+	if (err) {
+		pr_err("%s: %s: fail to suspend clock scaling (%d)\n",
+			mmc_hostname(host), __func__,  err);
+		return err;
+	}
 
 	mmc_claim_host(host);
 
@@ -1182,6 +1288,12 @@ static int _mmc_sd_resume(struct mmc_host *host)
 
 	mmc_claim_host(host);
 
+#if defined(CONFIG_SEC_HYBRID_TRAY)
+	if (host->ops->get_cd && host->ops->get_cd(host) == 0) {
+		printk(KERN_NOTICE "%s is no card...\n", mmc_hostname(host));
+		goto no_card;
+	}
+#endif
 	if (!mmc_card_suspended(host->card))
 		goto out;
 
@@ -1194,8 +1306,11 @@ static int _mmc_sd_resume(struct mmc_host *host)
 		if (err) {
 			printk(KERN_ERR "%s: Re-init card rc = %d (retries = %d)\n",
 			       mmc_hostname(host), err, retries);
-			mdelay(5);
 			retries--;
+			mmc_power_off(host);
+			usleep_range(5000, 5500);
+			mmc_power_up(host, host->card->ocr);
+			mmc_select_voltage(host, host->card->ocr);
 			continue;
 		}
 		break;
@@ -1203,7 +1318,17 @@ static int _mmc_sd_resume(struct mmc_host *host)
 #else
 	err = mmc_sd_init_card(host, host->card->ocr, host->card);
 #endif
+#if defined(CONFIG_SEC_HYBRID_TRAY)
+no_card:
+#endif
 	mmc_card_clr_suspended(host->card);
+
+	err = mmc_resume_clk_scaling(host);
+	if (err) {
+		pr_err("%s: %s: fail to resume clock scaling (%d)\n",
+			mmc_hostname(host), __func__, err);
+		goto out;
+	}
 
 out:
 	mmc_release_host(host);
@@ -1267,9 +1392,22 @@ static int mmc_sd_power_restore(struct mmc_host *host)
 {
 	int ret;
 
+	/* Suspend clk scaling to avoid switching frequencies intermittently */
+	ret = mmc_suspend_clk_scaling(host);
+	if (ret) {
+		pr_err("%s: %s: fail to suspend clock scaling (%d)\n",
+			mmc_hostname(host), __func__, ret);
+		return ret;
+	}
+
 	mmc_claim_host(host);
 	ret = mmc_sd_init_card(host, host->card->ocr, host->card);
 	mmc_release_host(host);
+
+	ret = mmc_resume_clk_scaling(host);
+	if (ret)
+		pr_err("%s: %s: fail to resume clock scaling (%d)\n",
+			mmc_hostname(host), __func__, ret);
 
 	return ret;
 }
@@ -1283,7 +1421,7 @@ static const struct mmc_bus_ops mmc_sd_ops = {
 	.resume = mmc_sd_resume,
 	.power_restore = mmc_sd_power_restore,
 	.alive = mmc_sd_alive,
-	.shutdown = mmc_sd_suspend,
+	.change_bus_speed = mmc_sd_change_bus_speed,
 };
 
 /*
@@ -1338,6 +1476,10 @@ int mmc_attach_sd(struct mmc_host *host)
 		err = mmc_sd_init_card(host, rocr, NULL);
 		if (err) {
 			retries--;
+			mmc_power_off(host);
+			usleep_range(5000, 5500);
+			mmc_power_up(host, rocr);
+			mmc_select_voltage(host, rocr);
 			continue;
 		}
 		break;
@@ -1357,6 +1499,10 @@ int mmc_attach_sd(struct mmc_host *host)
 	mmc_release_host(host);
 	err = mmc_add_card(host->card);
 	mmc_claim_host(host);
+	if (err)
+		goto remove_card;
+
+	err = mmc_init_clk_scaling(host);
 	if (err)
 		goto remove_card;
 

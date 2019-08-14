@@ -72,15 +72,13 @@ void rkp_cfp_ropp_change_keys(struct task_struct *p);
 	"mov	" STR(RRX) ", sp\n" \
 	"and	" STR(RRX) ", " STR(RRX) ", #" STR(~(THREAD_SIZE - 1)) "	// top of stack\n" \
 	/* load key from hypervisor */ \
-	"stp	x29, x30, [sp, #-16]!\n" \
 	"stp	x0, x1, [sp, #-16]!\n" \
 	"mov	x0, #0x3000\n" \
 	"movk	x0, #0x8389, lsl #16\n" \
 	"mov	x1, " STR(RRX) "\n" \
 	"add	x1, x1, #" STR(TI_RRK_AGAIN) "\n" \
-	"bl	rkp_call\n" \
+	"hvc	#0\n" \
 	"ldp	x0, x1, [sp], #16\n" \
-	"ldp	x29, x30, [sp], #16\n" \
 	/*load RRX and RRS*/ \
 	"ldp	" STR(RRX) ", " STR(RRS) ", [sp], #16\n"
 #else //CONFIG_RKP_CFP_ROPP_HYPKEY

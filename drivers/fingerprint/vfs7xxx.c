@@ -45,7 +45,7 @@
 #include <linux/gpio.h>
 #include <linux/i2c/twl.h>
 #include <linux/wait.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/irq.h>
 
 #include <asm-generic/siginfo.h>
@@ -59,7 +59,6 @@
 #include <linux/pinctrl/consumer.h>
 #include "../pinctrl/core.h"
 
-#include <linux/platform_data/spi-s3c64xx.h>
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 #include <linux/wakelock.h>
 #include <linux/clk.h>
@@ -70,19 +69,7 @@
 #include <linux/of_dma.h>
 #include <linux/amba/bus.h>
 #include <linux/amba/pl330.h>
-#if defined(CONFIG_SECURE_OS_BOOSTER_API)
-#if defined(CONFIG_SOC_EXYNOS8890)
-#include <soc/samsung/secos_booster.h>
-#else
-#include <mach/secos_booster.h>
-#endif
-#endif
-#include <linux/smc.h>
-
-struct sec_spi_info {
-	int		port;
-	unsigned long	speed;
-};
+#include <linux/cpufreq.h>
 #endif
 
 #ifdef CONFIG_FB
@@ -96,7 +83,7 @@ static struct class *vfsspi_device_class;
 static int gpio_irq;
 /* for irq enable, disable count */
 static int cnt_irq=0;
-#ifdef CONFIG_SENSORS_FP_TKEY_NOTI
+#ifdef CONFIG_SEC_GRACEQLTE_PROJECT
 static int enable_flag_tkey = 0;
 #endif
 
@@ -153,16 +140,10 @@ struct vfsspi_device_data {
 	spinlock_t irq_lock;
 	unsigned short drdy_irq_flag;
 	unsigned int ldocontrol;
+	unsigned int min_cpufreq_limit;
 	unsigned int ocp_en;
 	unsigned int ldo_pin; /* Ldo 3.3V GPIO pin number */
 	unsigned int ldo_pin2; /* Ldo 1.8V GPIO pin number */
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-	/* set cs pin in fp driver, use only Exynos8890 */
-	/* for use auto cs mode with dualization fp sensor */
-	unsigned int cs_gpio;
-#endif
-#endif
 #ifdef CONFIG_SENSORS_FINGERPRINT_DUALIZATION
 	unsigned int vendor_pin; /* For checking vendor */
 #endif
@@ -180,6 +161,11 @@ struct vfsspi_device_data {
 	struct device *fp_device;
 #endif
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
+	unsigned int mosipin;
+	unsigned int misopin;
+	unsigned int cspin;
+	unsigned int clkpin;
+	bool isGpio_cfgDone;
 	bool enabled_clk;
 #ifdef FEATURE_SPI_WAKELOCK
 	struct wake_lock fp_spi_lock;
@@ -198,8 +184,20 @@ struct vfsspi_device_data {
 int FP_CHECK = 0; /* extern variable init */
 #endif
 
-int vfsspi_goto_suspend = 0;
+/* using for awake the samsung FP daemon */
+extern bool fp_lockscreen_mode;
+#ifdef CONFIG_SENSORS_FP_LOCKSCREEN_MODE
+/* input/Keyboard/gpio_keys.c */
+extern bool wakeup_by_key(void);
+/* export variable for signaling */
+EXPORT_SYMBOL(fp_lockscreen_mode);
+#endif
+
 bool fp_lockscreen_mode = false;
+
+extern void vfsspi_fp_homekey_ev(void);
+/* export variable for signaling */
+EXPORT_SYMBOL(vfsspi_fp_homekey_ev);
 
 #define VENDOR		"SYNAPTICS"
 #define CHIP_ID		"VIPER"
@@ -216,7 +214,7 @@ extern void fingerprint_unregister(struct device *dev,
 	struct device_attribute *attributes[]);
 #endif
 
-#ifdef CONFIG_SENSORS_FP_TKEY_NOTI
+#ifdef CONFIG_SEC_GRACEQLTE_PROJECT
 extern int change_touchkey_thd_for_fingerprint(int on);
 #endif
 
@@ -302,13 +300,10 @@ static inline ssize_t vfsspi_writeSync(struct vfsspi_device_data *vfsspi_device,
 
 	spi_message_init(&m);
 	memset(&t, 0, sizeof(t));
-	if (len != (unsigned int)len)
-		pr_info("%s vfsspi_writeSync len casting is failed. t.len=%ld, len=%d",
-			__func__, len, (unsigned int)len);
 
 	t.rx_buf = vfsspi_device->null_buffer;
 	t.tx_buf = vfsspi_device->buffer;
-	t.len = (unsigned int)len;
+	t.len = len;
 	t.speed_hz = vfsspi_device->current_spi_speed;
 
 	spi_message_add_tail(&t, &m);
@@ -333,14 +328,11 @@ static inline ssize_t vfsspi_readSync(struct vfsspi_device_data *vfsspi_device,
 
 	spi_message_init(&m);
 	memset(&t, 0x0, sizeof(t));
-	if (len != (unsigned int)len)
-		pr_info("%s vfsspi_readSync len casting is failed. t.len=%ld, len=%d",
-			__func__, len, (unsigned int)len);
 
 	memset(vfsspi_device->null_buffer, 0x0, len);
 	t.tx_buf = vfsspi_device->null_buffer;
 	t.rx_buf = vfsspi_device->buffer;
-	t.len = (unsigned int)len;
+	t.len = len;
 	t.speed_hz = vfsspi_device->current_spi_speed;
 
 	spi_message_add_tail(&t, &m);
@@ -350,7 +342,7 @@ static inline ssize_t vfsspi_readSync(struct vfsspi_device_data *vfsspi_device,
 	if (status == 0)
 		status = len;
 
-	pr_debug("%s vfsspi_readSync,length=%ld\n", __func__,  len);
+	pr_debug("%s vfsspi_readSync,length=%d\n", __func__, (int)len);
 
 	return status;
 }
@@ -441,9 +433,6 @@ static int vfsspi_xfer(struct vfsspi_device_data *vfsspi_device,
 	int status = 0;
 	struct spi_message m;
 	struct spi_transfer t;
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-	u64 tx_buffer = (u64)tr->tx_buffer, rx_buffer = (u64)tr->rx_buffer;
-#endif
 
 	pr_debug("%s\n", __func__);
 
@@ -453,20 +442,12 @@ static int vfsspi_xfer(struct vfsspi_device_data *vfsspi_device,
 	if (tr->len > DEFAULT_BUFFER_SIZE || !tr->len)
 		return -EMSGSIZE;
 
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-	if ((unsigned char *)tx_buffer != NULL) {
-		if (copy_from_user(vfsspi_device->null_buffer,
-				(unsigned char *)tx_buffer, tr->len) != 0)
-			return -EFAULT;
-	}
-#else
 	if (tr->tx_buffer != NULL) {
 
 		if (copy_from_user(vfsspi_device->null_buffer,
 				tr->tx_buffer, tr->len) != 0)
 			return -EFAULT;
 	}
-#endif
 
 	spi_message_init(&m);
 	memset(&t, 0, sizeof(t));
@@ -481,17 +462,6 @@ static int vfsspi_xfer(struct vfsspi_device_data *vfsspi_device,
 	status = spi_sync(vfsspi_device->spi, &m);
 
 	if (status == 0) {
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-		if ((unsigned char *)rx_buffer != NULL) {
-			unsigned long missing = 0;
-
-			missing = copy_to_user((unsigned char *)rx_buffer,
-					       vfsspi_device->buffer, tr->len);
-
-			if (missing != 0)
-				tr->len = tr->len - missing;
-		}
-#else
 		if (tr->rx_buffer != NULL) {
 			unsigned long missing = 0;
 
@@ -501,7 +471,6 @@ static int vfsspi_xfer(struct vfsspi_device_data *vfsspi_device,
 			if (missing != 0)
 				tr->len = tr->len - missing;
 		}
-#endif
 	}
 	pr_debug("%s vfsspi_xfer,length=%d\n", __func__, tr->len);
 	return status;
@@ -537,107 +506,7 @@ static int vfsspi_rw_spi_message(struct vfsspi_device_data *vfsspi_device,
 }
 #endif
 
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-static int vfsspi_sec_spi_prepare(struct sec_spi_info *spi_info,
-	struct spi_device *spi)
-{
-	struct clk *fp_spi_pclk, *fp_spi_sclk;
-
-	fp_spi_pclk = clk_get(NULL, "fp-spi-pclk");
-
-	if (IS_ERR(fp_spi_pclk)) {
-		pr_err("Can't get fp_spi_pclk\n");
-		return -1;
-	}
-
-	fp_spi_sclk = clk_get(NULL, "fp-spi-sclk");
-
-	if (IS_ERR(fp_spi_sclk)) {
-		pr_err("Can't get fp_spi_sclk\n");
-		return -1;
-	}
-
-	clk_prepare_enable(fp_spi_pclk);
-	clk_prepare_enable(fp_spi_sclk);
-	clk_set_rate(fp_spi_sclk, spi_info->speed * 2);
-
-	clk_put(fp_spi_pclk);
-	clk_put(fp_spi_sclk);
-
-	return 0;
-}
-
-static int vfsspi_sec_spi_unprepare(struct sec_spi_info *spi_info,
-	struct spi_device *spi)
-{
-	struct clk *fp_spi_pclk, *fp_spi_sclk;
-
-	fp_spi_pclk = clk_get(NULL, "fp-spi-pclk");
-	if (IS_ERR(fp_spi_pclk)) {
-		pr_err("Can't get fp_spi_pclk\n");
-		return -1;
-	}
-
-	fp_spi_sclk = clk_get(NULL, "fp-spi-sclk");
-
-	if (IS_ERR(fp_spi_sclk)) {
-		pr_err("Can't get fp_spi_sclk\n");
-		return -1;
-	}
-
-	clk_disable_unprepare(fp_spi_pclk);
-	clk_disable_unprepare(fp_spi_sclk);
-
-	clk_put(fp_spi_pclk);
-	clk_put(fp_spi_sclk);
-
-	return 0;
-}
-
-#if !defined(CONFIG_SOC_EXYNOS8890)
-struct amba_device *adev_dma;
-static int vfsspi_sec_dma_prepare(struct sec_spi_info *spi_info)
-{
-	struct device_node *np;
-
-	for_each_compatible_node(np, NULL, "arm,pl330")
-	{
-		if (!of_device_is_available(np))
-			continue;
-
-		if (!of_dma_secure_mode(np))
-			continue;
-
-		adev_dma = of_find_amba_device_by_node(np);
-		pr_info("[%s]device_name:%s\n", __func__, dev_name(&adev_dma->dev));
-		break;
-	}
-
-	if (adev_dma == NULL)
-		return -1;
-
-#ifdef CONFIG_SOC_EXYNOS5430_REV_1
-	set_secure_dma();
-#endif
-	pm_runtime_get_sync(&adev_dma->dev);
-
-	return 0;
-}
-
-static int vfsspi_sec_dma_unprepare(void)
-{
-	if (adev_dma == NULL)
-		return -1;
-
-	pm_runtime_put(&adev_dma->dev);
-
-	return 0;
-}
-#endif
-#endif
-
-static void vfsspi_pin_control(struct vfsspi_device_data *vfsspi_device,
-	bool pin_set)
+void vfsspi_pin_control(struct vfsspi_device_data *vfsspi_device, bool pin_set)
 {
 	int status = 0;
 	vfsspi_device->p->state = NULL;
@@ -668,9 +537,6 @@ static int vfsspi_set_clk(struct vfsspi_device_data *vfsspi_device,
 	int ret_val = 0;
 	unsigned short clock = 0;
 	struct spi_device *spidev = NULL;
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-	struct sec_spi_info *spi_info = NULL;
-#endif
 
 	if (copy_from_user(&clock, (void *)arg,
 			   sizeof(unsigned short)) != 0)
@@ -695,14 +561,8 @@ static int vfsspi_set_clk(struct vfsspi_device_data *vfsspi_device,
 			break;
 		default:
 			pr_debug("%s baud rate is %d.\n", __func__, clock);
-#ifdef CONFIG_SOC_EXYNOS8890
-			/* exynos8890 evt0 board don't support to SPI clock rate 13MHz under */
-			/* vfsspi_device->current_spi_speed = clock * BAUD_RATE_COEF; */
-			vfsspi_device->current_spi_speed = MAX_BAUD_RATE;
-#else
 			vfsspi_device->current_spi_speed =
 				clock * BAUD_RATE_COEF;
-#endif
 			if (vfsspi_device->current_spi_speed > MAX_BAUD_RATE)
 				vfsspi_device->current_spi_speed =
 					MAX_BAUD_RATE;
@@ -710,33 +570,25 @@ static int vfsspi_set_clk(struct vfsspi_device_data *vfsspi_device,
 			break;
 		}
 
-		pr_info("%s, clk speed: %d\n", __func__,
-			vfsspi_device->current_spi_speed);
+		pr_info("%s, clk speed: %d\n", __func__, vfsspi_device->current_spi_speed);
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 		if (!vfsspi_device->enabled_clk) {
-			spi_info = kmalloc(sizeof(struct sec_spi_info),
-				GFP_KERNEL);
-			if (spi_info != NULL) {
-				pr_info("%s ENABLE_SPI_CLOCK\n", __func__);
-
-				spi_info->speed = spidev->max_speed_hz;
-				ret_val = vfsspi_sec_spi_prepare(spi_info, spidev);
+			pr_info("%s ENABLE_SPI_CLOCK\n", __func__);
+			ret_val = fp_spi_clock_set_rate(spidev);
+			if (ret_val < 0)
+				pr_err("%s: Unable to set spi clk rate\n",
+					__func__);
+			else {
+				ret_val = fp_spi_clock_enable(spidev);
 				if (ret_val < 0)
-					pr_err("%s: Unable to enable spi clk\n",
-						__func__);
-#if !defined(CONFIG_SOC_EXYNOS8890)
-				ret_val = vfsspi_sec_dma_prepare(spi_info);
-				if (ret_val < 0)
-					pr_err("%s: Unable to enable spi dma\n",
-						__func__);
-#endif
-				kfree(spi_info);
+				pr_err("%s: Unable to enable spi clk\n",
+				__func__);
+			}
+			usleep_range(950, 1000);
 #ifdef FEATURE_SPI_WAKELOCK
-				wake_lock(&vfsspi_device->fp_spi_lock);
+			wake_lock(&vfsspi_device->fp_spi_lock);
 #endif
-				vfsspi_device->enabled_clk = true;
-			} else
-				ret_val = -ENOMEM;
+			vfsspi_device->enabled_clk = true;
 		}
 #endif
 		spi_dev_put(spidev);
@@ -750,7 +602,6 @@ static int vfsspi_ioctl_disable_spi_clock(
 {
 	struct spi_device *spidev = NULL;
 	int ret_val = 0;
-	struct sec_spi_info *spi_info = NULL;
 
 	if (vfsspi_device->enabled_clk) {
 		pr_info("%s DISABLE_SPI_CLOCK\n", __func__);
@@ -758,15 +609,12 @@ static int vfsspi_ioctl_disable_spi_clock(
 		spidev = spi_dev_get(vfsspi_device->spi);
 		spin_unlock_irq(&vfsspi_device->vfs_spi_lock);
 
-		ret_val = vfsspi_sec_spi_unprepare(spi_info, spidev);
+		ret_val = fp_spi_clock_disable(spidev);
 		if (ret_val < 0)
 			pr_err("%s: couldn't disable spi clks\n", __func__);
-#if !defined(CONFIG_SOC_EXYNOS8890)
-		ret_val = vfsspi_sec_dma_unprepare();
-		if (ret_val < 0)
-			pr_err("%s: couldn't disable spi dma\n", __func__);
-#endif
+
 		spi_dev_put(spidev);
+		usleep_range(950, 1000);
 #ifdef FEATURE_SPI_WAKELOCK
 		wake_unlock(&vfsspi_device->fp_spi_lock);
 #endif
@@ -939,7 +787,7 @@ static void vfsspi_hardReset(struct vfsspi_device_data *vfsspi_device)
 	pr_info("%s\n", __func__);
 
 	if (vfsspi_device != NULL) {
-#ifdef CONFIG_SENSORS_FP_TKEY_NOTI
+#ifdef CONFIG_SEC_GRACEQLTE_PROJECT
 		int tkey_ret = 0;
 		if(!enable_flag_tkey){
 			tkey_ret = change_touchkey_thd_for_fingerprint(1);
@@ -950,7 +798,7 @@ static void vfsspi_hardReset(struct vfsspi_device_data *vfsspi_device)
 		gpio_set_value(vfsspi_device->sleep_pin, 0);
 		mdelay(1);
 		gpio_set_value(vfsspi_device->sleep_pin, 1);
-		mdelay(5);
+		mdelay(10);
 	}
 }
 
@@ -959,7 +807,7 @@ static void vfsspi_suspend(struct vfsspi_device_data *vfsspi_device)
 	pr_info("%s\n", __func__);
 
 	if (vfsspi_device != NULL) {
-#ifdef CONFIG_SENSORS_FP_TKEY_NOTI
+#ifdef CONFIG_SEC_GRACEQLTE_PROJECT
 		int tkey_ret = 0;
 		tkey_ret = change_touchkey_thd_for_fingerprint(0);
 		if (tkey_ret < 0)
@@ -1078,30 +926,31 @@ static long vfsspi_ioctl(struct file *filp, unsigned int cmd,
 			mutex_unlock(&vfsspi_device->buffer_mutex);
 			return -EFAULT;
 		}
-		if (onoff) {
+		if (onoff == 1) {
 			u8 retry_cnt = 0;
 			pr_info("%s VFSSPI_IOCTL_CPU_SPEEDUP ON:%d, retry: %d\n",
-				__func__, onoff, retry_cnt);
-#if defined(CONFIG_SECURE_OS_BOOSTER_API)
-			do {
-				ret_val = secos_booster_start(onoff - 1);
-				retry_cnt++;
-				if (ret_val) {
-					pr_err("%s: booster start failed. (%d) retry: %d\n"
-						, __func__, ret_val, retry_cnt);
-					if (retry_cnt < 7)
-						usleep_range(500, 510);
-				}
-			} while (ret_val && retry_cnt < 7);
-#endif
-		} else {
+					__func__, onoff, retry_cnt);
+			if(vfsspi_device->min_cpufreq_limit){
+				do {
+					ret_val = set_freq_limit(DVFS_FINGER_ID, vfsspi_device->min_cpufreq_limit);
+					retry_cnt++;
+					if (ret_val) {
+						pr_err("%s: clock speed up start failed. (%d) retry: %d\n",
+								__func__, ret_val, retry_cnt);
+						if (retry_cnt < 7)
+							usleep_range(500, 510);
+					}
+				} while (ret_val && retry_cnt < 7);
+			}
+
+		} else if (onoff == 0) {
 			pr_info("%s VFSSPI_IOCTL_CPU_SPEEDUP OFF\n", __func__);
-#if defined(CONFIG_SECURE_OS_BOOSTER_API)
-			ret_val = secos_booster_stop();
-			if (ret_val)
-				pr_err("%s: booster stop failed. (%d)\n"
-					, __func__, ret_val);
-#endif
+			if(vfsspi_device->min_cpufreq_limit){
+				ret_val = set_freq_limit(DVFS_FINGER_ID, -1);
+				if (ret_val)
+					pr_err("%s: clock speed up stop failed. (%d)\n",
+							__func__, ret_val);
+			}
 		}
 		break;
 	case VFSSPI_IOCTL_SET_SENSOR_TYPE:
@@ -1250,10 +1099,7 @@ static const struct file_operations vfsspi_fops = {
 	.owner   = THIS_MODULE,
 	.write   = vfsspi_write,
 	.read    = vfsspi_read,
-	.unlocked_ioctl = vfsspi_ioctl,
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-	.compat_ioctl   = vfsspi_ioctl,
-#endif
+	.unlocked_ioctl   = vfsspi_ioctl,
 	.open    = vfsspi_open,
 	.release = vfsspi_release,
 };
@@ -1273,6 +1119,7 @@ static int vfsspi_platformInit(struct vfsspi_device_data *vfsspi_device)
 		gpio_direction_output(vfsspi_device->ocp_en, 0);
 		pr_info("%s ocp off\n", __func__);
 	}
+
 	if (vfsspi_device->ldo_pin) {
 		status = gpio_request(vfsspi_device->ldo_pin, "vfsspi_ldo_en");
 		if (status < 0) {
@@ -1341,6 +1188,7 @@ static int vfsspi_platformInit(struct vfsspi_device_data *vfsspi_device)
 		status = -EBUSY;
 		goto vfsspi_platformInit_irq_failed;
 	}
+	disable_irq(gpio_irq);
 
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 #ifdef FEATURE_SPI_WAKELOCK
@@ -1393,14 +1241,6 @@ static void vfsspi_platformUninit(struct vfsspi_device_data *vfsspi_device)
 			gpio_free(vfsspi_device->retain_pin);
 		if (vfsspi_device->ocp_en)
 			gpio_free(vfsspi_device->ocp_en);
-
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-		if (vfsspi_device->cs_gpio)
-			gpio_free(vfsspi_device->cs_gpio);
-#endif
-#endif
-                
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 #ifdef FEATURE_SPI_WAKELOCK
 		wake_lock_destroy(&vfsspi_device->fp_spi_lock);
@@ -1417,19 +1257,6 @@ static int vfsspi_parse_dt(struct device *dev,
 	int errorno = 0;
 	int gpio;
 
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-	gpio = of_get_named_gpio(np, "vfsspi-csgpio", 0);
-	if (gpio < 0) {
-		errorno = gpio;
-		goto dt_exit;
-	} else {
-		data->cs_gpio = gpio;
-		pr_info("%s: cs_gpio=%d\n",
-			__func__, data->cs_gpio);
-	}
-#endif
-#endif
 	gpio = of_get_named_gpio(np, "vfsspi-sleepPin", 0);
 	if (gpio < 0) {
 		errorno = gpio;
@@ -1520,11 +1347,23 @@ static int vfsspi_parse_dt(struct device *dev,
 	if (of_property_read_u32(np, "vfsspi-ldocontrol",
 		&data->ldocontrol))
 		data->ldocontrol = 0;
+	if (of_property_read_u32(np, "vfsspi-min_cpufreq_limit",
+		&data->min_cpufreq_limit))
+		data->min_cpufreq_limit = 0;
 
-	pr_info("%s: ldocontrol=%d\n",
-		__func__, data->ldocontrol);
+	pr_info("%s: ldocontrol=%d, min_cpufreq_limit=%d\n",
+		__func__, data->ldocontrol, data->min_cpufreq_limit);
 
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
+	if (of_property_read_u32(np, "vfsspi-mosipin", &data->mosipin))
+		data->mosipin = 0;
+	if (of_property_read_u32(np, "vfsspi-misopin", &data->misopin))
+		data->misopin = 0;
+	if (of_property_read_u32(np, "vfsspi-cspin", &data->cspin))
+		data->cspin = 0;
+	if (of_property_read_u32(np, "vfsspi-clkpin", &data->clkpin))
+		data->clkpin = 0;
+
 	data->tz_mode = true;
 #endif
 
@@ -1565,15 +1404,6 @@ dt_exit:
 }
 
 #ifdef CONFIG_SENSORS_FINGERPRINT_SYSFS
-static ssize_t vfsspi_bfs_values_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	struct vfsspi_device_data *data = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "\"FP_SPICLK\":\"%d\"\n",
-			data->current_spi_speed);
-}
-
 static ssize_t vfsspi_type_check_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -1606,7 +1436,7 @@ static ssize_t vfsspi_retain_show(struct device *dev,
 	if (g_data->retain_pin)
 		return sprintf(buf, "%d\n", gpio_get_value(g_data->retain_pin));
 	else
-		return sprintf(buf, "-1\n");
+		return 0;
 }
 
 static ssize_t vfsspi_retain_store(struct device *dev,
@@ -1629,8 +1459,7 @@ static ssize_t vfsspi_retain_store(struct device *dev,
 	return count;
 }
 #endif
-static DEVICE_ATTR(bfs_values, S_IRUGO,
-	vfsspi_bfs_values_show, NULL);
+
 static DEVICE_ATTR(type_check, S_IRUGO,
 	vfsspi_type_check_show, NULL);
 static DEVICE_ATTR(vendor, S_IRUGO,
@@ -1645,7 +1474,6 @@ static DEVICE_ATTR(retain_pin, S_IRUGO | S_IWUSR | S_IWGRP,
 #endif
 
 static struct device_attribute *fp_attrs[] = {
-	&dev_attr_bfs_values,
 	&dev_attr_type_check,
 	&dev_attr_vendor,
 	&dev_attr_name,
@@ -1871,45 +1699,11 @@ static int vfsspi_wakeup_daemon(struct vfsspi_device_data *vfsspi_device)
 }
 #endif
 
-#ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-static int vfsspi_set_cs_gpio(struct vfsspi_device_data *vfsspi_device, struct s3c64xx_spi_csinfo *cs)
-{
-	int status = -1;
-
-	pr_info("%s, spi auto cs mode(%d)\n", __func__, cs->cs_mode);
-
-	if (vfsspi_device->cs_gpio) {
-	        cs->line = vfsspi_device->cs_gpio;
-	        if (!gpio_is_valid(cs->line))
-	                cs->line = 0;
-	} else {
-	        cs->line = 0;
-	}
-
-	if(cs->line != 0) {
-	        status = gpio_request_one(cs->line, GPIOF_OUT_INIT_HIGH,
-	                               dev_name(&vfsspi_device->spi->dev));
-	        if (status) {
-	                dev_err(&vfsspi_device->spi->dev,
-	                        "Failed to get /CS gpio [%d]: %d\n",
-	                        cs->line, status);
-	        }
-	}
-
-        return status;
-}
-#endif
-#endif
-
 static int vfsspi_probe(struct spi_device *spi)
 {
 	int status = 0;
 #ifndef ENABLE_SENSORS_FPRINT_SECURE
 	int retry = 0;
-#ifdef CONFIG_SOC_EXYNOS8890
-	struct s3c64xx_spi_csinfo *cs;
-#endif
 #endif
 	struct vfsspi_device_data *vfsspi_device;
 	struct device *dev;
@@ -1963,25 +1757,13 @@ static int vfsspi_probe(struct spi_device *spi)
 			FP_CHECK = 1; /* It is viper sensor */
 		}
 	} else
-		pr_info("%s: This model has no vender pin dts.\n", __func__);
+		pr_info("%s: This model has no vendor pin dts.\n", __func__);
 #endif
 	spi->bits_per_word = BITS_PER_WORD;
 	spi->max_speed_hz = SLOW_BAUD_RATE;
 	spi->mode = SPI_MODE_0;
 
 #ifndef ENABLE_SENSORS_FPRINT_SECURE
-#ifdef CONFIG_SOC_EXYNOS8890
-	/* set cs pin in fp driver, use only Exynos8890 */
-	/* for use auto cs mode with dualization fp sensor */
-	cs = spi->controller_data;
-
-	if (cs->cs_mode == 1) {
-		status = vfsspi_set_cs_gpio(vfsspi_device, cs);
-	} else {
-		pr_info("%s, spi manual mode(%d)\n", __func__, cs->cs_mode);
-	}
-#endif
-
 	status = spi_setup(spi);
 	if (status) {
 		pr_err("%s : spi_setup failed\n", __func__);
@@ -2061,7 +1843,6 @@ static int vfsspi_probe(struct spi_device *spi)
         } while (!vfsspi_device->sensortype && ++retry < 3);
 #endif
 
-	disable_irq(gpio_irq);
 	vfsspi_pin_control(vfsspi_device, false);
 	vfsspi_enable_debug_timer();
 #ifdef CONFIG_FB
@@ -2163,29 +1944,14 @@ static int vfsspi_pm_suspend(struct device *dev)
 		if (g_data->retain_pin) {
 			if ((g_data->ldo_onoff) && (atomic_read(&g_data->irq_enabled) == DRDY_IRQ_ENABLE)) {
 				g_data->retain_onoff = 1;
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-				vfsspi_goto_suspend = 1; /* used by pinctrl_samsung.c */
-				pr_info("%s: suspend smc ret(WOG)=%d, en:%d\n", __func__,
-						exynos_smc(MC_FC_FP_PM_SUSPEND_RETAIN, 0, 0, 0),
-						vfsspi_goto_suspend);
-#endif
 			} else {
 				g_data->retain_onoff = 0;
 				vfsspi_ioctl_power_off(g_data);
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-				vfsspi_goto_suspend = 1; /* used by pinctrl_samsung.c */
-				pr_info("%s: suspend smc ret=%d\n", __func__,
-					exynos_smc(MC_FC_FP_PM_SUSPEND, 0, 0, 0));
-#endif
 			}
 			pr_info("%s retain++ %d, retain_en %d\n", __func__,
 					gpio_get_value(g_data->retain_pin), g_data->retain_onoff);
 		} else {
 			vfsspi_ioctl_power_off(g_data);
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-			pr_info("%s: suspend smc ret=%d\n", __func__,
-					exynos_smc(MC_FC_FP_PM_SUSPEND, 0, 0, 0));
-#endif
 		}
 	}
 	return 0;
@@ -2196,19 +1962,10 @@ static int vfsspi_pm_resume(struct device *dev)
 	pr_info("%s\n", __func__);
 	if (g_data != NULL) {
 		if (g_data->retain_pin) {
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-			if (vfsspi_goto_suspend) {
-				vfsspi_goto_suspend = 0;
-				pr_info("%s: resume smc ret=%d, en:%d\n", __func__,
-						exynos_smc(MC_FC_FP_PM_RESUME, 0, 0, 0),
-						vfsspi_goto_suspend);
-			}
-#endif
+			pr_info("%s: retain--\n", __func__);
 		} else {
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 			vfsspi_wakeup_daemon(g_data);
-			pr_info("%s: resume smc ret=%d\n", __func__,
-					exynos_smc(MC_FC_FP_PM_RESUME, 0, 0, 0));
 #endif
 		}
 		if (!g_data->ldo_onoff)

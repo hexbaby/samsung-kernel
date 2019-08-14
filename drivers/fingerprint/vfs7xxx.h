@@ -24,14 +24,8 @@
 #ifndef VFS7XXX_H_
 #define VFS7XXX_H_
 
-#if defined(CONFIG_SOC_EXYNOS8890)
-/* exynos8890 evt0 board don't support to SPI clock rate 13MHz under */
-#define SLOW_BAUD_RATE      13000000
-#define MAX_BAUD_RATE       13000000
-#else
 #define SLOW_BAUD_RATE      4800000
 #define MAX_BAUD_RATE       9600000
-#endif
 #define BAUD_RATE_COEF      1000
 #define DRDY_TIMEOUT_MS     40
 #define DRDY_ACTIVE_STATUS  1
@@ -40,10 +34,6 @@
 #define DEFAULT_BUFFER_SIZE (4096 * 6)
 #define DRDY_IRQ_ENABLE			1
 #define DRDY_IRQ_DISABLE		0
-
-#ifdef ENABLE_SENSORS_FPRINT_SECURE
-#define FEATURE_SPI_WAKELOCK
-#endif /* CONFIG_SEC_FACTORY */
 
 /* IOCTL commands definitions */
 
@@ -129,11 +119,11 @@
 #define VFSSPI_IOCTL_SET_SPI_CONFIGURATION _IO(VFSSPI_IOCTL_MAGIC,    16)
 /* To reset SPI configurations */
 #define VFSSPI_IOCTL_RESET_SPI_CONFIGURATION _IO(VFSSPI_IOCTL_MAGIC,  17)
-/* To switch core */
+/* Boost up cpu core clock */
 #define VFSSPI_IOCTL_CPU_SPEEDUP     _IOW(VFSSPI_IOCTL_MAGIC,	\
-						19, unsigned int)
-#define VFSSPI_IOCTL_SET_SENSOR_TYPE     _IOW(VFSSPI_IOCTL_MAGIC,	\
-							20, unsigned int)
+/* Check sensor type */				19, unsigned int)
+#define VFSSPI_IOCTL_SET_SENSOR_TYPE        _IOW(VFSSPI_IOCTL_MAGIC,    \
+						20, unsigned int)
 /* IOCTL #21 was already used Synaptics service. Do not use #21 */
 #define VFSSPI_IOCTL_SET_LOCKSCREEN     _IOW(VFSSPI_IOCTL_MAGIC,	\
 							22, unsigned int)
@@ -154,29 +144,11 @@
  * @tx_buffer:pointer to transmitted data
  * @len:transmitted/retrieved data size
  */
-#ifdef CONFIG_SENSORS_FINGERPRINT_32BITS_PLATFORM_ONLY
-/*
-* Platform supports only 32 bits.
-*/
 struct vfsspi_ioctl_transfer {
-	u32 rx_buffer;
-	u32 tx_buffer;
-	u32 len;
-};
-#else
- struct vfsspi_ioctl_transfer {
 	unsigned char *rx_buffer;
 	unsigned char *tx_buffer;
 	unsigned int len;
 };
-#endif
-
-/* used for WoG mode */
-extern void vfsspi_fp_homekey_ev(void);
-/* export variable for signaling */
-EXPORT_SYMBOL(vfsspi_fp_homekey_ev);
-extern int vfsspi_goto_suspend;
-EXPORT_SYMBOL(vfsspi_goto_suspend);
 #endif
 
 /*

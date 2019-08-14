@@ -375,13 +375,9 @@ static int ext4_valid_extent(struct inode *inode, struct ext4_extent *ext)
 	ext4_fsblk_t block = ext4_ext_pblock(ext);
 	int len = ext4_ext_get_actual_len(ext);
 	ext4_lblk_t lblock = le32_to_cpu(ext->ee_block);
+	ext4_lblk_t last = lblock + len - 1;
 
-	/*
-	 * We allow neither:
-	 *  - zero length
-	 *  - overflow/wrap-around
-	 */
-	if (lblock + len <= lblock)
+	if (len == 0 || lblock > last)
 		return 0;
 	return ext4_data_block_valid(EXT4_SB(inode->i_sb), block, len);
 }
@@ -484,7 +480,7 @@ ext4_ext_show_eh(struct inode *inode, struct ext4_extent_header *eh)
 
 static int __ext4_ext_check(const char *function, unsigned int line,
 			    struct inode *inode, struct ext4_extent_header *eh,
-			    int depth, ext4_fsblk_t pblk, struct buffer_head *bh)
+			    int depth, ext4_fsblk_t pblk)
 {
 	const char *error_msg;
 	int max = 0;
@@ -523,13 +519,9 @@ static int __ext4_ext_check(const char *function, unsigned int line,
 	return 0;
 
 corrupted:
-	if (bh) {
-		printk(KERN_ERR "Print invalid extent bh: %s\n", error_msg);
-		print_bh(inode->i_sb, bh, 0, EXT4_BLOCK_SIZE(inode->i_sb));
-	} else {
-		printk(KERN_ERR "Print invalid extent entries\n");
-		ext4_ext_show_eh(inode, eh);
-	}
+	printk(KERN_ERR "Print invalid extent entries\n");
+	ext4_ext_show_eh(inode, eh);
+
 	ext4_error_inode(inode, function, line, 0,
 			 "pblk %llu bad header/extent: %s - magic %x, "
 			 "entries %u, max %u(%u), depth %u(%u)",
@@ -541,7 +533,7 @@ corrupted:
 }
 
 #define ext4_ext_check(inode, eh, depth, pblk)			\
-	__ext4_ext_check(__func__, __LINE__, (inode), (eh), (depth), (pblk), (NULL))
+	__ext4_ext_check(__func__, __LINE__, (inode), (eh), (depth), (pblk))
 
 int ext4_ext_check_inode(struct inode *inode)
 {
@@ -569,7 +561,7 @@ __read_extent_tree_block(const char *function, unsigned int line,
 	if (buffer_verified(bh) && !(flags & EXT4_EX_FORCE_CACHE))
 		return bh;
 	err = __ext4_ext_check(function, line, inode,
-			       ext_block_hdr(bh), depth, pblk, bh);
+			       ext_block_hdr(bh), depth, pblk);
 	if (err)
 		goto errout;
 	set_buffer_verified(bh);
@@ -919,12 +911,6 @@ ext4_find_extent(struct inode *inode, ext4_lblk_t block,
 
 	eh = ext_inode_hdr(inode);
 	depth = ext_depth(inode);
-	if (depth < 0 || depth > EXT4_MAX_EXTENT_DEPTH) {
-		EXT4_ERROR_INODE(inode, "inode has invalid extent depth: %d",
-				 depth);
-		ret = -EIO;
-		goto err;
-	}
 
 	if (path) {
 		ext4_ext_drop_refs(path);
@@ -3170,9 +3156,6 @@ static int ext4_ext_zeroout(struct inode *inode, struct ext4_extent *ex)
 	ee_len    = ext4_ext_get_actual_len(ex);
 	ee_pblock = ext4_ext_pblock(ex);
 
-	if (ext4_encrypted_inode(inode))
-		return ext4_encrypted_zeroout(inode, ex);
-
 	ret = sb_issue_zeroout(inode->i_sb, ee_pblock, ee_len, GFP_NOFS);
 	if (ret > 0)
 		ret = 0;
@@ -3601,13 +3584,9 @@ static int ext4_ext_convert_to_initialized(handle_t *handle,
 	 */
 	split_flag |= ee_block + ee_len <= eof_block ? EXT4_EXT_MAY_ZEROOUT : 0;
 
-	if ((EXT4_EXT_MAY_ZEROOUT & split_flag) &&
-	    !ext4_encrypted_inode(inode))
+	if (EXT4_EXT_MAY_ZEROOUT & split_flag)
 		max_zeroout = sbi->s_extent_max_zeroout_kb >>
 			(inode->i_sb->s_blocksize_bits - 10);
-
-	if (ext4_encrypted_inode(inode))
-		max_zeroout = 0;
 
 	/* If extent is less than s_max_zeroout_kb, zeroout directly */
 	if (max_zeroout && (ee_len <= max_zeroout)) {
@@ -4869,8 +4848,7 @@ static long ext4_zero_range(struct file *file, loff_t offset,
 	}
 
 	if (!(mode & FALLOC_FL_KEEP_SIZE) &&
-	    (offset + len > i_size_read(inode) ||
-	     offset + len > EXT4_I(inode)->i_disksize)) {
+	     offset + len > i_size_read(inode)) {
 		new_size = offset + len;
 		ret = inode_newsize_ok(inode, new_size);
 		if (ret)
@@ -4972,20 +4950,6 @@ long ext4_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 	ext4_lblk_t lblk;
 	unsigned int blkbits = inode->i_blkbits;
 
-	/*
-	 * Encrypted inodes can't handle collapse range or insert
-	 * range since we would need to re-encrypt blocks with a
-	 * different IV or XTS tweak (which are based on the logical
-	 * block number).
-	 *
-	 * XXX It's not clear why zero range isn't working, but we'll
-	 * leave it disabled for encrypted inodes for now.  This is a
-	 * bug we should fix....
-	 */
-	if (ext4_encrypted_inode(inode) &&
-	    (mode & (FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_ZERO_RANGE)))
-		return -EOPNOTSUPP;
-
 	/* Return error if mode is not supported */
 	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE |
 		     FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_ZERO_RANGE))
@@ -5028,8 +4992,7 @@ long ext4_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 	}
 
 	if (!(mode & FALLOC_FL_KEEP_SIZE) &&
-	    (offset + len > i_size_read(inode) ||
-	     offset + len > EXT4_I(inode)->i_disksize)) {
+	     offset + len > i_size_read(inode)) {
 		new_size = offset + len;
 		ret = inode_newsize_ok(inode, new_size);
 		if (ret)

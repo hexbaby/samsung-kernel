@@ -10,11 +10,10 @@
  * published by the Free Software Foundation.
  */
 
-#define DEBUG
 /* #define BATTERY_LOG_MESSAGE */
 
 #include <linux/mfd/max77854-private.h>
-#include <linux/battery/sec_fuelgauge.h>
+#include <linux/battery/fuelgauge/max77854_fuelgauge.h>
 #include <linux/of_gpio.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
@@ -41,6 +40,8 @@ static enum power_supply_property max77854_fuelgauge_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 #endif
 };
+
+extern int poweroff_charging;
 
 bool max77854_fg_fuelalert_init(struct max77854_fuelgauge_data *fuelgauge,
 				int soc);
@@ -998,13 +999,8 @@ bool max77854_fg_init(struct max77854_fuelgauge_data *fuelgauge)
 	u32 volt_threshold = 0;
 	u32 temp_threshold = 0;
 
-#if defined(ANDROID_ALARM_ACTIVATED)
-	current_time = alarm_get_elapsed_realtime();
-	ts = ktime_to_timespec(current_time);
-#else
 	current_time = ktime_get_boottime();
 	ts = ktime_to_timespec(current_time);
-#endif
 
 	fuelgauge->info.fullcap_check_interval = ts.tv_sec;
 
@@ -1131,7 +1127,7 @@ void max77854_fg_fuelalert_set(struct max77854_fuelgauge_data *fuelgauge,
 			       2, status_data) < 0)
 		pr_err("%s : Failed to read STATUS_REG\n", __func__);
 
-	if ((status_data[1] & 0x01) && !lpcharge && !fuelgauge->is_charging) {
+	if ((status_data[1] & 0x01) && !poweroff_charging && !fuelgauge->is_charging) {
 		pr_info("%s : Battery Voltage is Very Low!! SW V EMPTY ENABLE\n", __func__);
 		if (fuelgauge->vempty_mode == VEMPTY_MODE_SW ||
 				fuelgauge->vempty_mode == VEMPTY_MODE_SW_VALERT) {
@@ -1241,11 +1237,11 @@ static void max77854_fg_get_scaled_capacity(
 				cnt = 1;
 				fuelgauge->standard_capacity = (val->intval < fuelgauge->pdata->capacity_min) ?
 					0 : ((val->intval - fuelgauge->pdata->capacity_min) * 999 /
-					(fuelgauge->capacity_max - fuelgauge->pdata->capacity_min));
+					     (fuelgauge->capacity_max - fuelgauge->pdata->capacity_min));
 			} else if (fuelgauge->standard_capacity < 999) {
 				temp = (val->intval < fuelgauge->pdata->capacity_min) ?
 					0 : ((val->intval - fuelgauge->pdata->capacity_min) * 999 /
-					(fuelgauge->capacity_max - fuelgauge->pdata->capacity_min));
+					     (fuelgauge->capacity_max - fuelgauge->pdata->capacity_min));
 
 				sample = ((capacity_threshold - curr) * (999 - fuelgauge->standard_capacity)) /
 					(capacity_threshold - topoff);
@@ -1290,9 +1286,10 @@ static void max77854_fg_get_scaled_capacity(
 #endif
 
 	pr_info("%s : CABLE TYPE(%d) INPUT CURRENT(%d) CHARGING MODE(%s)" \
-		"capacity_max (%d) scaled capacity(%d.%d)\n",
+		"capacity_max (%d) scaled capacity(%d.%d), raw_soc(%d.%d)\n",
 		__func__, cable_val.intval, chg_val.intval, chg_val2.strval,
-		fuelgauge->capacity_max, val->intval/10, val->intval%10);
+		fuelgauge->capacity_max, val->intval/10, val->intval%10,
+		fuelgauge->raw_capacity/10, fuelgauge->raw_capacity%10);
 }
 
 /* capacity is integer */
@@ -1608,7 +1605,7 @@ static int max77854_fg_get_property(struct power_supply *psy,
 			}
 
 			if (!fuelgauge->is_charging &&
-			    fuelgauge->vempty_mode == VEMPTY_MODE_SW_VALERT && !lpcharge) {
+			    fuelgauge->vempty_mode == VEMPTY_MODE_SW_VALERT && !poweroff_charging) {
 				pr_info("%s : SW V EMPTY. Decrease SOC\n", __func__);
 				val->intval = 0;
 			} else if ((fuelgauge->vempty_mode == VEMPTY_MODE_SW_RECOVERY) &&
@@ -1977,7 +1974,7 @@ static int max77854_fuelgauge_parse_dt(struct max77854_fuelgauge_data *fuelgauge
 						__func__, ret);
 				fuelgauge->battery_data->sw_v_empty_vol_cisd = 3100;
 			}
-			
+
 			ret = of_property_read_u32(np, "fuelgauge,sw_v_empty_recover_voltage",
 						   &fuelgauge->battery_data->sw_v_empty_recover_vol);
 			if(ret < 0)

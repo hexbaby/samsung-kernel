@@ -9,6 +9,6 @@ extern void muic_register_ccic_notifier(muic_data_t *pmuic);
 extern void muic_ccic_pseudo_noti(int mid, int rid);
 extern int mdev_continue_for_TA_USB(muic_data_t *pmuic, int mdev);
 extern int muic_get_current_legacy_dev(muic_data_t *pmuic);
-extern void muic_set_legacy_dev(muic_data_t *pmuic, int new_dev);
+extern void muic_set_hv_legacy_dev(muic_data_t *pmuic, int mdev);
 
 #endif

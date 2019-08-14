@@ -35,15 +35,15 @@ static const u8 clr_crc[] = {0x5A, 0x03, 0x52, 0x0a, 0x00,
 
 
 
-static int dbmd2_i2c_boot(const void *fw_data, size_t fw_size,
-		struct dbmdx_private *p, const void *checksum,
-		size_t chksum_len, int load_fw)
+static int dbmd2_i2c_boot(const struct firmware *fw, struct dbmdx_private *p,
+		    const void *checksum, size_t chksum_len, int load_fw)
 {
 	int retry = RETRY_COUNT;
 	int ret = 0;
 	ssize_t send_bytes;
 	struct dbmdx_i2c_private *i2c_p =
 				(struct dbmdx_i2c_private *)p->chip->pdata;
+	u8 rx_checksum[6];
 
 	dev_dbg(i2c_p->dev, "%s\n", __func__);
 
@@ -122,8 +122,8 @@ static int dbmd2_i2c_boot(const void *fw_data, size_t fw_size,
 		msleep(DBMDX_MSLEEP_I2C_D2_AFTER_SBL);
 
 		/* send firmware */
-		send_bytes = write_i2c_data(p, fw_data, fw_size - 4);
-		if (send_bytes != fw_size - 4) {
+		send_bytes = write_i2c_data(p, fw->data, fw->size - 4);
+		if (send_bytes != fw->size - 4) {
 			dev_err(p->dev,
 				"%s: -----------> load firmware error\n",
 				__func__);
@@ -134,10 +134,26 @@ static int dbmd2_i2c_boot(const void *fw_data, size_t fw_size,
 
 		/* verify checksum */
 		if (checksum) {
-			ret = i2c_verify_boot_checksum(p, checksum, chksum_len);
+			ret = send_i2c_cmd_boot(i2c_p, DBMDX_READ_CHECKSUM);
 			if (ret < 0) {
 				dev_err(i2c_p->dev,
-					"%s: could not verify checksum\n",
+					"%s: could not read checksum\n",
+					__func__);
+				continue;
+			}
+
+			ret = i2c_master_recv(i2c_p->client, rx_checksum, 6);
+			if (ret < 0) {
+				dev_err(i2c_p->dev,
+					"%s: could not read checksum data\n",
+					__func__);
+				continue;
+			}
+
+			ret = p->verify_checksum(p, checksum, &rx_checksum[2],
+						 4);
+			if (ret) {
+				dev_err(p->dev, "%s: checksum mismatch\n",
 					__func__);
 				continue;
 			}
@@ -155,7 +171,7 @@ static int dbmd2_i2c_boot(const void *fw_data, size_t fw_size,
 	}
 
 	/* send boot command */
-	ret = send_i2c_cmd_boot(p, DBMDX_FIRMWARE_BOOT);
+	ret = send_i2c_cmd_boot(i2c_p, DBMDX_FIRMWARE_BOOT);
 	if (ret < 0) {
 		dev_err(p->dev, "%s: booting the firmware failed\n", __func__);
 		return -1;
@@ -167,69 +183,6 @@ static int dbmd2_i2c_boot(const void *fw_data, size_t fw_size,
 
 	return 0;
 }
-
-#ifdef CONFIG_PM_SLEEP
-static int dbmdx_i2c_suspend(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	i2c_interface_suspend(i2c_p);
-
-	return 0;
-}
-
-static int dbmdx_i2c_resume(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-	i2c_interface_resume(i2c_p);
-
-	return 0;
-}
-#endif /* CONFIG_PM_SLEEP */
-
-#ifdef CONFIG_PM_RUNTIME
-static int dbmdx_i2c_runtime_suspend(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	i2c_interface_suspend(i2c_p);
-
-	return 0;
-}
-
-static int dbmdx_i2c_runtime_resume(struct device *dev)
-{
-	struct chip_interface *ci = i2c_get_clientdata(to_i2c_client(dev));
-	struct dbmdx_i2c_private *i2c_p =
-				(struct dbmdx_i2c_private *)ci->pdata;
-
-	dev_dbg(dev, "%s\n", __func__);
-	i2c_interface_resume(i2c_p);
-
-	return 0;
-}
-
-#endif /* CONFIG_PM_RUNTIME */
-
-static const struct dev_pm_ops dbmdx_i2c_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(dbmdx_i2c_suspend, dbmdx_i2c_resume)
-	SET_RUNTIME_PM_OPS(dbmdx_i2c_runtime_suspend,
-			   dbmdx_i2c_runtime_resume, NULL)
-};
-
 
 static int dbmd2_i2c_probe(struct i2c_client *client,
 		const struct i2c_device_id *id)
@@ -271,7 +224,6 @@ static struct i2c_driver dbmd2_i2c_driver = {
 		.name = "dbmd2-i2c",
 		.owner = THIS_MODULE,
 		.of_match_table = dbmd2_i2c_of_match,
-		.pm = &dbmdx_i2c_pm,
 	},
 	.probe =    dbmd2_i2c_probe,
 	.remove =   i2c_common_remove,

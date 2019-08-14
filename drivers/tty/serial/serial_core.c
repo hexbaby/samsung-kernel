@@ -38,12 +38,6 @@
 #include <asm/irq.h>
 #include <asm/uaccess.h>
 
-#if defined(CONFIG_BT_BCM4339) || defined(CONFIG_BT_BCM4354) || defined(CONFIG_BT_BCM4358) || defined(CONFIG_BT_BCM4359) /* This is just temporary features*/
-#define BT4339_LINE 1
-#endif
-#if defined(CONFIG_BCM4359)
-#define WIFI_UART_PORT_LINE 3
-#endif
 /*
  * This is used to lock changes in serial line configuration.
  */
@@ -191,21 +185,10 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 
 		spin_lock_irq(&uport->lock);
 		if (uart_cts_enabled(uport) &&
-		    !(uport->ops->get_mctrl(uport) & TIOCM_CTS)) {
-
-#if defined(CONFIG_BT_BCM4339) || defined(CONFIG_BT_BCM4354) || defined(CONFIG_BT_BCM4358) || defined(CONFIG_BT_BCM4359)
-#if defined(CONFIG_BCM4359)
-			if ((uport->line != BT4339_LINE) && (uport->line != WIFI_UART_PORT_LINE))
-				uport->hw_stopped = 1;
-#else
-			if (uport->line != BT4339_LINE)
-				uport->hw_stopped = 1;
-#endif
-#endif
-		}
+		    !(uport->ops->get_mctrl(uport) & TIOCM_CTS))
+			uport->hw_stopped = 1;
 		else
 			uport->hw_stopped = 0;
-
 		spin_unlock_irq(&uport->lock);
 	}
 
@@ -1331,14 +1314,7 @@ static void uart_set_termios(struct tty_struct *tty,
 	else if (!(old_termios->c_cflag & CRTSCTS) && (cflag & CRTSCTS)) {
 		spin_lock_irq(&uport->lock);
 		if (!(uport->ops->get_mctrl(uport) & TIOCM_CTS)) {
-#if defined(CONFIG_BT_BCM4339) || defined(CONFIG_BT_BCM4354) || defined(CONFIG_BT_BCM4358) || defined(CONFIG_BT_BCM4359)
-#if defined(CONFIG_BCM4359)
-			if ((uport->line != BT4339_LINE) && (uport->line != WIFI_UART_PORT_LINE))
-#else
-			if (uport->line != BT4339_LINE)
-#endif
-#endif
-				uport->hw_stopped = 1;
+			uport->hw_stopped = 1;
 			uport->ops->stop_tx(uport);
 		}
 		spin_unlock_irq(&uport->lock);
@@ -1358,16 +1334,8 @@ static void uart_close(struct tty_struct *tty, struct file *filp)
 	struct uart_port *uport;
 	unsigned long flags;
 
-	if (!state) {
-		struct uart_driver *drv = tty->driver->driver_state;
-
-		state = drv->state + tty->index;
-		port = &state->port;
-		spin_lock_irq(&port->lock);
-		--port->count;
-		spin_unlock_irq(&port->lock);
+	if (!state)
 		return;
-	}
 
 	uport = state->uart_port;
 	port = &state->port;
@@ -1396,12 +1364,8 @@ static void uart_close(struct tty_struct *tty, struct file *filp)
 
 	mutex_lock(&port->mutex);
 	uart_shutdown(tty, state);
-	uart_flush_buffer(tty);
-
-	tty_ldisc_flush(tty);
-
 	tty_port_tty_set(port, NULL);
-	tty->closing = 0;
+
 	spin_lock_irqsave(&port->lock, flags);
 
 	if (port->blocked_open) {
@@ -1426,6 +1390,9 @@ static void uart_close(struct tty_struct *tty, struct file *filp)
 	wake_up_interruptible(&port->close_wait);
 
 	mutex_unlock(&port->mutex);
+
+	tty_ldisc_flush(tty);
+	tty->closing = 0;
 }
 
 static void uart_wait_until_sent(struct tty_struct *tty, int timeout)
@@ -1587,10 +1554,6 @@ static int uart_open(struct tty_struct *tty, struct file *filp)
 
 	pr_debug("uart_open(%d) called\n", line);
 
-	spin_lock_irq(&port->lock);
-	++port->count;
-	spin_unlock_irq(&port->lock);
-
 	/*
 	 * We take the semaphore here to guarantee that we won't be re-entered
 	 * while allocating the state structure, or while we request any IRQs
@@ -1603,11 +1566,17 @@ static int uart_open(struct tty_struct *tty, struct file *filp)
 		goto end;
 	}
 
+	port->count++;
 	if (!state->uart_port || state->uart_port->flags & UPF_DEAD) {
 		retval = -ENXIO;
-		goto err_unlock;
+		goto err_dec_count;
 	}
 
+	/*
+	 * Once we set tty->driver_data here, we are guaranteed that
+	 * uart_close() will decrement the driver module use count.
+	 * Any failures from here onwards should not touch the count.
+	 */
 	tty->driver_data = state;
 	state->uart_port->state = state;
 	state->port.low_latency =
@@ -1628,7 +1597,8 @@ static int uart_open(struct tty_struct *tty, struct file *filp)
 
 end:
 	return retval;
-err_unlock:
+err_dec_count:
+	port->count--;
 	mutex_unlock(&port->mutex);
 	goto end;
 }

@@ -56,12 +56,12 @@ enum max77833_reg {
 	MAX77833_PMIC_REG_SAFEOUT_CTRL			= 0x9B,
 
 	/* Haptic motor driver Registers */
-	MAX77833_MOTOR_OVERDRIVE_CYCLES		= 0x0061,
-	MAX77833_MOTOR_OVERDRIVE_STRENGTH	= 0x0062,
-	MAX77833_MOTOR_BRAKING_CYCLES		= 0X0063,
-	MAX77833_LRA_ENABLE_1			= 0x006D,
-	MAX77833_LRA_ENABLE_2			= 0x006E,
-	MAX77833_LRA_ENABLE_3			= 0x006F,
+	MAX77833_MOTOR_OVERDRIVE_CYCLES			= 0x0061,
+	MAX77833_MOTOR_OVERDRIVE_STRENGTH		= 0x0062,
+	MAX77833_MOTOR_BRAKING_CYCLES			= 0X0063,
+	MAX77833_LRA_ENABLE_1				= 0x006D,
+	MAX77833_LRA_ENABLE_2				= 0x006E,
+	MAX77833_LRA_ENABLE_3				= 0x006F,
 	MAX77833_AUTORES_CONFIG				= 0x0059,
 	MAX77833_AUTORES_MIN_FREQ_LOW			= 0x005B,
 	MAX77833_AUTORES_MAX_FREQ_LOW			= 0x005D,
@@ -71,8 +71,6 @@ enum max77833_reg {
 	MAX77833_AUTORES_INIT_GUESS_LOW			= 0x005F,
 	MAX77833_AUTORES_INIT_GUESS_HIGH		= 0x005E,
 	MAX77833_AUTORES_LOCK_WINDOW			= 0X0060,
-	MAX77833_OPTION_REG1				= 0X0070,
-	MAX77833_AUTORES_UPDATE_FREQ			= 0X0075,
 
 	/* Old Haptic motor driver Register */
 	MAX77833_PMIC_REG_MCONFIG			= 0x10,
@@ -139,13 +137,14 @@ enum max77833_fuelgauge_reg {
 	QRTABLE20_REG                                = 0x0064,
 	FULLCAPREP_REG                               = 0x006A,
 	RCOMP_REG                                    = 0x0070,
+	VEMPTY_REG                                   = 0x0074,
 	FSTAT_REG                                    = 0x007A,
 	QRTABLE30_REG                                = 0x0084,
 	DQACC_REG                                    = 0x008A,
 	DPACC_REG                                    = 0x008C,
 	CONFIG2_REG                                  = 0x0176,
-	VFOCV_REG                                    = 0x07DC,
-	VFSOC_REG                                    = 0x0090,
+	VFOCV_REG                                    = 0x07F6,
+	VFSOC_REG                                    = 0x07FE,
 	FILTERCFG2_REG                               = 0x0168,
 	ISYS_REG                                     = 0x0086,
 	AVGISYS_REG                                  = 0x0096,
@@ -199,14 +198,14 @@ enum max77833_muic_reg {
 
 /* Slave addr = 0x94: RGB LED */
 enum max77833_led_reg {
-	MAX77833_RGBLED_REG_LEDEN			= 0x40,
-	MAX77833_RGBLED_REG_LED0BRT			= 0x41,
-	MAX77833_RGBLED_REG_LED1BRT			= 0x42,
-	MAX77833_RGBLED_REG_LED2BRT			= 0x43,
-	MAX77833_RGBLED_REG_LED3BRT			= 0x44,
-	MAX77833_RGBLED_REG_LEDRMP			= 0x46,
-	MAX77833_RGBLED_REG_LEDBLNK			= 0x45,
-	MAX77833_RGBLED_REG_DIMMING			= 0x49,
+	MAX77833_LED_REG_LEDEN			= 0x40,
+	MAX77833_LED_REG_LED0BRT		= 0x41,
+	MAX77833_LED_REG_LED1BRT		= 0x42,
+	MAX77833_LED_REG_LED2BRT		= 0x43,
+	MAX77833_LED_REG_LED3BRT		= 0x44,
+	MAX77833_LED_REG_LEDRMP			= 0x46,
+	MAX77833_LED_REG_LEDBLNK		= 0x45,
+	MAX77833_LED_REG_DIMMING		= 0x49,
 	MAX77833_LED_REG_END,
 };
 
@@ -277,6 +276,10 @@ struct max77833_dev {
 	struct mutex irqlock;
 	int irq_masks_cur[MAX77833_IRQ_GROUP_NR];
 	int irq_masks_cache[MAX77833_IRQ_GROUP_NR];
+
+	struct pinctrl *i2c_pinctrl;
+	struct pinctrl_state *i2c_gpio_state_active;
+	struct pinctrl_state *i2c_gpio_state_suspend;
 
 #ifdef CONFIG_HIBERNATION
 	/* For hibernation */

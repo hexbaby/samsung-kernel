@@ -21,6 +21,11 @@
 #ifndef __LINUX_SEC_THERMISTOR_H
 #define __LINUX_SEC_THERMISTOR_H __FILE__
 
+/* Qualcomm PMIC ADC */
+#include <linux/qpnp/qpnp-adc.h>
+
+extern struct class *sec_class;
+
 /**
  * struct sec_therm_adc_table - adc to temperature table for sec thermistor
  * driver

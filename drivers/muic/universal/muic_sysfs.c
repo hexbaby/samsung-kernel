@@ -29,10 +29,10 @@
 #include <linux/delay.h>
 #include <linux/host_notify.h>
 #include <linux/string.h>
-#include <linux/sec_ext.h>
 #include <linux/power_supply.h>
 
 #include <linux/muic/muic.h>
+#include <linux/sec_param.h>
 
 #if defined(CONFIG_MUIC_NOTIFIER)
 #include <linux/muic/muic_notifier.h>
@@ -50,6 +50,9 @@
 #include "muic_apis.h"
 #include "muic_regmap.h"
 #include "muic_hv.h"
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+#include <linux/muic/muic_afc.h>
+#endif
 
 #if defined(CONFIG_MUIC_SUPPORT_CCIC)
 #include "muic_ccic.h"
@@ -243,6 +246,98 @@ static ssize_t muic_show_usb_state(struct device *dev,
 	return 0;
 }
 
+#ifdef DEBUG_MUIC
+static ssize_t muic_show_registers(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	char mesg[256] = "";
+
+	mutex_lock(&pmuic->muic_mutex);
+	muic_read_reg_dump(pmuic, mesg);
+	mutex_unlock(&pmuic->muic_mutex);
+	pr_info("%s:%s\n", __func__, mesg);
+
+	return sprintf(buf, "%s\n", mesg);
+}
+
+static char reg_dump_buf[256];
+static ssize_t muic_show_reg_sel(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	pr_info("%s:%s\n", __func__, reg_dump_buf);
+
+	return sprintf(buf, "%s\n", reg_dump_buf);
+}
+
+static ssize_t muic_set_reg_sel(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	int len = strlen(buf);
+	unsigned int reg_base = 0, reg_num = 0;
+	int ret = -EINVAL, i = 0;
+
+#if 0 /* For the compatibility in 64 bit */
+	pr_info("%s:%s -> %s(%d, %d)\n", MUIC_DEV_NAME, __func__,
+		buf, count, len);
+#endif
+	if (len < 6) {
+		ret = kstrtoint(buf, 0, &reg_base);
+		if (ret) {
+			pr_err("%s: Undefined Regs\n", __func__);
+			goto err;
+		}
+		reg_num = 1;
+	} else if (len < 10) {
+		char *ptr;
+		char reg_buf[8];
+
+		strcpy(reg_buf, buf);
+		ptr = strstr(reg_buf, "++");
+		*ptr = 0x00;
+		ret = kstrtoint(reg_buf, 0, &reg_base);
+		if (ret) {
+			pr_err("%s: Undefined Regs\n", __func__);
+			goto err;
+		}
+		ret = kstrtoint(ptr + 2, 0, &reg_num);
+		if (ret) {
+			pr_err("%s: Undefined Regs\n", __func__);
+			goto err;
+		}
+	} else {
+		pr_err("%s: Undefined Regs\n", __func__);
+		goto err;
+	}
+
+	pr_info(" (reg_base,reg_num) = (0x%02x,%d)\n", reg_base, reg_num);
+
+	memset(reg_dump_buf, 0x00, sizeof(reg_dump_buf));
+
+	while (reg_num--) {
+		mutex_lock(&pmuic->muic_mutex);
+		ret = muic_i2c_read_byte(pmuic->i2c, reg_base + i);
+		mutex_unlock(&pmuic->muic_mutex);
+		if (ret < 0) {
+			pr_err("%s:%s err read %d\n", MUIC_DEV_NAME, __func__,
+					reg_base);
+			goto err;
+		}
+		pr_info(" [%02x] : %02x\n", reg_base, ret);
+
+		sprintf(reg_dump_buf + strlen(reg_dump_buf),
+			" [%02x] : %02x\n", reg_base + i++, ret);
+	}
+
+err:
+	return count;
+}
+#endif
+
 #if defined(CONFIG_USB_HOST_NOTIFY)
 static ssize_t muic_show_otg_test(struct device *dev,
 					   struct device_attribute *pattr,
@@ -322,6 +417,57 @@ static ssize_t muic_set_otg_test(struct device *dev,
 }
 #endif
 
+#if defined(CONFIG_SEC_DEBUG)
+static ssize_t muic_show_usb_to_ta(struct device *dev,
+					   struct device_attribute *pattr,
+					   char *buf)
+{
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
+	int val;
+
+	if (pvendor->usb_to_ta)
+		val = pvendor->usb_to_ta(pmuic->regmapdesc, 2);
+	else {
+		pr_err("%s: No Vendor API ready.\n", __func__);
+		val = -EINVAL;
+	}
+
+	pr_info("%s:USB TO TA status %s\n", __func__, val?"Enable":"Disable");
+	return sprintf(buf,"USB TO TA status %s\n", val?"Enable":"Disable");
+}
+
+static ssize_t muic_set_usb_to_ta(struct device *dev,
+		struct device_attribute *pattr,
+		const char *buf, size_t count)
+{
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
+	u8 val;
+
+	pr_info("%s buf:%s\n", __func__, buf);
+	if (!strncmp(buf, "0", 1)) {
+		if (pvendor->usb_to_ta)
+			val = pvendor->usb_to_ta(pmuic->regmapdesc, 0);
+		else {
+			pr_err("%s: No Vendor API ready.\n", __func__);
+			val = -EINVAL;
+		}
+	} else if (!strncmp(buf, "1", 1)) {
+		if (pvendor->usb_to_ta)
+			val = pvendor->usb_to_ta(pmuic->regmapdesc, 1);
+		else {
+			pr_err("%s: No Vendor API ready.\n", __func__);
+			val = -EINVAL;
+		}
+	} else {
+		pr_warn("%s:%s Wrong command\n", MUIC_DEV_NAME, __func__);
+		return count;
+	}
+
+	return count;
+}
+#endif
 static ssize_t muic_show_attached_dev(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
@@ -361,17 +507,6 @@ static ssize_t muic_show_attached_dev(struct device *dev,
 		return sprintf(buf, "AUDIODOCK\n");
 	case ATTACHED_DEV_CHARGING_CABLE_MUIC:
 		return sprintf(buf, "PS CABLE\n");
-	case ATTACHED_DEV_AFC_CHARGER_5V_MUIC:
-	case ATTACHED_DEV_AFC_CHARGER_9V_MUIC:
-	case ATTACHED_DEV_AFC_CHARGER_12V_MUIC:
-	case ATTACHED_DEV_QC_CHARGER_5V_MUIC:
-	case ATTACHED_DEV_QC_CHARGER_9V_MUIC:
-		return sprintf(buf, "AFC Charger\n");
-	case ATTACHED_DEV_POGO_DOCK_MUIC:
-	case ATTACHED_DEV_POGO_DOCK_5V_MUIC:
-		return sprintf(buf, "POGO Dock/5V\n");
-	case ATTACHED_DEV_POGO_DOCK_9V_MUIC:
-		return sprintf(buf, "POGO Dock/9V\n");
 	default:
 		break;
 	}
@@ -434,7 +569,6 @@ static ssize_t muic_set_apo_factory(struct device *dev,
 	return count;
 }
 
-#if defined(CONFIG_MUIC_HV)
 static ssize_t muic_show_vbus_value(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
@@ -481,6 +615,30 @@ static ssize_t muic_show_vbus_value_pd(struct device *dev,
 	return sprintf(buf, "UNKNOWN\n");
 }
 
+static ssize_t muic_show_vbus_rawdata(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
+	int val;
+
+	if (pvendor->get_vbus_rawdata)
+		val = pvendor->get_vbus_rawdata(pmuic->regmapdesc);
+	else {
+		pr_err("%s: No Vendor API ready.\n", __func__);
+		val = -EINVAL;
+	}
+
+	pr_info("%s:%s VBUS:%d\n", MUIC_DEV_NAME, __func__, val);
+
+	if (val > 0)
+		return sprintf(buf, "%d\n", val);
+
+	return sprintf(buf, "UNKNOWN\n");
+}
+
+#if defined(CONFIG_MUIC_HV) || defined(CONFIG_MUIC_UNIVERSAL_SM5705)
 static ssize_t muic_show_afc_disable(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -503,46 +661,59 @@ static ssize_t muic_set_afc_disable(struct device *dev,
 	muic_data_t *pmuic = dev_get_drvdata(dev);
 	struct muic_platform_data *pdata = pmuic->pdata;
 	bool curr_val = pdata->afc_disable;
-	int param_val, ret = 0;
+	unsigned int param_val;
+	int ret = 0;
 
 	/* Disable AFC */
-	if (!strncasecmp(buf, "1", 1))
+	if (!strncasecmp(buf, "1", 1)) {
 		pdata->afc_disable = true;
+	} else if (!strncasecmp(buf, "0", 1)) {
 	/* Enable AFC */
-	else if (!strncasecmp(buf, "0", 1))
 		pdata->afc_disable = false;
-	else {
+	} else {
 		pr_warn("%s:%s invalid value\n", MUIC_DEV_NAME, __func__);
 		return count;
 	}
 
-	param_val = pdata->afc_disable ? '1' : '0';
-
-#ifdef CM_OFFSET
-	if ((ret = sec_set_param(CM_OFFSET + 1, (char)param_val)) < 0) {
-		pr_err("%s:set_param failed - %02x:%02x(%d)\n", __func__,
-				param_val, curr_val, ret);
-		pdata->afc_disable = curr_val;
+	if(curr_val == pdata->afc_disable) {
+		pr_info("%s: called twice (AFC %s)\n",__func__, pdata->afc_disable ? "Disabled": "Enabled");
 		return ret;
 	}
-#else
-	pr_err("%s:set_param is NOT supported! - %02x:%02x(%d)\n", __func__,
-				param_val, curr_val, ret);
-#endif
-	pr_info("%s:%s afc_disable:%d (AFC %s)\n", MUIC_DEV_NAME, __func__,
-		pdata->afc_disable, pdata->afc_disable ? "Disabled": "Enabled");
+
+	param_val = pdata->afc_disable ? '1' : '0'; 
+	pr_info("%s: param_val:%d\n",__func__,param_val); 
+	ret = sec_set_param(param_index_afc_disable, &param_val); 
+
+	if (ret == false) {
+		pr_err("%s:set_param failed - %02x:%02x(%d)\n", __func__,
+			param_val, curr_val, ret);
+		pdata->afc_disable = curr_val;
+		return ret;
+	}else{
+		pr_info("%s:%s afc_disable:%d (AFC %s)\n", MUIC_DEV_NAME, __func__,
+			pdata->afc_disable, pdata->afc_disable ? "Disabled": "Enabled");
+	}
 
 	/* for factory self charging test (AFC-> NORMAL TA) */
 	if (pmuic->is_factory_start) {
+#if defined(CONFIG_MUIC_UNIVERSAL_MAX77854)
 		hv_set_afc_by_user(pmuic->phv, pdata->afc_disable ? false: true);
 
 		run_chgdet(pmuic, true);
 		run_chgdet(pmuic, false);
+#elif defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+		if (pdata->afc_disable) {
+			pr_info("%s, Disable AFC\n", __func__);
+			muic_check_afc_state(1);
+		} else {
+			pr_info("%s, Enable AFC\n", __func__);
+			muic_check_afc_state(0);
+		}
+#endif
 	}
-
 	return count;
 }
-#if defined(CONFIG_MUIC_HV_12V) && defined(CONFIG_SEC_FACTORY)
+#if defined(CONFIG_MUIC_HV_12V)
 static ssize_t muic_store_afc_set_voltage(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t count)
@@ -550,11 +721,11 @@ static ssize_t muic_store_afc_set_voltage(struct device *dev,
 	muic_data_t *pmuic = dev_get_drvdata(dev);
 
 	if (!strncasecmp(buf, "5V", 2)) {
-		hv_muic_change_afc_voltage(pmuic, MUIC_HV_5V);
+		hv_muic_change_afc_voltage(pmuic, MUIC_HV_5V);			
 	} else if (!strncasecmp(buf, "9V", 2)) {
-		hv_muic_change_afc_voltage(pmuic, MUIC_HV_9V);
+		hv_muic_change_afc_voltage(pmuic, MUIC_HV_9V);			
 	} else if (!strncasecmp(buf, "12V", 3)) {
-		hv_muic_change_afc_voltage(pmuic, MUIC_HV_12V);
+		hv_muic_change_afc_voltage(pmuic, MUIC_HV_12V);			
 	} else {
 		pr_warn("%s:%s invalid value\n", MUIC_DEV_NAME, __func__);
 		return count;
@@ -563,29 +734,124 @@ static ssize_t muic_store_afc_set_voltage(struct device *dev,
 	return count;
 }
 #endif
-#endif /* CONFIG_MUIC_HV */
-
-#if defined(CONFIG_HICCUP_CHARGER)
-static ssize_t hiccup_show(struct device *dev,
+#if defined(CONFIG_MUIC_HV_FORCE_LIMIT)
+static ssize_t muic_show_hv_sel(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	return sprintf(buf, "ENABLE\n");
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	struct muic_platform_data *pdata = pmuic->pdata;
+
+	if (pdata->hv_sel) {
+		pr_info("%s:%s AFC OFF\n", MUIC_DEV_NAME, __func__);
+		return sprintf(buf, "1\n");
+	}
+
+	pr_info("%s:%s AFC OFF", MUIC_DEV_NAME, __func__);
+	return sprintf(buf, "0\n");
 }
 
-static ssize_t hiccup_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t muic_set_hv_sel(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
 {
 	muic_data_t *pmuic = dev_get_drvdata(dev);
+	struct muic_platform_data *pdata = pmuic->pdata;
 
-	if (!strncasecmp(buf, "DISABLE", 7)) {
-		pr_info("%s\n", __func__);
-		com_to_open_with_vbus(pmuic);
-	} else
-		pr_warn("%s invalid com : %s\n", __func__, buf);
+	/* Disable AFC */
+	if (!strncasecmp(buf, "5V", 2)) {
+		if(pdata->hv_sel == 1) {
+			pr_info("%s:%s off 9V called twice [%d]\n",	MUIC_DEV_NAME, __func__, pdata->hv_sel);
+			return count;
+		}
+		pdata->hv_sel = true;
+	} else if (!strncasecmp(buf, "9V", 2)) {
+		if(pdata->hv_sel == 0) {
+			pr_info("%s:%s off 5V called twice [%d]\n",	MUIC_DEV_NAME, __func__, pdata->hv_sel);
+			return count;
+		}
+	/* Enable AFC */
+		pdata->hv_sel = false;
+	} else {
+		pr_warn("%s:%s invalid value\n", MUIC_DEV_NAME, __func__);
+		return count;
+	}
+
+	pr_info("%s:%s hv_sel:%d (AFC %s)\n", MUIC_DEV_NAME, __func__,
+			pdata->hv_sel, pdata->hv_sel ? "Disabled": "Enabled");
+
+	hv_muic_change_afc_voltage(pmuic, pdata->hv_sel ? MUIC_HV_5V : MUIC_HV_9V);	
 
 	return count;
 }
-#endif /* CONFIG_HICCUP_CHARGER */
+#endif
+#endif /* CONFIG_MUIC_HV */
+
+#if defined(CONFIG_MUIC_SUPPORT_CCIC)
+static ssize_t cc_xx_show(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	const char *mode = "UNKNOWN\n";
+
+	pr_info("%s:%s %s", MUIC_DEV_NAME, __func__, mode);
+
+	return sprintf(buf, mode);
+}
+
+static ssize_t cc_xx_set(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	muic_data_t *pmuic = dev_get_drvdata(dev);
+	int mid = 0, rid = 0;
+	int ret = 0;
+
+	pr_info("%s:%s buf=%s\n", MUIC_DEV_NAME, __func__, buf);
+
+	if (buf[1] != ':') {
+		pr_err("A wrong Input Fomat!\n");
+		return count;
+	}
+
+	if ((buf[0]=='A') || (buf[0]=='a'))
+		mid = 1; /* ATTACH */
+
+	else if ((buf[0]=='R') || (buf[0]=='r'))
+		mid = 2; /* RID */
+
+	else if ((buf[0]=='M') || (buf[0]=='m'))
+		mid = 100; /* MODE */
+	else {
+		pr_err("Undefined Command!\n");
+		return count;
+	}
+
+	ret = kstrtoint(buf + 2, 0, &rid);
+	if (ret) {
+		pr_err("%s: Undefined rid\n", __func__);
+		goto err;
+	}
+
+	if (mid == 100) {
+		pmuic->opmode  = rid ? OPMODE_CCIC : OPMODE_MUIC;
+		pr_info("%s:%s OP_MODE=%d\n", MUIC_DEV_NAME, __func__, pmuic->opmode);
+		if (pmuic->opmode & OPMODE_CCIC) {
+			muic_notifier_set_new_noti(true);
+			muic_register_ccic_notifier(pmuic);
+		}
+
+		return count;
+	}
+
+	muic_ccic_pseudo_noti(mid, rid);
+
+err:
+	return count;
+}
+
+static DEVICE_ATTR(cc_xx, 0664, cc_xx_show,
+		cc_xx_set);
+#endif
 
 static DEVICE_ATTR(uart_en, 0664, muic_show_uart_en, muic_set_uart_en);
 static DEVICE_ATTR(uart_sel, 0664, muic_show_uart_sel,
@@ -593,10 +859,18 @@ static DEVICE_ATTR(uart_sel, 0664, muic_show_uart_sel,
 static DEVICE_ATTR(usb_sel, 0664,
 		muic_show_usb_sel, muic_set_usb_sel);
 static DEVICE_ATTR(adc, 0664, muic_show_adc, NULL);
+#ifdef DEBUG_MUIC
+static DEVICE_ATTR(reg_dump, 0664, muic_show_registers, NULL);
+static DEVICE_ATTR(reg_sel, 0664, muic_show_reg_sel, muic_set_reg_sel);
+#endif
 static DEVICE_ATTR(usb_state, 0664, muic_show_usb_state, NULL);
 #if defined(CONFIG_USB_HOST_NOTIFY)
 static DEVICE_ATTR(otg_test, 0664,
 		muic_show_otg_test, muic_set_otg_test);
+#endif
+#if defined(CONFIG_SEC_DEBUG)
+static DEVICE_ATTR(usb_to_ta, 0664,
+		muic_show_usb_to_ta, muic_set_usb_to_ta);
 #endif
 static DEVICE_ATTR(attached_dev, 0664, muic_show_attached_dev, NULL);
 static DEVICE_ATTR(audio_path, 0664,
@@ -604,42 +878,55 @@ static DEVICE_ATTR(audio_path, 0664,
 static DEVICE_ATTR(apo_factory, 0664,
 		muic_show_apo_factory,
 		muic_set_apo_factory);
-#if defined(CONFIG_MUIC_HV)
-static DEVICE_ATTR(afc_disable, 0664,
-		muic_show_afc_disable, muic_set_afc_disable);
 static DEVICE_ATTR(vbus_value, 0444, muic_show_vbus_value, NULL);
 static DEVICE_ATTR(vbus_value_pd, 0444, muic_show_vbus_value_pd, NULL);
-#if defined(CONFIG_MUIC_HV_12V) && defined(CONFIG_SEC_FACTORY)
-static DEVICE_ATTR(afc_set_voltage, 0220,
+static DEVICE_ATTR(vbus_rawdata, 0444, muic_show_vbus_rawdata, NULL);
+#if defined(CONFIG_MUIC_HV) || defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+static DEVICE_ATTR(afc_disable, 0664,
+		muic_show_afc_disable, muic_set_afc_disable);
+#if defined(CONFIG_MUIC_HV_FORCE_LIMIT)
+static DEVICE_ATTR(hv_sel, 0664,
+		muic_show_hv_sel, muic_set_hv_sel);
+#endif
+#if defined(CONFIG_MUIC_HV_12V)
+static DEVICE_ATTR(afc_set_voltage, 0664,
 		NULL, muic_store_afc_set_voltage);
 #endif
 #endif
-#if defined(CONFIG_HICCUP_CHARGER)
-static DEVICE_ATTR_RW(hiccup);
-#endif
 
 static struct attribute *muic_attributes[] = {
+#if defined(CONFIG_MUIC_SUPPORT_CCIC)
+	&dev_attr_cc_xx.attr,
+#endif
 	&dev_attr_uart_en.attr,
 	&dev_attr_uart_sel.attr,
 	&dev_attr_usb_sel.attr,
 	&dev_attr_adc.attr,
+#ifdef DEBUG_MUIC
+	&dev_attr_reg_dump.attr,
+	&dev_attr_reg_sel.attr,
+#endif
 	&dev_attr_usb_state.attr,
 #if defined(CONFIG_USB_HOST_NOTIFY)
 	&dev_attr_otg_test.attr,
 #endif
+#if defined(CONFIG_SEC_DEBUG)
+	&dev_attr_usb_to_ta.attr,
+#endif
 	&dev_attr_attached_dev.attr,
 	&dev_attr_audio_path.attr,
 	&dev_attr_apo_factory.attr,
-#if defined(CONFIG_MUIC_HV)
-	&dev_attr_afc_disable.attr,
 	&dev_attr_vbus_value.attr,
 	&dev_attr_vbus_value_pd.attr,
-#if defined(CONFIG_MUIC_HV_12V) && defined(CONFIG_SEC_FACTORY)
+	&dev_attr_vbus_rawdata.attr,
+#if defined(CONFIG_MUIC_HV) || defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+	&dev_attr_afc_disable.attr,
+#if defined(CONFIG_MUIC_HV_12V)
 	&dev_attr_afc_set_voltage.attr,
 #endif
+#if defined(CONFIG_MUIC_HV_FORCE_LIMIT)
+	&dev_attr_hv_sel.attr,
 #endif
-#if defined(CONFIG_HICCUP_CHARGER)
-	&dev_attr_hiccup.attr,
 #endif
 	NULL
 };

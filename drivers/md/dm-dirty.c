@@ -129,13 +129,12 @@ static void dirty_hash(struct bio *bio, int error)
 	 */
 
 	/* TODO: Assumption here is that the FS sends block sized buffers. This seems to be
-	 * true for ext4 but should not be assumed. Re-factor this code to remove that
+	 * true for ext4 but should not be assumed. Re-factor this code to remove that 
 	 * assumption.
 	 */
-
 	for(i = 0; i < (io->iter.bi_size >> v->data_dev_block_bits); i++) {
 		/* Loop over all blocks */
-
+		
 		verity_hash_at_level(v, sector_to_block(v, io->iter.bi_sector) + (sector_t)i, 0, &hash_block, &offset);
 		hash_block_buf = dm_bufio_read(v->bufio, hash_block, &buf);
 		if (unlikely(IS_ERR(hash_block_buf))) {
@@ -153,21 +152,22 @@ static void dirty_hash(struct bio *bio, int error)
 			goto free_all_res;
 		}
 
-		ret = crypto_shash_update(desc, v->salt, v->salt_size);
+		ret = crypto_shash_update(desc, v->salt, v->salt_size); 
 		if (ret < 0) {
 			DMERR("Error updating salt hash");
 			goto free_all_res;
 		}
-
-		//iovec = (bio)->bi_io_vec + i;
+		
+	  //iovec = (bio)->bi_io_vec + i;
 		iovec = bio_iovec_idx(bio, idx + i);
-		/*
+	
+		/* A rat ? 
 		if (idx + i >= bio->bi_vcnt) {
 			DMERR("Excedding vcnt: idx:%hu vcnt:%hu i:%d", idx, bio->bi_vcnt, i);
 			goto free_all_res;
 		}
 		*/
-
+		
 		page = kmap_atomic(iovec->bv_page);
 		if(page == NULL) {
 			DMERR("Failed to kmap dirty page");
@@ -181,7 +181,7 @@ static void dirty_hash(struct bio *bio, int error)
 			DMERR("Error updating data hash");
 		}
 		kunmap_atomic(page);
-
+ 
 		result = hash_block_buf + offset;
 		ret = crypto_shash_final(desc, result);
 		if (ret < 0) {
@@ -208,7 +208,6 @@ free_all_res:
 static void dirty_work(struct work_struct *w)
 {
 	struct dm_dirty_io *io = container_of(w, struct dm_dirty_io, work);
-
 	dirty_hash(io->bio, 0);
 }
 
@@ -245,9 +244,9 @@ static int dirty_map(struct dm_target *ti, struct bio *bio)
 
 	/* If a WRITE coems with FLUSH flag set, we don't need to do anything special.
 	 * Its not the end of the world if the hash is not updated to the disk right
-	 * away.
+	 * away. 
 	 */
-	if (bio_data_dir(bio) != WRITE || bio->bi_iter.bi_size == 0)
+	if (bio_data_dir(bio) != WRITE || bio->bi_iter.bi_size == 0) 
 		goto process_bio;
 
 	if (bio->bi_iter.bi_size & ((1 << v->data_dev_block_bits) - 1) ||
@@ -325,7 +324,7 @@ static int dirty_update_hash(struct dm_verity *v, sector_t block, struct shash_d
 		goto free_all_res;
 	}
 
-	ret = crypto_shash_update(desc, v->salt, v->salt_size);
+	ret = crypto_shash_update(desc, v->salt, v->salt_size); 
 	if (ret < 0) {
 		DMERR("Error updating salt hash");
 		goto free_all_res;
@@ -452,7 +451,7 @@ make_output:
 		default:
 		DMERR("Unknown cmd: %u", cmd);
 	}
-
+	
 	return 0;
 }
 
@@ -750,7 +749,7 @@ static int __init dm_dirty_init(void)
 
 	ret = dm_register_target(&dirty_target);
 	if (ret < 0)
-		DMERR("dirty register failed %d", ret);
+		DMERR("dirty register failed %d", ret); 
 
 	return ret;
 }

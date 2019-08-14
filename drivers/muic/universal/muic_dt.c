@@ -79,6 +79,18 @@ static int muic_gpio_uart_sel;
 "+CDP:OPEN",
 "+Undefined Charging",
 */
+bool check_supported_unlessdt_list(int mdev)
+{
+#if defined(CONFIG_MUIC_SUPPORT_VZW_ACC)
+	if(mdev == ATTACHED_DEV_VZW_INCOMPATIBLE_MUIC || mdev == ATTACHED_DEV_VZW_ACC_MUIC)
+		return true;
+#endif
+#if defined(CONFIG_MUIC_SUPPORT_LANHUB)
+	if(mdev == ATTACHED_DEV_USB_LANHUB_MUIC)
+		return true;
+#endif
+	return false;
+}
 int of_update_supported_list(struct i2c_client *i2c,
 				struct muic_platform_data *pdata)
 {
@@ -91,7 +103,7 @@ int of_update_supported_list(struct i2c_client *i2c,
 
 	pr_info("%s\n", __func__);
 
-	np_muic = of_find_node_by_path("/muic");
+	np_muic = of_find_node_by_name(NULL, "muic");
 	if (np_muic == NULL)
 		return -EINVAL;
 
@@ -128,7 +140,7 @@ int of_update_supported_list(struct i2c_client *i2c,
 				vps_update_supported_attr(mdev, true);
 		} else if (prop_buf[0] == '-') {
 			if (vps_name_to_mdev(&prop_buf[1], &mdev))
-				vps_update_supported_attr(mdev, false);
+				vps_update_supported_attr(mdev, check_supported_unlessdt_list(mdev));
 		} else {
 			pr_err("%s: %c Undefined prop attribute.\n", __func__, prop_buf[0]);
 		}
@@ -200,7 +212,10 @@ int of_muic_dt(struct i2c_client *i2c, struct muic_platform_data *pdata, muic_da
 
 	pdata->irq_gpio = of_get_named_gpio(np_muic, "muic-universal,irq-gpio", 0);
 	pr_info("%s: irq-gpio: %u )\n", __func__, pdata->irq_gpio);
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
+	pmuic->switch_gpio = of_get_named_gpio(np_muic, "muic,switch_gpio", 0);
 
+#endif
 	if (of_find_property(np_muic, "muic-universal,uart-gpio", NULL)) {
 		muic_gpio_uart_sel = of_get_named_gpio(np_muic, "muic-universal,uart-gpio", 0);
 		if (muic_gpio_uart_sel < 0) {
@@ -223,11 +238,11 @@ int of_muic_dt(struct i2c_client *i2c, struct muic_platform_data *pdata, muic_da
 #if defined(CONFIG_MUIC_HV)
 int of_muic_hv_dt(muic_data_t *pmuic)
 {
-	struct device_node *np_muic;
 	struct hv_data *phv = pmuic->phv;
+	struct device_node *np_muic;
 	int ret = 0;
 
-	np_muic = of_find_node_by_path("/muic");
+	np_muic = of_find_node_by_name(NULL, "muic");
 	if (np_muic == NULL)
 		return -EINVAL;
 
@@ -251,14 +266,6 @@ int of_muic_hv_dt(muic_data_t *pmuic)
         pr_info("%s:%s phv->tx_data:0x%02x\n", MUIC_DEV_NAME, __func__,
                                 phv->tx_data);
 
-#if defined(CONFIG_MUIC_HV_SUPPORT_POGO_DOCK)
-	pmuic->dock_int_ap = of_get_named_gpio(np_muic, "muic,dock_int_ap", 0);
-	if (gpio_is_valid(pmuic->dock_int_ap))
-		pr_info("%s:%s dock_int_ap:%d, value:%d\n", MUIC_DEV_NAME, __func__, 
-				pmuic->dock_int_ap, gpio_get_value(pmuic->dock_int_ap));
-	else
-		pr_err("%s:%s dock_int_ap is invalid\n", MUIC_DEV_NAME, __func__);
-#endif
 
 err:
 	of_node_put(np_muic);

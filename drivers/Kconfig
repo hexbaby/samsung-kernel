@@ -14,6 +14,8 @@ source "drivers/parport/Kconfig"
 
 source "drivers/pnp/Kconfig"
 
+source "drivers/motor/Kconfig"
+
 source "drivers/block/Kconfig"
 
 # misc before ide - BLK_DEV_SGIIOC4 depends on SGI_IOC4
@@ -53,6 +55,10 @@ source "drivers/input/Kconfig"
 source "drivers/char/Kconfig"
 
 source "drivers/i2c/Kconfig"
+
+source "drivers/slimbus/Kconfig"
+
+source "drivers/soundwire/Kconfig"
 
 source "drivers/spi/Kconfig"
 
@@ -114,6 +120,8 @@ source "drivers/edac/Kconfig"
 
 source "drivers/rtc/Kconfig"
 
+source "drivers/esoc/Kconfig"
+
 source "drivers/dma/Kconfig"
 
 source "drivers/dca/Kconfig"
@@ -154,6 +162,8 @@ source "drivers/remoteproc/Kconfig"
 
 source "drivers/rpmsg/Kconfig"
 
+source "drivers/soc/Kconfig"
+
 source "drivers/devfreq/Kconfig"
 
 source "drivers/extcon/Kconfig"
@@ -172,21 +182,11 @@ source "drivers/irqchip/Kconfig"
 
 source "drivers/ipack/Kconfig"
 
-source "drivers/battery/Kconfig"
-
-source "drivers/battery_v2/Kconfig"
-
 source "drivers/reset/Kconfig"
 
-source "drivers/sensorhub/stm/Kconfig"
-
-source "drivers/sensorhub/atmel/Kconfig"
-
-source "drivers/sensorhub/brcm/Kconfig"
-
-source "drivers/gps/Kconfig"
-
 source "drivers/fmc/Kconfig"
+
+source "drivers/coresight/Kconfig"
 
 source "drivers/phy/Kconfig"
 
@@ -194,21 +194,27 @@ source "drivers/powercap/Kconfig"
 
 source "drivers/mcb/Kconfig"
 
-source "drivers/fingerprint/Kconfig"
-
 source "drivers/ras/Kconfig"
 
 source "drivers/thunderbolt/Kconfig"
 
-source "drivers/trace/Kconfig"
+source "drivers/sensors/Kconfig"
 
-source "drivers/bts/Kconfig"
+source "drivers/fingerprint/Kconfig"
 
-source "drivers/motor/Kconfig"
+source "drivers/firmware/Kconfig"
+
+source "drivers/bif/Kconfig"
+
+source "drivers/battery/Kconfig"
+
+source "drivers/battery_v2/Kconfig"
 
 source "drivers/gud/Kconfig"
 
-source "drivers/mailbox/samsung/Kconfig"
+source "drivers/nfc/Kconfig"
+
+source "drivers/adsp_factory/Kconfig"
 
 source "drivers/gator/Kconfig"
 

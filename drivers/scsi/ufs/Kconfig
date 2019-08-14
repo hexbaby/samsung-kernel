@@ -35,6 +35,8 @@
 config SCSI_UFSHCD
 	tristate "Universal Flash Storage Controller Driver Core"
 	depends on SCSI && SCSI_DMA
+	select PM_DEVFREQ
+	select DEVFREQ_GOV_SIMPLE_ONDEMAND
 	---help---
 	This selects the support for UFS devices in Linux, say Y and make
 	  sure that you know the name of your UFS host adapter (the card
@@ -51,10 +53,6 @@ config UFS_UN_18DIGITS
 	bool "The digits of SEC unique number"
 	depends on SCSI_UFSHCD
 
-config UFS_DYNAMIC_H8
-	bool "UFS Dynamic Hibernation (EXPERIMENTAL)"
-	depends on SCSI_UFSHCD
-
 config SCSI_UFSHCD_PCI
 	tristate "PCI bus based UFS Controller support"
 	depends on SCSI_UFSHCD && PCI
@@ -63,6 +61,8 @@ config SCSI_UFSHCD_PCI
 	you have UFS Host Controller with PCI Interface.
 
 	  If you have a controller with this interface, say Y or M here.
+
+	  If unsure, say N.
 
 config SCSI_UFSHCD_PLATFORM
 	tristate "Platform bus based UFS Controller support"
@@ -75,23 +75,38 @@ config SCSI_UFSHCD_PLATFORM
 
 	  If unsure, say N.
 
-config SCSI_UFS_TEST_MODE
-	bool "Samsung UFS TEST feature"
-	depends on SCSI_UFSHCD && SCSI_UFSHCD_PLATFORM
-	---help---
-	  This selects support for test mode for debugging.
-	  Select this option if this feature is needed on working.
-	  
-config SCSI_UFS_EXYNOS
-	tristate "EXYNOS UFS Host Controller Driver"
-	depends on SCSI_UFSHCD && SCSI_UFSHCD_PLATFORM
-	---help---
-	  This selects the EXYNOS UFS host controller driver.
+config SCSI_UFS_QCOM
+	tristate "QCOM specific hooks to UFS controller platform driver"
+	depends on SCSI_UFSHCD_PLATFORM && ARCH_MSM
+	select PHY_QCOM_UFS
+	help
+	  This selects the QCOM specific additions to UFSHCD platform driver.
+	  UFS host on QCOM needs some vendor specific configuration before
+	  accessing the hardware which includes PHY configuration and vendor
+	  specific registers.
 
-	  If you have a controller with this interface, say Y or M here.
-
+	  Select this if you have UFS controller on QCOM chipset.
 	  If unsure, say N.
 
-config NO_ORDERED_DISCARD
-	bool "Do not set ordered flag on discard"
-	default n
+config SCSI_UFS_QCOM_ICE
+	bool "QCOM specific hooks to Inline Crypto Engine for UFS driver"
+	depends on SCSI_UFS_QCOM && CRYPTO_DEV_QCOM_ICE
+	help
+	  This selects the QCOM specific additions to support Inline Crypto
+	  Engine (ICE).
+	  ICE accelerates the crypto operations and maintains the high UFS
+	  performance.
+
+	  Select this if you have ICE supported for UFS on QCOM chipset.
+	  If unsure, say N.
+
+
+config SCSI_UFS_TEST
+	tristate "Universal Flash Storage host controller driver unit-tests"
+	depends on SCSI_UFSHCD && IOSCHED_TEST
+	default m
+	---help---
+	This adds UFS Host controller unit-test framework.
+	The UFS unit-tests register as a block device test utility to
+	the test-iosched and will be initiated when the test-iosched will
+	be chosen to be the active I/O scheduler.

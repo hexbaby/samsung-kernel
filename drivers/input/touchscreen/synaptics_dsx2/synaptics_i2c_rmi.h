@@ -22,39 +22,31 @@
 
 #define SYNAPTICS_RMI4_DRIVER_VERSION "DS5 1.0"
 #include <linux/device.h>
-#include <linux/i2c/synaptics_rmi.h>
 #include <linux/cdev.h>
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-#include <linux/earlysuspend.h>
-#endif
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-#include <linux/sec_debug.h>
-#endif
-#ifdef CONFIG_INPUT_BOOSTER
-#include <linux/input/input_booster.h>
-#endif
 
 /**************************************/
 /* Define related with driver feature */
 #define FACTORY_MODE
 #define PROXIMITY_MODE
-//#define EDGE_SWIPE
-#define USE_SHUTDOWN_CB
+#define EDGE_SWIPE
 
 #define CHECK_PR_NUMBER
 #define REPORT_2D_W
+#define TSP_SUPPROT_MULTIMEDIA
+#define RESET_BY_WORKQUEUE
 
 #ifdef CONFIG_SEC_FACTORY
 #define REPORT_2D_Z		/* only for CONFIG_SEC_FACTORY */
+#undef TSP_SUPPROT_MULTIMEDIA
+#define PRINT_DEBUG_INFO
+#else
+#undef PRINT_DEBUG_INFO
 #endif
-#ifdef REPORT_2D_Z
+
+#if defined(TSP_SUPPROT_MULTIMEDIA) || defined(REPORT_2D_Z)
 #define DSX_PRESSURE_MAX	255
 #endif
 
-#ifdef CONFIG_INPUT_BOOSTER
-#define TSP_BOOSTER
-#endif
 #if defined(CONFIG_GLOVE_TOUCH)
 #define GLOVE_MODE
 #endif
@@ -65,19 +57,11 @@
 /* #define SKIP_UPDATE_FW_ON_PROBE */
 /* #define REPORT_ORIENTATION */
 /* #define USE_SENSOR_SLEEP */
-
-/* "HAS_ALTERNATER_R_R" feature have to check logic for using it. */
-/* #define HAS_ALTERNATER_R_R */
-
-/* only for V model feature*/
-//#define GESTURE_3FIN	// Disable 3 finger gesture scenario
-#define USE_LPGW_MODE
-
 /**************************************/
 /**************************************/
 
 /* Show TSP status information for debug */
-#define PRINT_DEBUG_INFO
+//#undef PRINT_DEBUG_INFO
 #ifdef PRINT_DEBUG_INFO
 #define F51_HAND_EDGE_DATA_SIZE 9
 #define F51_HAS_DELTA_INFO (1 << 3)
@@ -86,42 +70,6 @@
 #define F54_DATA14_ADDR 0X0109
 #define F54_DATA16_ADDR 0x010a
 #define F54_DATA17_ADDR 0x010bf
-#endif
-
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-#define tsp_debug_dbg(mode, dev, fmt, ...)	\
-({								\
-	if (mode) {					\
-		dev_dbg(dev, fmt, ## __VA_ARGS__);	\
-		sec_debug_tsp_log(fmt, ## __VA_ARGS__);		\
-	}				\
-	else					\
-		dev_dbg(dev, fmt, ## __VA_ARGS__);	\
-})
-
-#define tsp_debug_info(mode, dev, fmt, ...)	\
-({								\
-	if (mode) {							\
-		dev_info(dev, fmt, ## __VA_ARGS__);		\
-		sec_debug_tsp_log(fmt, ## __VA_ARGS__);		\
-	}				\
-	else					\
-		dev_info(dev, fmt, ## __VA_ARGS__);	\
-})
-
-#define tsp_debug_err(mode, dev, fmt, ...)	\
-({								\
-	if (mode) {					\
-		dev_err(dev, fmt, ## __VA_ARGS__);	\
-		sec_debug_tsp_log(fmt, ## __VA_ARGS__);	\
-	}				\
-	else					\
-		dev_err(dev, fmt, ## __VA_ARGS__); \
-})
-#else
-#define tsp_debug_dbg(mode, dev, fmt, ...)	dev_dbg(dev, fmt, ## __VA_ARGS__)
-#define tsp_debug_info(mode, dev, fmt, ...)	dev_info(dev, fmt, ## __VA_ARGS__)
-#define tsp_debug_err(mode, dev, fmt, ...)	dev_err(dev, fmt, ## __VA_ARGS__)
 #endif
 
 #define SYNAPTICS_DEVICE_NAME	"SYNAPTICS"
@@ -138,7 +86,7 @@
 
 #define SYNAPTICS_MAX_FW_PATH	64
 
-#define SYNAPTICS_DEFAULT_UMS_FW "/sdcard/synaptics.fw"
+#define SYNAPTICS_DEFAULT_UMS_FW "/sdcard/Firmware/TSP/synaptics.fw"
 
 #define DEFAULT_DEVICE_NUM	1
 
@@ -269,7 +217,9 @@
 #define JIG_COMMAND_EN	(1 << 1)
 #define DEAD_ZONE_EN	(1 << 2)
 #define EN_GHOST_FINGER_STATUS_REPORT	(1 << 3)
-//#define RESERVED		(1 << 4)
+#ifdef TSP_SUPPROT_MULTIMEDIA
+#define BOOST_UP_EN		(1 << 4)
+#endif
 #define EDGE_SWIPE_EN	(1 << 5)
 //#define RESERVED		(1 << 6)
 //#define RESERVED		(1 << 7)
@@ -316,23 +266,6 @@
 #define EDGE_SWIPE_WITDH_X_OFFSET	5
 #define EDGE_SWIPE_AREA_OFFSET	7
 #endif
-#define F51_EDGE_SWIPE_DATA_SIZE 10
-
-#ifdef GESTURE_3FIN
-#define	GESTURE_RIGHT	1
-#define	GESTURE_LEFT	2
-#define	GESTURE_UP		3
-#define	GESTURE_DOWN	4
-#endif
-
-#ifdef USE_LPGW_MODE
-#define	GESTURE_SWIPE			0x07
-#endif
-
-#define	ORIENTATION_0	0
-#define	ORIENTATION_90	1
-#define	ORIENTATION_180	2
-#define	ORIENTATION_270	3
 
 #ifdef SIDE_TOUCH
 #define MAX_SIDE_BUTTONS	8
@@ -412,7 +345,6 @@ enum synaptics_product_ids {
 	SYNAPTICS_PRODUCT_ID_NONE = 0,
 	SYNAPTICS_PRODUCT_ID_S5807,
 	SYNAPTICS_PRODUCT_ID_S5806,
-	SYNAPTICS_PRODUCT_ID_S5300,
 	SYNAPTICS_PRODUCT_ID_MAX
 };
 
@@ -452,6 +384,77 @@ struct synaptics_rmi4_f1a_handle {
 	struct synaptics_rmi4_f1a_control button_control;
 };
 
+#ifndef CONFIG_KEYBOARD_CYPRESS_TOUCH
+#define NO_0D_WHILE_2D
+#endif
+
+struct synaptics_rmi_f1a_button_map {
+	unsigned char nbuttons;
+	unsigned char *map;
+};
+
+#ifdef SYNAPTICS_RMI_INFORM_CHARGER
+struct synaptics_rmi_callbacks {
+	void (*inform_charger)(struct synaptics_rmi_callbacks *, int);
+};
+#endif
+
+/**
+ * struct synaptics_rmi4_platform_data - rmi4 platform data
+ * @x_flip: x flip flag
+ * @y_flip: y flip flag
+ * @regulator_en: regulator enable flag
+ * @gpio: attention interrupt gpio
+ * @irq_type: irq type
+ * @gpio_config: pointer to gpio configuration function
+ * @f1a_button_map: pointer to 0d button map
+ * @charger_noti_type: define method to notify the connection of charger.
+ */
+struct synaptics_rmi4_platform_data {
+	bool x_flip;
+	bool y_flip;
+	bool x_y_chnage;
+	int x_offset;
+	unsigned int sensor_max_x;
+	unsigned int sensor_max_y;
+	unsigned int num_of_rx;
+	unsigned int num_of_tx;
+	unsigned char max_touch_width;
+	u32 panel_revision;	/* to identify panel info */
+	bool regulator_en;
+	unsigned gpio;
+#if defined(CONFIG_TOUCHSCREEN_KLIMTVE)
+	unsigned reset;
+#endif
+	int irq_type;
+	int (*gpio_config)(unsigned interrupt_gpio, bool configure);
+	int (*power)(void *data, bool on);
+#ifdef NO_0D_WHILE_2D
+	int (*led_power_on) (bool);
+#endif
+	unsigned char (*get_ddi_type)(void);	/* to indentify ddi type */
+	void (*enable_sync)(bool on);
+	const char *firmware_name;
+	const char *firmware_name2;
+	const char *factory_firmware_name;
+	const char *project_name;
+	const char *model_name;
+	u32	device_num;
+#ifdef SYNAPTICS_RMI_INFORM_CHARGER
+	void (*register_cb)(struct synaptics_rmi_callbacks *);
+#endif
+	bool charger_noti_type;
+	struct synaptics_rmi_f1a_button_map *f1a_button_map;
+
+	const char *regulator_dvdd;
+	const char *regulator_avdd;
+	int vdd_en;
+	int io_en;
+	bool swreset_on_start;
+};
+
+extern unsigned int lcdtype;
+
 #ifdef PROXIMITY_MODE
 #ifdef EDGE_SWIPE
 struct synaptics_rmi4_edge_swipe {
@@ -485,9 +488,6 @@ struct synaptics_rmi4_f51_handle {
 /* DATA */
 	unsigned short detection_flag_2_addr;	/* F51_CUSTOM_DATA06 */
 	unsigned short edge_swipe_data_addr;	/* F51_CUSTOM_DATA07 */
-#ifdef GESTURE_3FIN
-	unsigned short gesture_3finger_data_addr;	/* F51_CUSTOM_DATA49~50 */
-#endif
 #ifdef EDGE_SWIPE
 	struct synaptics_rmi4_edge_swipe edge_swipe_data;
 #endif
@@ -608,7 +608,7 @@ struct synaptics_finger {
 	int y;
 	int wx;
 	int wy;
-#ifdef REPORT_2D_Z
+#if defined(TSP_SUPPROT_MULTIMEDIA) || defined(REPORT_2D_Z)
 	int z;
 #endif
 	unsigned char tool_type;
@@ -625,16 +625,15 @@ enum {
 	TOUCH_CHANGE,
 };
 
+
 struct synaptics_rmi4_f12_handle {
 /* CTRL */
 	unsigned short ctrl11_addr;		/* F12_2D_CTRL11 : for jitter level*/
 	unsigned short ctrl15_addr;		/* F12_2D_CTRL15 : for finger amplitude threshold */
 	unsigned short ctrl23_addr;		/* F12_2D_CTRL23 : object report enable */
 	unsigned char obj_report_enable;	/* F12_2D_CTRL23 */
-	unsigned short ctrl20_addr;		/* F12_2D_CTRL20 : for lpwg mode */
 	unsigned short ctrl26_addr;		/* F12_2D_CTRL26 : for glove mode */
 	unsigned char feature_enable;	/* F12_2D_CTRL26 */
-	unsigned short ctrl27_addr;		/* F12_2D_CTRL26 : for lpwg mode - report rate */
 	unsigned short ctrl28_addr;		/* F12_2D_CTRL28 : for report data */
 	unsigned char report_enable;	/* F12_2D_CTRL28 */
 /* QUERY */
@@ -1292,24 +1291,6 @@ struct synaptics_rmi4_f54_handle {
 	struct f54_query_15 query_15;
 	struct f54_query_16 query_16;
 	struct f54_query_21 query_21;
-	struct f54_query_22 query_22;
-	struct f54_query_25 query_25;
-	struct f54_query_27 query_27;
-	struct f54_query_29 query_29;
-	struct f54_query_30 query_30;
-	struct f54_query_32 query_32;
-	struct f54_query_33 query_33;
-	struct f54_query_36 query_36;
-	struct f54_query_38 query_38;
-	struct f54_query_39 query_39;
-	struct f54_query_40 query_40;
-	struct f54_query_43 query_43;
-	struct f54_query_46 query_46;
-	struct f54_query_47 query_47;
-	struct f54_query_49 query_49;
-	struct f54_query_50 query_50;
-	struct f54_query_51 query_51;
-	struct f54_query_55 query_55;
 	struct f54_control control;
 #ifdef FACTORY_MODE
 	struct factory_data *factory_data;
@@ -1411,14 +1392,12 @@ struct synaptics_rmi4_data {
 	struct mutex rmi4_io_ctrl_mutex;
 	struct mutex rmi4_reflash_mutex;
 	struct timer_list f51_finger_timer;
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	struct early_suspend early_suspend;
-#endif
 	const char *firmware_name;
 
 	struct completion init_done;
 	struct synaptics_finger finger[MAX_NUMBER_OF_FINGERS];
 
+	unsigned char save_input_open;
 	unsigned char button_0d_enabled;
 	unsigned char full_pm_cycle;
 	unsigned char num_of_rx;
@@ -1463,6 +1442,7 @@ struct synaptics_rmi4_data {
 	int fw_version_of_ic;		/* firmware version of IC */
 	int ic_revision_of_bin;		/* revision of reading from binary */
 	int fw_version_of_bin;		/* firmware version of binary */
+	int fw_release_date_of_bin;
 	int fw_release_date_of_ic;	/* Config release data from IC */
 	u32 panel_revision;			/* Octa panel revision */
 	unsigned char bootloader_id[SYNAPTICS_BOOTLOADER_ID_SIZE];	/* Bootloader ID */
@@ -1493,21 +1473,22 @@ struct synaptics_rmi4_data {
 	unsigned char sidekey_data;
 #endif
 	bool use_stylus;
+#ifdef TSP_SUPPROT_MULTIMEDIA
+	bool use_brush;
+	bool use_velocity;
+#endif
+
+#ifdef RESET_BY_WORKQUEUE
+	bool resetting;
+	struct delayed_work work_reset;
+#endif
+
 #ifdef SYNAPTICS_RMI_INFORM_CHARGER
 	int ta_status;
 	void (*register_cb)(struct synaptics_rmi_callbacks *);
 	struct synaptics_rmi_callbacks callbacks;
 #endif
 	bool use_deepsleep;
-#ifdef USE_LPGW_MODE
-	bool use_lpwg_sleep;
-	struct mutex rmi4_lpgw_mutex;
-	unsigned char scrub_id;
-#endif
-#ifdef GESTURE_3FIN
-	int gesture_3fin_code;
-#endif
-	int orientation;
 	struct pinctrl *pinctrl;
 
 	int (*i2c_read)(struct synaptics_rmi4_data *pdata, unsigned short addr,
@@ -1584,9 +1565,6 @@ int synaptics_rmi4_glove_mode_enables(struct synaptics_rmi4_data *rmi4_data);
 #endif
 #ifdef SYNAPTICS_RMI_INFORM_CHARGER
 extern void synaptics_tsp_register_callback(struct synaptics_rmi_callbacks *cb);
-#endif
-#ifdef USE_LPGW_MODE
-int set_lpgw_mode(struct synaptics_rmi4_data *rmi4_data, int on);
 #endif
 #ifdef USE_ACTIVE_REPORT_RATE
 int change_report_rate(struct synaptics_rmi4_data *rmi4_data, int mode);

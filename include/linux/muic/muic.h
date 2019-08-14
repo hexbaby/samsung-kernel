@@ -84,6 +84,10 @@ enum {
 typedef enum {
 	ADC_GND			= 0x00,
 	ADC_SEND_END		= 0x01, /* 0x00001 2K ohm */
+	ADC_REMOTE_S1		= 0x02, /* 0x00010 2.604K ohm */
+	ADC_REMOTE_S8		= 0x09, /* 0x01001 12.03K ohm */
+	ADC_BUTTON_VOLDN	= 0x0a, /* 0x01010 14.46K ohm */
+	ADC_BUTTON_VOLUP	= 0x0b, /* 0x01011 17.26K ohm */
 	ADC_REMOTE_S11		= 0x0c, /* 0x01100 20.5K ohm */
 	ADC_REMOTE_S12		= 0x0d, /* 0x01101 24.07K ohm */
 	ADC_RESERVED_VZW	= 0x0e, /* 0x01110 28.7K ohm */
@@ -104,7 +108,7 @@ typedef enum {
 	ADC_CEA936ATYPE2_CHG	= 0x1b, /* 0x11011 442K ohm */
 	ADC_JIG_UART_OFF	= 0x1c, /* 0x11100 523K ohm */
 	ADC_JIG_UART_ON		= 0x1d, /* 0x11101 619K ohm */
-	ADC_AUDIOMODE_W_REMOTE	= 0x1e, /* 0x11110 1000K ohm */
+	ADC_EARJACK		= 0x1e, /* 0x11110 1000K ohm */
 	ADC_OPEN		= 0x1f,
 	ADC_OPEN_219		= 0xfb, /* ADC open or 219.3K ohm */
 	ADC_219			= 0xfc, /* ADC open or 219.3K ohm */
@@ -141,7 +145,6 @@ typedef enum {
 	ATTACHED_DEV_JIG_UART_OFF_VB_FG_MUIC,	/* for fuelgauge test */
 
 	ATTACHED_DEV_JIG_UART_ON_MUIC,
-	ATTACHED_DEV_JIG_UART_ON_VB_MUIC,	/* VBUS enabled */
 	ATTACHED_DEV_JIG_USB_OFF_MUIC,
 	ATTACHED_DEV_JIG_USB_ON_MUIC,
 	ATTACHED_DEV_SMARTDOCK_MUIC,
@@ -161,7 +164,6 @@ typedef enum {
 	ATTACHED_DEV_AFC_CHARGER_9V_DUPLI_MUIC,
 	ATTACHED_DEV_AFC_CHARGER_12V_MUIC,
 	ATTACHED_DEV_AFC_CHARGER_12V_DUPLI_MUIC,
-
 	ATTACHED_DEV_AFC_CHARGER_ERR_V_MUIC,
 	ATTACHED_DEV_AFC_CHARGER_ERR_V_DUPLI_MUIC,
 	ATTACHED_DEV_QC_CHARGER_PREPARE_MUIC,
@@ -183,13 +185,13 @@ typedef enum {
 	ATTACHED_DEV_UNDEFINED_RANGE_MUIC,
 	ATTACHED_DEV_RDU_TA_MUIC,
 	ATTACHED_DEV_GAMEPAD_MUIC,
-
+	ATTACHED_DEV_JIG_UART_ON_VB_MUIC,	/* VBUS enabled */
 	ATTACHED_DEV_TIMEOUT_OPEN_MUIC,
-	ATTACHED_DEV_POGO_DOCK_MUIC,
-	ATTACHED_DEV_POGO_DOCK_5V_MUIC,
-	ATTACHED_DEV_POGO_DOCK_9V_MUIC,
-	ATTACHED_DEV_HICCUP_MUIC,
 	ATTACHED_DEV_UNKNOWN_MUIC,
+	ATTACHED_DEV_EARJACK_MUIC,
+	ATTACHED_DEV_SEND_MUIC,
+	ATTACHED_DEV_VOLDN_MUIC,
+	ATTACHED_DEV_VOLUP_MUIC,
 	ATTACHED_DEV_NUM,
 } muic_attached_dev_t;
 
@@ -235,6 +237,7 @@ struct muic_platform_data {
 	int (*set_gpio_usb_sel) (int usb_path);
 	int (*set_gpio_uart_sel) (int uart_path);
 	int (*set_safeout) (int safeout_path);
+	void (*jig_uart_cb) (int jig_state);
 
 	/* muic path switch function for rustproof */
 	void (*set_path_switch_suspend) (struct device *dev);
@@ -244,7 +247,4 @@ struct muic_platform_data {
 int get_switch_sel(void);
 int get_afc_mode(void);
 void muic_set_hmt_status(int status);
-#ifdef CONFIG_SEC_FACTORY
-extern void muic_send_attached_muic_cable_intent(int type);
-#endif /* CONFIG_SEC_FACTORY */
 #endif /* __MUIC_H__ */

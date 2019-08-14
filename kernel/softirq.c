@@ -26,10 +26,12 @@
 #include <linux/smpboot.h>
 #include <linux/tick.h>
 #include <linux/irq.h>
-#include <linux/exynos-ss.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/irq.h>
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
 
 /*
    - No shared variables, all the data are CPU local.
@@ -267,9 +269,14 @@ restart:
 		kstat_incr_softirqs_this_cpu(vec_nr);
 
 		trace_softirq_entry(vec_nr);
-		exynos_ss_irq(ESS_FLAG_SOFTIRQ, h->action, vec_nr, ESS_FLAG_IN);
+
+#ifdef CONFIG_SEC_DEBUG
+		secdbg_msg("softirq %pS entry", h->action);
+#endif
 		h->action(h);
-		exynos_ss_irq(ESS_FLAG_SOFTIRQ, h->action, local_softirq_pending(), ESS_FLAG_OUT);
+#ifdef CONFIG_SEC_DEBUG
+		secdbg_msg("softirq %pS exit", h->action);
+#endif
 		trace_softirq_exit(vec_nr);
 		if (unlikely(prev_count != preempt_count())) {
 			pr_err("huh, entered softirq %u %s %p with preempt_count %08x, exited with %08x?\n",
@@ -392,6 +399,10 @@ void irq_exit(void)
 	tick_irq_exit();
 	rcu_irq_exit();
 	trace_hardirq_exit(); /* must be last! */
+#ifdef CONFIG_SEC_DEBUG
+	secdbg_msg("hardirq exit");
+#endif
+
 }
 
 /*
@@ -501,11 +512,14 @@ static void tasklet_action(struct softirq_action *a)
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED,
 							&t->state))
 					BUG();
-				exynos_ss_irq(ESS_FLAG_SOFTIRQ_TASKLET,
-						t->func, t->state, ESS_FLAG_IN);
+#ifdef CONFIG_SEC_DEBUG
+				sec_debug_irq_sched_log(-1, t->func, 3);
 				t->func(t->data);
-				exynos_ss_irq(ESS_FLAG_SOFTIRQ_TASKLET,
-						t->func, local_softirq_pending(), ESS_FLAG_OUT);
+				sec_debug_irq_sched_log(-1, t->func, 4);
+#else
+				t->func(t->data);
+#endif
+
 				tasklet_unlock(t);
 				continue;
 			}
@@ -541,11 +555,7 @@ static void tasklet_hi_action(struct softirq_action *a)
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED,
 							&t->state))
 					BUG();
-				exynos_ss_irq(ESS_FLAG_SOFTIRQ_HI_TASKLET,
-						t->func, t->state, ESS_FLAG_IN);
 				t->func(t->data);
-				exynos_ss_irq(ESS_FLAG_SOFTIRQ_HI_TASKLET,
-						t->func, local_softirq_pending(), ESS_FLAG_OUT);
 				tasklet_unlock(t);
 				continue;
 			}

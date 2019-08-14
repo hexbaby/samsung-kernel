@@ -932,8 +932,7 @@ static int check_alu_op(struct reg_state *regs, struct bpf_insn *insn)
 			}
 		} else {
 			if (insn->src_reg != BPF_REG_0 || insn->off != 0 ||
-			    (insn->imm != 16 && insn->imm != 32 && insn->imm != 64) ||
-			    BPF_CLASS(insn->code) == BPF_ALU64) {
+			    (insn->imm != 16 && insn->imm != 32 && insn->imm != 64)) {
 				verbose("BPF_END uses reserved fields\n");
 				return -EINVAL;
 			}
@@ -1738,6 +1737,7 @@ static int replace_map_fd_with_map_ptr(struct verifier_env *env)
 			if (IS_ERR(map)) {
 				verbose("fd %d is not pointing to valid bpf_map\n",
 					insn->imm);
+				fdput(f);
 				return PTR_ERR(map);
 			}
 
