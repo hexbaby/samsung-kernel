@@ -16,6 +16,7 @@ config PFK
 	bool "Per-File-Key driver"
 	depends on SECURITY
 	depends on ECRYPT_FS
+	depends on SECURITY_SELINUX
 	default n
 	help
 		This driver is used for storing eCryptfs information
@@ -33,5 +34,11 @@ config CRYPTO_FDE_KEY_UPDATE
 	  It uses only slot #2.
 
 	  If unsure, say N.
+
+config SCSI_UFSHCD
+	tristate "Universal Flash Storage Controller Driver Core"
+	depends on SCSI && SCSI_DMA
+	select PM_DEVFREQ
+	select DEVFREQ_GOV_SIMPLE_ONDEMAND
 
 endmenu

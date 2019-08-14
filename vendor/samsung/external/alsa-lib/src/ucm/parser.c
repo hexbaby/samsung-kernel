@@ -9,9 +9,9 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  You should have received a copy of the GNU Lesser General Public
+ *  License along with this library; if not, write to the Free Software  
+ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  *  Support for the verb/device/modifier core logic and API,
  *  command line tool and file parser was kindly sponsored by
@@ -36,6 +36,25 @@
 /** The name of the environment variable containing the UCM directory */
 #define ALSA_CONFIG_UCM_VAR "ALSA_CONFIG_UCM"
 
+/* Directories to store UCM configuration files for components, like
+ * off-soc codecs or embedded DSPs. Components can define their own
+ * devices and sequences, to be reused by sound cards/machines. UCM
+ * manager should not scan these component directories.
+ * Machine use case files can include component configratuation files
+ * via alsaconf syntax:
+ * <searchdir:component-directory-name> and <component-conf-file-name>.
+ * Alsaconf will import the included files automatically. After including
+ * a component file, a machine device's sequence can enable or disable
+ * a component device via syntax:
+ * enadev "component_device_name"
+ * disdev "component_device_name"
+ */
+static const char * const component_dir[] = {
+	"codecs",	/* for off-soc codecs */
+	"dsps",		/* for DSPs embedded in SoC */
+	NULL,		/* terminator */
+};
+
 static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			  struct list_head *base,
 			  snd_config_t *cfg);
@@ -59,10 +78,10 @@ int parse_string(snd_config_t *n, char **res)
 /*
  * Parse safe ID
  */
-int parse_is_name_safe(char *name)
+int parse_is_name_safe(const char *name)
 {
 	if (strchr(name, '.')) {
-		uc_error("char '.' now allowed in '%s'", name);
+		uc_error("char '.' not allowed in '%s'", name);
 		return 0;
 	}
 	return 1;
@@ -75,7 +94,9 @@ int parse_get_safe_id(snd_config_t *n, const char **id)
 	err = snd_config_get_id(n, id);
 	if (err < 0)
 		return err;
-	return parse_is_name_safe((char *)(*id));
+	if (!parse_is_name_safe((char *)(*id)))
+		return -EINVAL;
+	return 0;
 }
 
 /*
@@ -151,7 +172,7 @@ static int parse_compound(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg,
 		n = snd_config_iterator_entry(i);
 
 		if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
-			uc_error("compound type expected for %s", id);
+			uc_error("compound type expected for %s, is %d", id, snd_config_get_type(cfg));
 			return -EINVAL;
 		}
 		
@@ -163,19 +184,39 @@ static int parse_compound(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg,
 	return 0;
 }
 
+static int strip_legacy_dev_index(char *name)
+{
+	char *dot = strchr(name, '.');
+	if (!dot)
+		return 0;
+	if (dot[1] != '0' || dot[2] != '\0') {
+		uc_error("device name %s contains a '.',"
+			 " and is not legacy foo.0 format", name);
+		return -EINVAL;
+	}
+	*dot = '\0';
+	return 0;
+}
 
 /*
- * Parse transition
+ * Parse device list
  */
-static int parse_supported_device(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
-				  struct list_head *dlist,
-				  snd_config_t *cfg)
+static int parse_device_list(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
+			     struct dev_list *dev_list,
+			     enum dev_list_type type,
+			     snd_config_t *cfg)
 {
-	struct dev_list *sdev;
+	struct dev_list_node *sdev;
 	const char *id;
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
 	int err;
+
+	if (dev_list->type != DEVLIST_NONE) {
+		uc_error("error: multiple supported or"
+			" conflicting device lists");
+		return -EEXIST;
+	}
 
 	if (snd_config_get_id(cfg, &id) < 0)
 		return -EINVAL;
@@ -191,7 +232,7 @@ static int parse_supported_device(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 		if (snd_config_get_id(n, &id) < 0)
 			return -EINVAL;
 
-		sdev = calloc(1, sizeof(struct dev_list));
+		sdev = calloc(1, sizeof(struct dev_list_node));
 		if (sdev == NULL)
 			return -ENOMEM;
 		err = parse_string(n, &sdev->name);
@@ -199,8 +240,93 @@ static int parse_supported_device(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 			free(sdev);
 			return err;
 		}
-		list_add(&sdev->list, dlist);
+		err = strip_legacy_dev_index(sdev->name);
+		if (err < 0) {
+			free(sdev->name);
+			free(sdev);
+			return err;
+		}
+		list_add(&sdev->list, &dev_list->list);
 	}
+
+	dev_list->type = type;
+
+	return 0;
+}
+
+/* Find a component device by its name, and remove it from machine device
+ * list.
+ *
+ * Component devices are defined by machine components (usually off-soc
+ * codes or DSP embeded in SoC). Since alsaconf imports their configuration
+ * files automatically, we don't know which devices are component devices
+ * until they are referenced by a machine device sequence. So here when we
+ * find a referenced device, we move it from the machine device list to the
+ * component device list. Component devices will not be exposed to applications
+ * by the original API to list devices for backward compatibility. So sound
+ * servers can only see the machine devices.
+ */
+struct use_case_device *find_component_dev(snd_use_case_mgr_t *uc_mgr,
+	const char *name)
+{
+	struct list_head *pos, *posdev, *_posdev;
+	struct use_case_verb *verb;
+	struct use_case_device *dev;
+
+	list_for_each(pos, &uc_mgr->verb_list) {
+		verb = list_entry(pos, struct use_case_verb, list);
+
+		/* search in the component device list */
+		list_for_each(posdev, &verb->cmpt_device_list) {
+			dev = list_entry(posdev, struct use_case_device, list);
+			if (!strcmp(dev->name, name))
+				return dev;
+		}
+
+		/* search the machine device list */
+		list_for_each_safe(posdev, _posdev, &verb->device_list) {
+			dev = list_entry(posdev, struct use_case_device, list);
+			if (!strcmp(dev->name, name)) {
+				/* find the component device, move it from the
+				 * machine device list to the component device
+				 * list.
+				 */
+				list_del(&dev->list);
+				list_add_tail(&dev->list,
+					      &verb->cmpt_device_list);
+				return dev;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/* parse sequence of a component device
+ *
+ * This function will find the component device and mark if its enable or
+ * disable sequence is needed by its parenet device.
+ */
+static int parse_component_seq(snd_use_case_mgr_t *uc_mgr,
+			  snd_config_t *n, int enable,
+			  struct component_sequence *cmpt_seq)
+{
+	const char *val;
+	int err;
+
+	err = snd_config_get_string(n, &val);
+	if (err < 0)
+		return err;
+
+	cmpt_seq->device = find_component_dev(uc_mgr, val);
+	if (!cmpt_seq->device) {
+		uc_error("error: Cannot find component device %s", val);
+		return -EINVAL;
+	}
+
+	/* Parent needs its enable or disable sequence */
+	cmpt_seq->enable = enable;
+
 	return 0;
 }
 
@@ -213,12 +339,16 @@ static int parse_supported_device(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
  * cset "element_id_syntax value_syntax"
  * usleep time
  * exec "any unix command with arguments"
+ * enadev "component device name"
+ * disdev "component device name"
  *
  * e.g.
  *	cset "name='Master Playback Switch' 0,0"
  *      cset "iface=PCM,name='Disable HDMI',index=1 0"
+ *	enadev "rt286:Headphones"
+ *	disdev "rt286:Speaker"
  */
-static int parse_sequence(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
+static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			  struct list_head *base,
 			  snd_config_t *cfg)
 {
@@ -275,6 +405,50 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 			continue;
 		}
 
+		if (strcmp(cmd, "enadev") == 0) {
+			/* need to enable a component device */
+			curr->type = SEQUENCE_ELEMENT_TYPE_CMPT_SEQ;
+			err = parse_component_seq(uc_mgr, n, 1,
+						&curr->data.cmpt_seq);
+			if (err < 0) {
+				uc_error("error: enadev requires a valid device!");
+				return err;
+			}
+			continue;
+		}
+
+		if (strcmp(cmd, "disdev") == 0) {
+			/* need to disable a component device */
+			curr->type = SEQUENCE_ELEMENT_TYPE_CMPT_SEQ;
+			err = parse_component_seq(uc_mgr, n, 0,
+						&curr->data.cmpt_seq);
+			if (err < 0) {
+				uc_error("error: disdev requires a valid device!");
+				return err;
+			}
+			continue;
+		}
+
+		if (strcmp(cmd, "cset-bin-file") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE;
+			err = parse_string(n, &curr->data.cset);
+			if (err < 0) {
+				uc_error("error: cset-bin-file requires a string!");
+				return err;
+			}
+			continue;
+		}
+
+		if (strcmp(cmd, "cset-tlv") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_TLV;
+			err = parse_string(n, &curr->data.cset);
+			if (err < 0) {
+				uc_error("error: cset-tlv requires a string!");
+				return err;
+			}
+			continue;
+		}
+
 		if (strcmp(cmd, "usleep") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_SLEEP;
 			err = snd_config_get_integer(n, &curr->data.sleep);
@@ -282,6 +456,17 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 				uc_error("error: usleep requires integer!");
 				return err;
 			}
+			continue;
+		}
+
+		if (strcmp(cmd, "msleep") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_SLEEP;
+			err = snd_config_get_integer(n, &curr->data.sleep);
+			if (err < 0) {
+				uc_error("error: msleep requires integer!");
+				return err;
+			}
+			curr->data.sleep *= 1000L;
 			continue;
 		}
 
@@ -389,12 +574,18 @@ static int parse_value(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
  * Parse Modifier Use cases
  *
  *	# Each modifier is described in new section. N modifiers are allowed
- *	SectionModifier."Capture Voice".0 {
+ *	SectionModifier."Capture Voice" {
  *
  *		Comment "Record voice call"
+ *
  *		SupportedDevice [
- *			"x"		# all x device instances
- *			"y.0"		# device y instance 0 only
+ *			"x"
+ *			"y"
+ *		]
+ *
+ *		ConflictingDevice [
+ *			"x"
+ *			"y"
  *		]
  *
  *		EnableSequence [
@@ -418,6 +609,9 @@ static int parse_value(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
  *		}
  *
  *	 }
+ *
+ * SupportedDevice and ConflictingDevice cannot be specified together.
+ * Both are optional.
  */
 static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
 		snd_config_t *cfg,
@@ -426,14 +620,21 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
 {
 	struct use_case_verb *verb = data1;
 	struct use_case_modifier *modifier;
-	char *name = data2;
-	const char *id;
+	const char *name;
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
 	int err;
 
-	if (!parse_is_name_safe(name))
-		return -EINVAL;
+	if (data2) {
+		name = data2;
+		if (!parse_is_name_safe(name))
+			return -EINVAL;
+	}
+	else {
+		if (parse_get_safe_id(cfg, &name) < 0)
+			return -EINVAL;
+	}
+
 	/* allocate modifier */
 	modifier = calloc(1, sizeof(*modifier));
 	if (modifier == NULL)
@@ -441,18 +642,10 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
 	INIT_LIST_HEAD(&modifier->enable_list);
 	INIT_LIST_HEAD(&modifier->disable_list);
 	INIT_LIST_HEAD(&modifier->transition_list);
-	INIT_LIST_HEAD(&modifier->dev_list);
+	INIT_LIST_HEAD(&modifier->dev_list.list);
 	INIT_LIST_HEAD(&modifier->value_list);
 	list_add_tail(&modifier->list, &verb->modifier_list);
-	err = parse_get_safe_id(cfg, &id);
-	if (err < 0)
-		return err;
-	modifier->name = malloc(strlen(name) + strlen(id) + 2);
-	if (modifier->name == NULL)
-		return -ENOMEM;
-	strcpy(modifier->name, name);
-	strcat(modifier->name, ".");
-	strcat(modifier->name, id);
+	modifier->name = strdup(name);
 
 	snd_config_for_each(i, next, cfg) {
 		const char *id;
@@ -470,9 +663,20 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
 		}
 
 		if (strcmp(id, "SupportedDevice") == 0) {
-			err = parse_supported_device(uc_mgr, &modifier->dev_list, n);
+			err = parse_device_list(uc_mgr, &modifier->dev_list,
+						DEVLIST_SUPPORTED, n);
 			if (err < 0) {
 				uc_error("error: failed to parse supported"
+					" device list");
+				return err;
+			}
+		}
+
+		if (strcmp(id, "ConflictingDevice") == 0) {
+			err = parse_device_list(uc_mgr, &modifier->dev_list,
+						DEVLIST_CONFLICTING, n);
+			if (err < 0) {
+				uc_error("error: failed to parse conflicting"
 					" device list");
 				return err;
 			}
@@ -518,11 +722,6 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
 		}
 	}
 
-	if (list_empty(&modifier->dev_list)) {
-		uc_error("error: %s: modifier missing supported device sequence", modifier->name);
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
@@ -530,8 +729,18 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
  * Parse Device Use Cases
  *
  *# Each device is described in new section. N devices are allowed
- *SectionDevice."Headphones".0 {
+ *SectionDevice."Headphones" {
  *	Comment "Headphones connected to 3.5mm jack"
+ *
+ *	upportedDevice [
+ *		"x"
+ *		"y"
+ *	]
+ *
+ *	ConflictingDevice [
+ *		"x"
+ *		"y"
+ *	]
  *
  *	EnableSequence [
  *		....
@@ -551,37 +760,38 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
  *	}
  * }
  */
-static int parse_device_index(snd_use_case_mgr_t *uc_mgr,
-			      snd_config_t *cfg,
-			      void *data1,
-			      void *data2)
+static int parse_device(snd_use_case_mgr_t *uc_mgr,
+			snd_config_t *cfg,
+			void *data1,
+			void *data2)
 {
 	struct use_case_verb *verb = data1;
-	char *name = data2;
+	const char *name;
 	struct use_case_device *device;
-	const char *id;
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
 	int err;
-	
-	if (!parse_is_name_safe(name))
-		return -EINVAL;
+
+	if (data2) {
+		name = data2;
+		if (!parse_is_name_safe(name))
+			return -EINVAL;
+	}
+	else {
+		if (parse_get_safe_id(cfg, &name) < 0)
+			return -EINVAL;
+	}
+
 	device = calloc(1, sizeof(*device));
 	if (device == NULL)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&device->enable_list);
 	INIT_LIST_HEAD(&device->disable_list);
 	INIT_LIST_HEAD(&device->transition_list);
+	INIT_LIST_HEAD(&device->dev_list.list);
 	INIT_LIST_HEAD(&device->value_list);
 	list_add_tail(&device->list, &verb->device_list);
-	if (parse_get_safe_id(cfg, &id) < 0)
-		return -EINVAL;
-	device->name = malloc(strlen(name) + strlen(id) + 2);
-	if (device->name == NULL)
-		return -ENOMEM;
-	strcpy(device->name, name);
-	strcat(device->name, ".");
-	strcat(device->name, id);
+	device->name = strdup(name);
 
 	snd_config_for_each(i, next, cfg) {
 		const char *id;
@@ -596,6 +806,26 @@ static int parse_device_index(snd_use_case_mgr_t *uc_mgr,
 				return err;
 			}
 			continue;
+		}
+
+		if (strcmp(id, "SupportedDevice") == 0) {
+			err = parse_device_list(uc_mgr, &device->dev_list,
+						DEVLIST_SUPPORTED, n);
+			if (err < 0) {
+				uc_error("error: failed to parse supported"
+					" device list");
+				return err;
+			}
+		}
+
+		if (strcmp(id, "ConflictingDevice") == 0) {
+			err = parse_device_list(uc_mgr, &device->dev_list,
+						DEVLIST_CONFLICTING, n);
+			if (err < 0) {
+				uc_error("error: failed to parse conflicting"
+					" device list");
+				return err;
+			}
 		}
 
 		if (strcmp(id, "EnableSequence") == 0) {
@@ -643,19 +873,58 @@ static int parse_device_index(snd_use_case_mgr_t *uc_mgr,
 	return 0;
 }
 
-static int parse_device_name(snd_use_case_mgr_t *uc_mgr,
-			     snd_config_t *cfg,
-			     void *data1,
-			     void *data2 ATTRIBUTE_UNUSED)
+static int parse_compound_check_legacy(snd_use_case_mgr_t *uc_mgr,
+	  snd_config_t *cfg,
+	  int (*fcn)(snd_use_case_mgr_t *, snd_config_t *, void *, void *),
+	  void *data1)
 {
-	const char *id;
+	const char *id, *idchild;
+	int child_ctr = 0, legacy_format = 1;
+	snd_config_iterator_t i, next;
+	snd_config_t *child;
 	int err;
 
 	err = snd_config_get_id(cfg, &id);
 	if (err < 0)
 		return err;
-	return parse_compound(uc_mgr, cfg, parse_device_index,
-			      data1, (void *)id);
+
+	snd_config_for_each(i, next, cfg) {
+		child_ctr++;
+		if (child_ctr > 1) {
+			break;
+		}
+
+		child = snd_config_iterator_entry(i);
+
+		if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
+			legacy_format = 0;
+			break;
+		}
+
+		if (snd_config_get_id(child, &idchild) < 0)
+			return -EINVAL;
+
+		if (strcmp(idchild, "0")) {
+			legacy_format = 0;
+			break;
+		}
+	}
+	if (child_ctr != 1) {
+		legacy_format = 0;
+	}
+
+	if (legacy_format)
+		return parse_compound(uc_mgr, cfg, fcn, data1, (void *)id);
+	else
+		return fcn(uc_mgr, cfg, data1, NULL);
+}
+
+static int parse_device_name(snd_use_case_mgr_t *uc_mgr,
+			     snd_config_t *cfg,
+			     void *data1,
+			     void *data2 ATTRIBUTE_UNUSED)
+{
+	return parse_compound_check_legacy(uc_mgr, cfg, parse_device, data1);
 }
 
 static int parse_modifier_name(snd_use_case_mgr_t *uc_mgr,
@@ -663,14 +932,7 @@ static int parse_modifier_name(snd_use_case_mgr_t *uc_mgr,
 			     void *data1,
 			     void *data2 ATTRIBUTE_UNUSED)
 {
-	const char *id;
-	int err;
-
-	err = snd_config_get_id(cfg, &id);
-	if (err < 0)
-		return err;
-	return parse_compound(uc_mgr, cfg, parse_modifier,
-			      data1, (void *)id);
+	return parse_compound_check_legacy(uc_mgr, cfg, parse_modifier, data1);
 }
 
 /*
@@ -799,6 +1061,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	INIT_LIST_HEAD(&verb->disable_list);
 	INIT_LIST_HEAD(&verb->transition_list);
 	INIT_LIST_HEAD(&verb->device_list);
+	INIT_LIST_HEAD(&verb->cmpt_device_list);
 	INIT_LIST_HEAD(&verb->modifier_list);
 	INIT_LIST_HEAD(&verb->value_list);
 	list_add_tail(&verb->list, &uc_mgr->verb_list);
@@ -1120,7 +1383,28 @@ static int filename_filter(const struct dirent *dirent)
 	return 0;
 }
 
-/* scan all cards and comments */
+/* whether input dir is a predefined component directory */
+static int is_component_directory(const char *dir)
+{
+	int i = 0;
+
+	while (component_dir[i]) {
+		if (!strncmp(dir, component_dir[i], PATH_MAX))
+			return 1;
+		i++;
+	};
+
+	return 0;
+}
+
+/* scan all cards and comments
+ *
+ * Cards are defined by machines. Each card/machine installs its UCM
+ * configuration files in a subdirectory with the same name as the sound
+ * card under /usr/share/alsa/ucm. This function will scan all the card
+ * directories and skip the component directories defined in the array
+ * component_dir.
+ */
 int uc_mgr_scan_master_configs(const char **_list[])
 {
 	char filename[MAX_FILE], dfl[MAX_FILE];
@@ -1135,7 +1419,12 @@ int uc_mgr_scan_master_configs(const char **_list[])
 		"%s", env ? env : ALSA_USE_CASE_DIR);
 	filename[MAX_FILE-1] = '\0';
 
-	err = scandir(filename, &namelist, filename_filter, versionsort);
+#if defined(_GNU_SOURCE) && !defined(__NetBSD__) && !defined(__FreeBSD__) && !defined(__sun)
+#define SORTFUNC	versionsort
+#else
+#define SORTFUNC	alphasort
+#endif
+	err = scandir(filename, &namelist, filename_filter, SORTFUNC);
 	if (err < 0) {
 		err = -errno;
 		uc_error("error: could not scan directory %s: %s",
@@ -1165,6 +1454,11 @@ int uc_mgr_scan_master_configs(const char **_list[])
 	}
 
 	for (i = 0; i < cnt; i++) {
+
+		/* Skip the directories for component devices */
+		if (is_component_directory(namelist[i]->d_name))
+			continue;
+
 		err = load_master_config(namelist[i]->d_name, &cfg);
 		if (err < 0)
 			goto __err;

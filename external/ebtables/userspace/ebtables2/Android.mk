@@ -60,7 +60,6 @@ extensions_src_files := \
         extensions/ebt_redirect.c \
         extensions/ebt_standard.c \
         extensions/ebt_stp.c \
-        extensions/ebt_ulog.c \
         extensions/ebt_vlan.c \
         extensions/ebtable_broute.c \
         extensions/ebtable_filter.c \
@@ -117,7 +116,6 @@ LOCAL_SHARED_LIBRARIES += \
         libebt_redirect \
         libebt_standard \
         libebt_stp \
-        libebt_ulog \
         libebt_vlan \
         libebtable_broute \
         libebtable_filter \

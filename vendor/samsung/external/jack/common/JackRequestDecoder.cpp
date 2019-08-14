@@ -248,23 +248,6 @@ int JackRequestDecoder::HandleRequest(detail::JackChannelTransactionInterface* s
             CheckRead(req, socket);
             res.fResult = fServer->SetFreewheel(req.fOnOff);
             CheckWrite("JackRequest::SetFreeWheel", socket);
-#ifdef __ANDROID__
-/* for supporting qualcomm platform */
-#ifdef WORKAROUND_QC_JACK_ALSA			
-            if(req.fOnOff == 0) {
-				// switch master for noise
-                usleep(500 * 1000);
-			    fServer->GetEngine()->ClientSwitchMaster(fServer->GetJackAudioDriver()->GetClientControl()->fRefNum, 0, 0);
-			    usleep(1000 * 1000);
-				fServer->GetEngine()->ClientSwitchMaster(fServer->GetJackAudioDriver()->GetClientControl()->fRefNum, 1, 0);
-				usleep(500 * 1000);
-                fServer->GetEngine()->PortConnect(0, "out:__system_playback_1", "system:playback_1");
-                fServer->GetEngine()->PortConnect(0, "out:__system_playback_2", "system:playback_2");
-                fServer->GetEngine()->PortConnect(0, "system:capture_1", "in:__system_capture_1");
-                fServer->GetEngine()->PortConnect(0, "system:capture_2", "in:__system_capture_2");
-            }
-#endif
-#endif
             break;
         }
 

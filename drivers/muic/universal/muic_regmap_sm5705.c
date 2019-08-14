@@ -45,6 +45,11 @@
 #include "muic-internal.h"
 #include "muic_i2c.h"
 #include "muic_regmap.h"
+#include "muic_vps.h"
+
+#if defined(CONFIG_MUIC_SUPPORT_CCIC)
+#include <linux/ccic/s2mm005.h>
+#endif
 
 #if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
 extern void muic_afc_delay_check_state(int state);
@@ -60,6 +65,10 @@ enum sm5705_muic_reg_init_value {
 	REG_TIMING1_VALUE	= (ADC_DETECT_TIME_200MS |
 				KEY_PRESS_TIME_100MS),
 	REG_AFC_HYSTERESIS_OPT	= (0x20),
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	/* set the register to attatch RID when VBUS exists. */
+	REG_RSVDID1_VALUE	= (0x80),
+#endif
 #if defined(CONFIG_MUIC_SUPPORT_CCIC)
 	REG_RSVDID2_VALUE	= (0x26),
 #else
@@ -110,6 +119,7 @@ enum sm5705_muic_reg {
 	REG_RESET	= 0x22,
 	REG_AFCCNTL2	= 0x32,
 	REG_AFC_DMCNTL	= 0x37,
+	REG_ADCERR	= 0x3b,
 	REG_END,
 };
 
@@ -117,6 +127,7 @@ enum sm5705_muic_reg {
 
 /* Field */
 enum sm5705_muic_reg_item {
+	DEVID_QC20     = REG_ITEM(REG_DEVID, _BIT3, _MASK1),
 	DEVID_VendorID = REG_ITEM(REG_DEVID, _BIT0, _MASK3),
 
 	CTRL_SW_OPEN	= REG_ITEM(REG_CTRL, _BIT4, _MASK1),
@@ -158,7 +169,8 @@ enum sm5705_muic_reg_item {
 	INT3_AFC_ACCEPTED_M     = REG_ITEM(REG_INTMASK3, _BIT1, _MASK1),
 	INT3_AFC_TA_ATTACHED_M  = REG_ITEM(REG_INTMASK3, _BIT0, _MASK1),
 
-	ADC_ADC_VALUE  =  REG_ITEM(REG_ADC, _BIT0, _MASK5),
+	ADC_ADC_VALUE		=  REG_ITEM(REG_ADC, _BIT0, _MASK5),
+	ADC_ADCERR_VALUE	=  REG_ITEM(REG_ADCERR, _BIT0, _MASK2),
 
 	DEVT1_USB_OTG         = REG_ITEM(REG_DEVT1, _BIT7, _MASK1),
 	DEVT1_DEDICATED_CHG   = REG_ITEM(REG_DEVT1, _BIT6, _MASK1),
@@ -182,6 +194,7 @@ enum sm5705_muic_reg_item {
 	DEVT3_LO_TA         = REG_ITEM(REG_DEVT3, _BIT5, _MASK1),
 	DEVT3_AV_CABLE_VBUS = REG_ITEM(REG_DEVT3, _BIT4, _MASK1),
 	DEVT3_DCD_OUT_SDP   = REG_ITEM(REG_DEVT3, _BIT2, _MASK1),
+	DEVT3_QC20_TA       = REG_ITEM(REG_DEVT3, _BIT1, _MASK1),
 	DEVT3_MHL           = REG_ITEM(REG_DEVT3, _BIT0, _MASK1),
 
 	TIMING1_KEY_PRESS_T = REG_ITEM(REG_TIMING1, _BIT4, _MASK4),
@@ -204,6 +217,8 @@ enum sm5705_muic_reg_item {
 	RSVDID2_CHGPUMP_nEN   = REG_ITEM(REG_RSVDID2, _BIT5, _MASK1),
 	CHGTYPE_CHG_TYPE      = REG_ITEM(REG_CHGTYPE, _BIT0, _MASK5),
 
+	AFCCNTL_ENQC20      = REG_ITEM(REG_AFCCNTL, _BIT6, _MASK1),
+	AFCCNTL_DISAFC      = REG_ITEM(REG_AFCCNTL, _BIT5, _MASK1),
 	AFCCNTL_VBUS_READ   = REG_ITEM(REG_AFCCNTL, _BIT3, _MASK1),
 	AFCCNTL_DM_RESET    = REG_ITEM(REG_AFCCNTL, _BIT2, _MASK1),
 	AFCCNTL_DP_RESET    = REG_ITEM(REG_AFCCNTL, _BIT1, _MASK1),
@@ -311,7 +326,11 @@ static regmap_t sm5705_muic_regmap_table[] = {
 	[REG_CarKit]	= {"CarKitStatus",	0x00, 0x00, INIT_NONE,},
 	[REG_MANSW1]	= {"ManualSW1",	0x00, 0x00, INIT_NONE,},
 	[REG_MANSW2]	= {"ManualSW2",	0x00, 0x00, INIT_NONE,},
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	[REG_RSVDID1]	= {"Reserved_ID1",	0xFF, 0x00, REG_RSVDID1_VALUE,},
+#else
 	[REG_RSVDID1]	= {"Reserved_ID1",	0xFF, 0x00, INIT_NONE,},
+#endif
 	[REG_RSVDID2]	= {"Reserved_ID2",	0x24, 0x00, REG_RSVDID2_VALUE,},
 	[REG_CHGTYPE]	= {"REG_CHG_TYPE",	0xFF, 0x00, INIT_NONE,},
 	/* 0x18 ~ 0x21: AFC */
@@ -347,6 +366,10 @@ static int sm5705_muic_ioctl(struct regmap_desc *pdesc,
 
 	case GET_ADC:
 		*arg3 = ADC_ADC_VALUE;
+		break;
+
+	case GET_ADCERR:
+		*arg3 = ADC_ADCERR_VALUE;
 		break;
 
 	case GET_SWITCHING_MODE:
@@ -395,51 +418,24 @@ static int sm5705_muic_ioctl(struct regmap_desc *pdesc,
 
 static int sm5705_run_chgdet(struct regmap_desc *pdesc, bool started)
 {
-	int attr, value, ret;
+	int attr = 0, ret = 0;
 
-	pr_info("%s: start. %s\n", __func__, started ? "enabled": "disabled");
+	if (started) {
+		attr = RSVDID2_BCD_RESCAN;
+		ret = regmap_write_value(pdesc, attr, 1);
+		if (ret < 0)
+			pr_err("%s BCD_RESCAN write fail.\n", __func__);
+		else
+			_REGMAP_TRACE(pdesc, 'w', ret, attr, 1);
 
-	attr = MANSW1_DM_CON_SW;
-	value = 0;
-	ret = regmap_write_value(pdesc, attr, value);
-	if (ret < 0)
-		pr_err("%s Reset reg write fail.\n", __func__);
-	else
-		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
+		msleep(1);
 
-	pr_info("%s: reset [DP]\n", __func__);
-	attr = MANSW1_DP_CON_SW;
-	value = 0;
-	ret = regmap_write_value(pdesc, attr, value);
-	if (ret < 0)
-		pr_err("%s Reset reg write fail.\n", __func__);
-	else
-		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
-
-	pr_info("%s: reset [MannualSW]\n", __func__);
-	attr = CTRL_ManualSW;
-	value = 0;
-	ret = regmap_write_value(pdesc, attr, value);
-	if (ret < 0)
-		pr_err("%s Reset reg write fail.\n", __func__);
-	else
-		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
-
-	pr_info("%s: reset [RESET]\n", __func__);
-	attr = RESET_RESET;
-	value = started ? 1 : 0;
-	ret = regmap_write_value_ex(pdesc, attr, value);
-	if (ret < 0)
-		pr_err("%s Reset reg write fail.\n", __func__);
-	else
-		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
-
-	pr_info("%s: init all register\n", __func__);
-	muic_reg_init(pdesc->muic);
-
-	pr_info("%s: enable INT\n", __func__);
-	set_int_mask(pdesc->muic, 0);
-
+		ret = regmap_write_value(pdesc, attr, 0);
+		if (ret < 0)
+			pr_err("%s BCD_RESCAN write fail.\n", __func__);
+		else
+			_REGMAP_TRACE(pdesc, 'w', ret, attr, 0);
+	}
 	return ret;
 }
 
@@ -487,11 +483,39 @@ static int sm5705_set_rustproof(struct regmap_desc *pdesc, int op)
 	return ret;
 }
 
+static int chgtype_sm_to_maxim(int chgtyp)
+{
+	int ret = 0;
+
+	switch (chgtyp) {
+	case 0x01: // DCP
+	case 0x10: // U200
+	case 0x11: // AFC
+	case 0x13: // QC2.0
+		ret = CHGTYP_DEDICATED_CHARGER;
+		break;
+	case 0x02: // CDP
+		ret = CHGTYP_CDP;
+		break;
+	case 0x04: // SDP
+		ret = CHGTYP_USB;
+		break;
+	case 0x08: // Time out SDP
+		ret = CHGTYPS_TIMEOUT_SDP;
+	default:
+		break;	
+	}
+
+	pr_info("%s: 0x%x -> 0x%x\n", __func__, chgtyp, ret);
+
+	return ret;
+}
+
 static int sm5705_get_vps_data(struct regmap_desc *pdesc, void *pbuf)
 {
 	muic_data_t *pmuic = pdesc->muic;
 	vps_data_t *pvps = (vps_data_t *)pbuf;
-	int attr;
+	int attr, chgtyp;
 
 	if (pdesc->trace)
 		pr_info("%s\n", __func__);
@@ -505,6 +529,13 @@ static int sm5705_get_vps_data(struct regmap_desc *pdesc, void *pbuf)
 
 	attr = ADC_ADC_VALUE;
 	*(u8 *)&pvps->s.adc = regmap_read_value(pdesc, attr);
+
+	attr = ADC_ADCERR_VALUE;
+	*(u8 *)&pvps->s.adcerr = regmap_read_value(pdesc, attr);
+
+	attr = CHGTYPE_CHG_TYPE;
+	chgtyp = regmap_read_value(pdesc, attr);
+	*(u8 *)&pvps->s.chgtyp = chgtype_sm_to_maxim(chgtyp);
 
 	return 0;
 }
@@ -618,21 +649,6 @@ static void sm5705_set_switching_mode(struct regmap_desc *pdesc, int mode)
 		pr_err("%s REG_CTRL write fail.\n", __func__);
 	else
 		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
-}
-
-static int sm5705_run_BCD_rescan(struct regmap_desc *pdesc, int value)
-{
-	int attr, ret;
-
-	attr = RSVDID2_BCD_RESCAN;
-
-	ret = regmap_write_value(pdesc, attr, value);
-	if (ret < 0)
-		pr_err("%s BCD_RESCAN write fail.\n", __func__);
-	else
-		_REGMAP_TRACE(pdesc, 'w', ret, attr, value);
-
-	return ret;
 }
 
 static int sm5705_get_vbus_value(struct regmap_desc *pdesc, int type)
@@ -861,8 +877,15 @@ static int sm5705_afc_ta_attach(struct regmap_desc *pdesc)
 		printk(KERN_ERR "%s: err read AFC_STATUS %d\n", __func__, value);
 	pr_info("%s:%s AFC_STATUS [0x%02x]\n",MUIC_DEV_NAME, __func__, value);
 
-	if (pmuic->is_flash_on) {
-		pr_info("%s:%s FLASH On, Skip AFC\n",MUIC_DEV_NAME, __func__);
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+	muic_afc_delay_check_state(0);
+#endif
+
+	if (pmuic->is_afc_5v) {
+		afc_retry_count = 0;
+		afc_vbus_retry_count = 0;
+
+		pr_info("%s:%s should be AFC 5V, Skip AFC\n",MUIC_DEV_NAME, __func__);
 		pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
 		muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
 		return 0;
@@ -871,10 +894,6 @@ static int sm5705_afc_ta_attach(struct regmap_desc *pdesc)
 	muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC);
 	cancel_delayed_work(&pmuic->afc_retry_work);
 	schedule_delayed_work(&pmuic->afc_retry_work, msecs_to_jiffies(5000)); // 5sec
-
-#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
-	muic_afc_delay_check_state(0);
-#endif
 
 	msleep(120); // 120ms delay
 
@@ -898,16 +917,22 @@ static int sm5705_afc_ta_accept(struct regmap_desc *pdesc)
 {
 	muic_data_t *pmuic = pdesc->muic;
 	struct i2c_client *i2c = pmuic->i2c;
-	int dev3;
+	int device_type3, chgtype;
 	int ret, value;
 
 	pr_info("%s:%s AFC_ACCEPTED \n",MUIC_DEV_NAME, __func__);
 
-	if (pmuic->is_flash_on) {
-		pr_info("%s:%s FLASH On, AFC_ACCEPTED DP_RESET\n",MUIC_DEV_NAME, __func__);
+	if (pmuic->is_afc_5v) {
+		pr_info("%s:%s should be AFC 5V, AFC_ACCEPTED DP_RESET\n",MUIC_DEV_NAME, __func__);
 		// ENAFC set '0'
 		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
 		msleep(50); // 50ms delay
+
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+		muic_afc_delay_check_state(0);
+#endif
+
+		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENQC20, 0);
 
 		// DP_RESET
 		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_DIS_AFC, 1);
@@ -926,13 +951,16 @@ static int sm5705_afc_ta_accept(struct regmap_desc *pdesc)
 		pr_info("%s:%s voltage is not 9V\n",MUIC_DEV_NAME, __func__);
 		value = 0x46;
 		ret = muic_i2c_write_byte(i2c, REG_AFCTXD, value);
+		if (ret < 0)
+			printk(KERN_ERR "[muic] %s: err write AFC_TXD(%d)\n", __func__, ret);
 		pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC;
 		muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC);
 	}
 
-	dev3 = muic_i2c_read_byte(i2c, REG_DEVT3);
-	pr_info("%s: dev3 [0x%02x]\n",MUIC_DEV_NAME, dev3);
-	if (dev3 & 0x80) {
+	device_type3 = muic_i2c_read_byte(i2c, REG_DEVT3);
+	chgtype = muic_i2c_read_byte(i2c, REG_CHGTYPE);
+	pr_info("%s:%s DEVICE_TYPE3 [0x%02x] CHGTYPE [0x%02x]\n",MUIC_DEV_NAME, __func__, device_type3, chgtype);
+	if (chgtype == CHGTYPS_AFC) {
 		// VBUS_READ
 		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 1);
 		pr_info("%s:%s VBUS READ start\n",MUIC_DEV_NAME, __func__);
@@ -955,6 +983,8 @@ static int sm5705_afc_vbus_update(struct regmap_desc *pdesc)
 	struct i2c_client *i2c = pmuic->i2c;
 	int value;
 	int vbus_status;
+	int qc20;
+	int device_type3, chgtype;
 
 	pr_info("%s:%s AFC_VBUS_UPDATE \n",MUIC_DEV_NAME, __func__);
 
@@ -973,16 +1003,23 @@ static int sm5705_afc_vbus_update(struct regmap_desc *pdesc)
 	pr_info("%s:%s AFC_VBUS_STATUS:0x%02x, AFC_TXD:0x%02x\n"
 			,MUIC_DEV_NAME, __func__,vbus_status, value);
 
-	if (pmuic->is_flash_on == -1) {
-		pr_info("%s:%s Ready FLASH On, Skip AFC\n",MUIC_DEV_NAME, __func__);
+	if (pmuic->is_afc_5v == -1) {
+		pr_info("%s:%s Skip AFC\n",MUIC_DEV_NAME, __func__);
 		return 0;
-	} else if (pmuic->is_flash_on) {
-		pr_info("%s:%s FLASH On, Skip AFC\n",MUIC_DEV_NAME, __func__);
+	} else if (pmuic->is_afc_5v) {
+		pr_info("%s:%s should be AFC 5V, Skip AFC\n",MUIC_DEV_NAME, __func__);
 
 		if ((vbus_status == 3) || (vbus_status == 4) || (vbus_status == 5)) {
 			// ENAFC set '0'
 			sm5705_set_afc_ctrl_reg(pdesc, AFCCNTL_ENAFC, 0);
 			msleep(50);
+
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+			muic_afc_delay_check_state(0);
+#endif
+
+			sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENQC20, 0);
+
 			// DP_RESET
 			sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_DIS_AFC, 1);
 			msleep(20);
@@ -994,34 +1031,105 @@ static int sm5705_afc_vbus_update(struct regmap_desc *pdesc)
 		return 0;
 	}
 
-	if ((vbus_status == value) || ((vbus_status+1) == value) 
-					|| ((vbus_status-1) == value)) { /* AFC DONE */
-		pmuic->is_afc_device = 1;
-		afc_vbus_retry_count = 0;
+	qc20 = muic_i2c_read_byte(i2c, REG_DEVID);
+	pr_info("%s:%s REG_DEVID [0x%02x]\n",MUIC_DEV_NAME, __func__, qc20);
 
-		// ENAFC set '0'
-		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
-		pr_info("%s:%s AFC done \n",MUIC_DEV_NAME, __func__);
+	if (qc20 & 0x08) { // QC20 support
+		device_type3 = muic_i2c_read_byte(i2c, REG_DEVT3);
+		chgtype = muic_i2c_read_byte(i2c, REG_CHGTYPE);
+		pr_info("%s:%s DEVICE_TYPE3 [0x%02x] CHGTYPE [0x%02x]\n",MUIC_DEV_NAME, __func__, device_type3, chgtype);
+		if (chgtype == CHGTYPS_QC20){ // QC20_TA    
+			if ( (vbus_status == 3) ||(vbus_status == 4) ||(vbus_status == 5) ) {
+				pmuic->is_afc_device = 1;
+				afc_vbus_retry_count = 0;
 
-		pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_9V_MUIC;
-		muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_9V_MUIC);
-	} else {
-		// VBUS_READ
-		if ( afc_vbus_retry_count < 5 ) {
-			sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 1);
-			sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 0);
-			pr_info("%s:%s VBUS READ retry = %d \n",MUIC_DEV_NAME, __func__,
-					afc_vbus_retry_count);
-			msleep(100);
-			afc_vbus_retry_count++;
-		} else {
+				pr_info("%s:%s AFC(QC20) done \n",MUIC_DEV_NAME, __func__);
+
+				pmuic->attached_dev = ATTACHED_DEV_QC_CHARGER_9V_MUIC;
+				muic_notifier_attach_attached_dev(ATTACHED_DEV_QC_CHARGER_9V_MUIC);
+
+			} else {
+				// VBUS_READ
+				if ( afc_vbus_retry_count < 5 ) {
+					sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 1);
+					sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 0);
+					pr_info("%s:%s VBUS READ retry = %d \n",MUIC_DEV_NAME, __func__,
+						afc_vbus_retry_count);
+					msleep(100);
+					afc_vbus_retry_count++;
+				} else {
+					pr_info("%s:%s AFC 5V \n",MUIC_DEV_NAME, __func__);
+
+					pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
+					muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
+					afc_vbus_retry_count = 0;
+				}
+			}
+		} else { 
+			if ((vbus_status == value) || ((vbus_status+1) == value) 
+						|| ((vbus_status-1) == value)) { /* AFC DONE */
+				pmuic->is_afc_device = 1;
+				afc_vbus_retry_count = 0;
+
+				// ENAFC set '0'
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
+				pr_info("%s:%s AFC done \n",MUIC_DEV_NAME, __func__);
+
+				pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_9V_MUIC;
+				muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_9V_MUIC);
+
+			} else {
+				// VBUS_READ
+				if ( afc_vbus_retry_count < 5 ) {
+					sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 1);
+					sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 0);
+					pr_info("%s:%s VBUS READ retry = %d \n",MUIC_DEV_NAME, __func__,
+						afc_vbus_retry_count);
+					msleep(100);
+					afc_vbus_retry_count++;
+				} else {
+					// ENAFC set '0'
+					sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
+					pr_info("%s:%s AFC 5V \n",MUIC_DEV_NAME, __func__);
+
+					pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
+					muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
+					afc_vbus_retry_count = 0;
+				}
+			}
+		}
+
+	} else { // AFC TA only
+		if ((vbus_status == value) || ((vbus_status+1) == value) 
+						|| ((vbus_status-1) == value)) { /* AFC DONE */
+			pmuic->is_afc_device = 1;
+			afc_vbus_retry_count = 0;
+
 			// ENAFC set '0'
 			sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
-			pr_info("%s:%s AFC 5V \n",MUIC_DEV_NAME, __func__);
+			pr_info("%s:%s AFC done \n",MUIC_DEV_NAME, __func__);
 
-			pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
-			muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
-			afc_vbus_retry_count = 0;
+			pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_9V_MUIC;
+			muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_9V_MUIC);
+
+		} else {
+			// VBUS_READ
+			if ( afc_vbus_retry_count < 5 ) {
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 1);
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 0);
+				pr_info("%s:%s VBUS READ retry = %d \n",MUIC_DEV_NAME, __func__,
+						afc_vbus_retry_count);
+				msleep(100);
+				afc_vbus_retry_count++;
+			} else {
+				// ENAFC set '0'
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
+				pr_info("%s:%s AFC 5V \n",MUIC_DEV_NAME, __func__);
+
+				pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
+				muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
+				afc_vbus_retry_count = 0;
+			}
 		}
 	}
 	return 0;
@@ -1033,7 +1141,7 @@ static int sm5705_afc_multi_byte(struct regmap_desc *pdesc)
 	struct i2c_client *i2c = pmuic->i2c;
 	int multi_byte[6] = {0,0,0,0,0,0};
 	int i;
-	int ret, value;
+	int ret, value = 0;
 
 	pr_info("%s:%s AFC_MULTI_BYTE \n",MUIC_DEV_NAME, __func__);
 
@@ -1074,6 +1182,7 @@ static int sm5705_afc_error(struct regmap_desc *pdesc)
 	muic_data_t *pmuic = pdesc->muic;
 	struct i2c_client *i2c = pmuic->i2c;
 	int value;
+	int device_type3, chgtype;
 
 	pr_info("%s:%s AFC_ERROR \n",MUIC_DEV_NAME, __func__);
 
@@ -1085,12 +1194,33 @@ static int sm5705_afc_error(struct regmap_desc *pdesc)
 
 	if (afc_retry_count < 5) {
 		pr_info("%s:%s  ENAFC retry = %d \n",MUIC_DEV_NAME, __func__, afc_retry_count);
-		// ENAFC set '0'
-		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
-		msleep(50); // 50ms delay
-		// ENAFC set '1'
-		sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 1);
-		afc_retry_count++;
+
+		value = muic_i2c_read_byte(i2c, REG_DEVID);
+		pr_info("%s:%s REG_DEVID [0x%02x]\n",MUIC_DEV_NAME, __func__, value);
+		if (value & 0x08){ // QC20 support
+			device_type3 = muic_i2c_read_byte(i2c, REG_DEVT3);
+			chgtype = muic_i2c_read_byte(i2c, REG_CHGTYPE);
+			pr_info("%s:%s DEVICE_TYPE3 [0x%02x] CHGTYPE [0x%02x]\n",MUIC_DEV_NAME, __func__, device_type3, chgtype);
+			if (chgtype == CHGTYPS_QC20){ // QC20_TA
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 0);
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENQC20, 1); // QC20 enable 9V
+
+				// VBUS_READ
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_VBUS_READ, 1);
+				pr_info("%s:%s VBUS READ start\n",MUIC_DEV_NAME, __func__); 			   
+
+			} else {
+				msleep(100); // 100ms delay
+				// ENAFC set '1'
+				sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 1);
+				afc_retry_count++;
+			}
+		} else {
+			msleep(100); // 100ms delay
+			// ENAFC set '1'
+			sm5705_set_afc_ctrl_reg(pdesc, AFCCTRL_ENAFC, 1);
+			afc_retry_count++;
+		}		 
 	} else {
 		pr_info("%s:%s  ENAFC end = %d \n",MUIC_DEV_NAME, __func__, afc_retry_count);
 		// ENAFC set '0'
@@ -1125,22 +1255,43 @@ static int sm5705_afc_init_check(struct regmap_desc *pdesc)
 		return 0;
 	}
 
-	if (pmuic->vps.s.val1 != 0x40){
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	if (pmuic->vps.s.val1 != 0x40 && pmuic->vps.s.chgtyp != CHGTYP_DEDICATED_CHARGER) {
+#else
+	if (pmuic->vps.s.val1 != 0x40) {
+#endif
 		pr_info("%s:%s pmuic->vps.s.val1 != 0x40  return \n",MUIC_DEV_NAME, __func__);
 		return 0;
 	}
 
 	pr_info("%s:%s pmuic->intr.intr3[0x%02x]\n",MUIC_DEV_NAME, __func__, pmuic->intr.intr3);
-	if (pmuic->intr.intr3 & 0x01){
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	if (pmuic->intr.intr3 & 0x01 || pmuic->vps.s.val1 == 0x40
+		 || pmuic->vps.s.chgtyp == CHGTYP_DEDICATED_CHARGER) {
+#else
+	if (pmuic->intr.intr3 & 0x01 || pmuic->vps.s.val1 == 0x40) {
+#endif
+#if !defined(CONFIG_SEC_FACTORY) && defined(CONFIG_MUIC_SUPPORT_CCIC)
+		/* To prevent damage by RP0 Cable, AFC should be progress after ccic_attach */
+		if (pmuic->is_ccic_attach)  { // AFC_TA_ATTACHED 
+			if (pmuic->ccic_rp == Rp_56K)
+				afcops->afc_ta_attach(pmuic->regmapdesc);
+			else {
+				pmuic->retry_afc = true;
+				pr_info("%s: Rp isn't 56K, but is (%d)K\n", __func__, pmuic->ccic_rp);
+				pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
+				muic_notifier_attach_attached_dev(pmuic->attached_dev);
+			}
+		} else {
+			pmuic->retry_afc = true;
+			pr_info("%s: Need to restart AFC for late ccic_attach\n", __func__);
+		}
+#else
 		afcops->afc_ta_attach(pmuic->regmapdesc);
+#endif
 		return 0;
 	}
 
-	pr_info("%s:%s pmuic->vps.s.val1 [0x%02x]\n",MUIC_DEV_NAME, __func__, pmuic->vps.s.val1 );
-	if (pmuic->vps.s.val1 == 0x40 ){
-		afcops->afc_ta_attach(pmuic->regmapdesc);
-		return 0;
-	}
 	return 0;
 }
 
@@ -1159,7 +1310,6 @@ static struct vendor_ops sm5705_muic_vendor_ops = {
 	.get_adc_scan_mode = sm5705_get_adc_scan_mode,
 	.set_rustproof = sm5705_set_rustproof,
 	.get_vps_data = sm5705_get_vps_data,
-	.rescan = sm5705_run_BCD_rescan,
 	.get_vbus_value = sm5705_get_vbus_value,
 	.run_chgdet = sm5705_run_chgdet,
 	.get_dcdtmr_irq = sm5705_get_dcdtmr_irq,

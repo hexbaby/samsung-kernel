@@ -127,7 +127,13 @@ int JackClientSocket::Connect(const char* dir, const char* name, int which) // A
 
 #ifdef __ANDROID__
     addr.sun_path[0] = '\0';  // to abstract address
+
+    if (strcmp(name, "apa_control") == 0) {
+        jack_info("JackClientSocket::Connect : set read time for apa_control");
+        SetReadTimeOut(SOCKET_READ_TIME_OUT);  // set read timeout 7 sec
+    }
 #endif
+
     if (connect(fSocket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         jack_error("Cannot connect to server socket err = %s", strerror(errno));
         close(fSocket);

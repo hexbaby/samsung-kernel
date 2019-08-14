@@ -898,6 +898,7 @@ static int qmi_encode_and_send_req(struct qmi_txn **ret_txn_handle,
 	struct qmi_txn *txn_handle;
 	int rc, encoded_req_len;
 	void *encoded_req;
+	int is_vmalloc = false;
 
 	if (!handle || !handle->dest_info ||
 	    !req_desc || !resp_desc || !resp)
@@ -913,8 +914,7 @@ static int qmi_encode_and_send_req(struct qmi_txn **ret_txn_handle,
 	}
 
 	/* Allocate Transaction Info */
-	pr_err("%s: called\n", __func__);
-	txn_handle = vzalloc(sizeof(struct qmi_txn));
+	txn_handle = kzalloc(sizeof(struct qmi_txn), GFP_KERNEL);
 	if (!txn_handle) {
 		pr_err("%s: Failed to allocate txn handle\n", __func__);
 		mutex_unlock(&handle->handle_lock);
@@ -937,7 +937,13 @@ static int qmi_encode_and_send_req(struct qmi_txn **ret_txn_handle,
 
 	/* Encode the request msg */
 	encoded_req_len = req_desc->max_msg_len + QMI_HEADER_SIZE;
-	encoded_req = kmalloc(encoded_req_len, GFP_KERNEL);
+	if (encoded_req_len >= SZ_16K) {
+		encoded_req = vmalloc(encoded_req_len);
+		is_vmalloc = true;
+	} else {
+		encoded_req = kmalloc(encoded_req_len, GFP_KERNEL);
+		is_vmalloc = false;
+	}
 	if (!encoded_req) {
 		pr_err("%s: Failed to allocate req_msg_buf\n", __func__);
 		rc = -ENOMEM;
@@ -997,7 +1003,10 @@ append_pend_txn:
 	}
 	mutex_unlock(&handle->handle_lock);
 
-	kfree(encoded_req);
+	if (is_vmalloc)
+		vfree(encoded_req);
+	else
+		kfree(encoded_req);
 	if (ret_txn_handle)
 		*ret_txn_handle = txn_handle;
 	return 0;
@@ -1005,9 +1014,12 @@ append_pend_txn:
 encode_and_send_req_err3:
 	list_del(&txn_handle->list);
 encode_and_send_req_err2:
-	kfree(encoded_req);
+	if (is_vmalloc)
+		vfree(encoded_req);
+	else
+		kfree(encoded_req);
 encode_and_send_req_err1:
-	vfree(txn_handle);
+	kfree(txn_handle);
 	mutex_unlock(&handle->handle_lock);
 	return rc;
 }
@@ -1063,7 +1075,7 @@ int qmi_send_req_wait(struct qmi_handle *handle,
 
 send_req_wait_err:
 	list_del(&txn_handle->list);
-	vfree(txn_handle);
+	kfree(txn_handle);
 	wake_up(&handle->reset_waitq);
 	mutex_unlock(&handle->handle_lock);
 	return rc;

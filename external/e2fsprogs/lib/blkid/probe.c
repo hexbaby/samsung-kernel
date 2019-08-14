@@ -13,6 +13,7 @@
  * %End-Header%
  */
 
+#include "config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -35,10 +36,6 @@
 #include "blkidP.h"
 #include "uuid/uuid.h"
 #include "probe.h"
-
-extern int probe_exfat(struct blkid_probe *probe,
-                      struct blkid_magic *id __BLKID_ATTR((unused)),
-                      unsigned char *buf);
 
 static int figure_label_len(const unsigned char *label, int len)
 {
@@ -89,11 +86,6 @@ static unsigned char *get_buffer(struct blkid_probe *pr,
 	}
 }
 
-unsigned char *blkid_probe_get_buffer(struct blkid_probe *pr,
-				      blkid_loff_t off, size_t len)
-{
-        return get_buffer(pr, off, len);
-}
 
 /*
  * This is a special case code to check for an MDRAID device.  We do
@@ -114,7 +106,6 @@ static int check_mdraid(int fd, unsigned char *ret_uuid)
 	if (blkid_llseek(fd, offset, 0) < 0 ||
 	    read(fd, buf, 4096) != 4096)
 		return -BLKID_ERR_IO;
-
 	/* Check for magic number */
 	if (memcmp("\251+N\374", buf, 4) && memcmp("\374N+\251", buf, 4))
 		return -BLKID_ERR_PARAM;
@@ -251,7 +242,7 @@ static int check_for_modules(const char *fs_name)
 	return (0);
 }
 
-static int linux_version_code()
+static int linux_version_code(void)
 {
 #ifdef __linux__
 	struct utsname	ut;
@@ -338,7 +329,7 @@ static int probe_ext4dev(struct blkid_probe *probe,
 	    EXT3_FEATURE_INCOMPAT_JOURNAL_DEV)
 		return -BLKID_ERR_PARAM;
 
-	/* 
+	/*
 	 * If the filesystem does not have a journal and ext2 and ext4
 	 * is not present, then force this to be detected as an
 	 * ext4dev filesystem.
@@ -382,7 +373,7 @@ static int probe_ext4(struct blkid_probe *probe, struct blkid_magic *id,
 	    EXT3_FEATURE_INCOMPAT_JOURNAL_DEV)
 		return -BLKID_ERR_PARAM;
 
-	/* 
+	/*
 	 * If the filesystem does not have a journal and ext2 is not
 	 * present, then force this to be detected as an ext2
 	 * filesystem.
@@ -460,7 +451,7 @@ static int probe_ext2(struct blkid_probe *probe, struct blkid_magic *id,
 	     EXT2_FEATURE_INCOMPAT_UNSUPPORTED))
 		return -BLKID_ERR_PARAM;
 
-	/* 
+	/*
 	 * If ext2 is not present, but ext4 or ext4dev are, then
 	 * disclaim we are ext2
 	 */
@@ -596,7 +587,7 @@ static int probe_fat(struct blkid_probe *probe,
 			int count;
 
 			next_sect_off = (next - 2) * vs->vs_cluster_size;
-			next_off = (start_data_sect + next_sect_off) *
+			next_off = (__u64) (start_data_sect + next_sect_off) *
 				sector_size;
 
 			dir = (struct vfat_dir_entry *)
@@ -611,7 +602,9 @@ static int probe_fat(struct blkid_probe *probe,
 				break;
 
 			/* get FAT entry */
-			fat_entry_off = (reserved * sector_size) +
+			fat_entry_off =
+				((unsigned int) reserved *
+				 (unsigned int) sector_size) +
 				(next * sizeof(__u32));
 			buf = get_buffer(probe, fat_entry_off, buf_size);
 			if (buf == NULL)
@@ -861,10 +854,10 @@ static int probe_jfs(struct blkid_probe *probe,
 
 	js = (struct jfs_super_block *)buf;
 
-	if (blkid_le32(js->js_bsize) != (1 << blkid_le16(js->js_l2bsize)))
+	if (blkid_le32(js->js_bsize) != (1U << blkid_le16(js->js_l2bsize)))
 		return 1;
 
-	if (blkid_le32(js->js_pbsize) != (1 << blkid_le16(js->js_l2pbsize)))
+	if (blkid_le32(js->js_pbsize) != (1U << blkid_le16(js->js_l2pbsize)))
 		return 1;
 
 	if ((blkid_le16(js->js_l2bsize) - blkid_le16(js->js_l2pbsize)) !=
@@ -878,8 +871,9 @@ static int probe_jfs(struct blkid_probe *probe,
 	return 0;
 }
 
-static int probe_zfs(struct blkid_probe *probe, struct blkid_magic *id,
-		     unsigned char *buf)
+static int probe_zfs(struct blkid_probe *probe __BLKID_ATTR((unused)),
+		     struct blkid_magic *id __BLKID_ATTR((unused)),
+		     unsigned char *buf __BLKID_ATTR((unused)))
 {
 #if 0
 	char *vdev_label;
@@ -1009,7 +1003,8 @@ static int probe_udf(struct blkid_probe *probe,
 	   (block sizes larger than 2K will be null padded) */
 	for (bs = 1; bs < 16; bs++) {
 		isosb = (struct iso_volume_descriptor *)
-			get_buffer(probe, bs*2048+32768, sizeof(isosb));
+			get_buffer(probe, (blkid_loff_t) bs*2048+32768,
+				   sizeof(*isosb));
 		if (!isosb)
 			return 1;
 		if (isosb->vd_id[0])
@@ -1021,7 +1016,7 @@ static int probe_udf(struct blkid_probe *probe,
 		if (j > 1) {
 			isosb = (struct iso_volume_descriptor *)
 				get_buffer(probe, j*bs*2048+32768,
-					   sizeof(isosb));
+					   sizeof(*isosb));
 			if (!isosb)
 				return 1;
 		}
@@ -1229,7 +1224,7 @@ static int probe_hfsplus(struct blkid_probe *probe,
 		off = (alloc_first_block * 512) +
 			(embed_first_block * alloc_block_size);
 		buf = get_buffer(probe, off + (id->bim_kboff * 1024),
-				 sizeof(sbd));
+				 sizeof(*sbd));
 		if (!buf)
 			return 1;
 
@@ -1253,7 +1248,7 @@ static int probe_hfsplus(struct blkid_probe *probe,
 	memcpy(extents, hfsplus->cat_file.extents, sizeof(extents));
 	cat_block = blkid_be32(extents[0].start_block);
 
-	buf = get_buffer(probe, off + (cat_block * blocksize), 0x2000);
+	buf = get_buffer(probe, off + ((__u64) cat_block * blocksize), 0x2000);
 	if (!buf)
 		return 0;
 
@@ -1284,7 +1279,7 @@ static int probe_hfsplus(struct blkid_probe *probe,
 	if (ext == HFSPLUS_EXTENT_COUNT)
 		return 0;
 
-	leaf_off = (ext_block_start + leaf_block) * blocksize;
+	leaf_off = (__u64) (ext_block_start + leaf_block) * blocksize;
 
 	buf = get_buffer(probe, off + leaf_off, leaf_node_size);
 	if (!buf)
@@ -1366,7 +1361,7 @@ static int probe_lvm2(struct blkid_probe *probe,
 		return 1;
 	}
 
-	for (i=0, b=1, p=uuid, q= (char *) label->pv_uuid; i <= 32;
+	for (i=0, b=1, p=uuid, q= (char *) label->pv_uuid; i < LVM2_ID_LEN;
 	     i++, b <<= 1) {
 		if (b & 0x4444440)
 			*p++ = '-';
@@ -1379,7 +1374,7 @@ static int probe_lvm2(struct blkid_probe *probe,
 }
 
 static int probe_btrfs(struct blkid_probe *probe,
-			struct blkid_magic *id,
+			struct blkid_magic *id __BLKID_ATTR((unused)),
 			unsigned char *buf)
 {
 	struct btrfs_super_block *bs;
@@ -1395,13 +1390,105 @@ static int probe_btrfs(struct blkid_probe *probe,
 }
 
 static int probe_f2fs(struct blkid_probe *probe,
-            struct blkid_magic *id,
+            struct blkid_magic *id __BLKID_ATTR((unused)),
             unsigned char *buf)
 {
     struct f2fs_super_block *bs;
 
     bs = (struct f2fs_super_block *)buf;
     set_uuid(probe->dev, bs->uuid, 0);
+    return 0;
+}
+
+static uint64_t exfat_block_to_offset(const struct exfat_super_block *sb,
+                                      uint64_t block)
+{
+    return block << sb->block_bits;
+}
+
+static uint64_t exfat_cluster_to_block(const struct exfat_super_block *sb,
+                                       uint32_t cluster)
+{
+    return sb->cluster_block_start +
+            ((uint64_t)(cluster - EXFAT_FIRST_DATA_CLUSTER) << sb->bpc_bits);
+}
+
+static uint64_t exfat_cluster_to_offset(const struct exfat_super_block *sb,
+                                        uint32_t cluster)
+{
+    return exfat_block_to_offset(sb, exfat_cluster_to_block(sb, cluster));
+}
+
+static uint32_t exfat_next_cluster(struct blkid_probe *probe,
+                                   const struct exfat_super_block *sb,
+                                   uint32_t cluster)
+{
+    uint32_t *next;
+    uint64_t offset;
+
+    offset = exfat_block_to_offset(sb, sb->fat_block_start)
+            + (uint64_t) cluster * sizeof (cluster);
+    next = (uint32_t *)get_buffer(probe, offset, sizeof (uint32_t));
+
+    return next ? *next : 0;
+}
+
+static struct exfat_entry_label *find_exfat_entry_label(
+    struct blkid_probe *probe, const struct exfat_super_block *sb)
+{
+    uint32_t cluster = sb->rootdir_cluster;
+    uint64_t offset = exfat_cluster_to_offset(sb, cluster);
+    uint8_t *entry;
+    const size_t max_iter = 10000;
+    size_t i = 0;
+
+    for (; i < max_iter; ++i) {
+        entry = (uint8_t *)get_buffer(probe, offset, EXFAT_ENTRY_SIZE);
+        if (!entry)
+            return NULL;
+        if (entry[0] == EXFAT_ENTRY_EOD)
+            return NULL;
+        if (entry[0] == EXFAT_ENTRY_LABEL)
+            return (struct exfat_entry_label*) entry;
+
+        offset += EXFAT_ENTRY_SIZE;
+        if (offset % CLUSTER_SIZE(sb) == 0) {
+            cluster = exfat_next_cluster(probe, sb, cluster);
+            if (cluster < EXFAT_FIRST_DATA_CLUSTER)
+                return NULL;
+            if (cluster > EXFAT_LAST_DATA_CLUSTER)
+                return NULL;
+            offset = exfat_cluster_to_offset(sb, cluster);
+        }
+    }
+
+    return NULL;
+}
+
+static int probe_exfat(struct blkid_probe *probe, struct blkid_magic *id,
+                       unsigned char *buf)
+{
+    struct exfat_super_block *sb;
+    struct exfat_entry_label *label;
+    uuid_t uuid;
+
+    sb = (struct exfat_super_block *)buf;
+    if (!sb || !CLUSTER_SIZE(sb)) {
+        DBG(DEBUG_PROBE, printf("bad exfat superblock.\n"));
+        return errno ? - errno : 1;
+    }
+
+    label = find_exfat_entry_label(probe, sb);
+    if (label) {
+        blkid_set_tag(probe->dev, "LABEL", label->name, label->length);
+    }
+
+    memset(uuid, 0, sizeof (uuid));
+    snprintf(uuid, sizeof (uuid), "%02hhX%02hhX-%02hhX%02hhX",
+             sb->volume_serial[3], sb->volume_serial[2],
+             sb->volume_serial[1], sb->volume_serial[0]);
+    blkid_set_tag(probe->dev, "UUID", uuid, strlen(uuid));
+
     return 0;
 }
 
@@ -1435,7 +1522,6 @@ static struct blkid_magic type_array[] = {
   { "vfat",      0,      0,  1, "\353",                 probe_fat_nomagic },
   { "vfat",      0,      0,  1, "\351",                 probe_fat_nomagic },
   { "vfat",      0,  0x1fe,  2, "\125\252",             probe_fat_nomagic },
-  { "exfat",     0,      3,  8, "EXFAT   ",		probe_exfat },
   { "minix",     1,   0x10,  2, "\177\023",             0 },
   { "minix",     1,   0x10,  2, "\217\023",             0 },
   { "minix",	 1,   0x10,  2, "\150\044",		0 },
@@ -1456,10 +1542,19 @@ static struct blkid_magic type_array[] = {
   { "iso9660",	32,	 1,  5, "CD001",		probe_iso9660 },
   { "iso9660",	32,	 9,  5, "CDROM",		probe_iso9660 },
   { "jfs",	32,	 0,  4, "JFS1",			probe_jfs },
-  { "zfs",       8,	 0,  8, "\0\0\x02\xf5\xb0\x07\xb1\x0c", probe_zfs },
-  { "zfs",       8,	 0,  8, "\x0c\xb1\x07\xb0\xf5\x02\0\0", probe_zfs },
-  { "zfs",     264,	 0,  8, "\0\0\x02\xf5\xb0\x07\xb1\x0c", probe_zfs },
-  { "zfs",     264,	 0,  8, "\x0c\xb1\x07\xb0\xf5\x02\0\0", probe_zfs },
+  /* ZFS has 128 root blocks (#4 is the first used), check only 6 of them */
+  { "zfs",     128,	 0,  8, "\0\0\0\0\0\xba\xb1\x0c", probe_zfs },
+  { "zfs",     128,	 0,  8, "\x0c\xb1\xba\0\0\0\0\0", probe_zfs },
+  { "zfs",     132,	 0,  8, "\0\0\0\0\0\xba\xb1\x0c", probe_zfs },
+  { "zfs",     132,	 0,  8, "\x0c\xb1\xba\0\0\0\0\0", probe_zfs },
+  { "zfs",     136,	 0,  8, "\0\0\0\0\0\xba\xb1\x0c", probe_zfs },
+  { "zfs",     136,	 0,  8, "\x0c\xb1\xba\0\0\0\0\0", probe_zfs },
+  { "zfs",     384,	 0,  8, "\0\0\0\0\0\xba\xb1\x0c", probe_zfs },
+  { "zfs",     384,	 0,  8, "\x0c\xb1\xba\0\0\0\0\0", probe_zfs },
+  { "zfs",     388,	 0,  8, "\0\0\0\0\0\xba\xb1\x0c", probe_zfs },
+  { "zfs",     388,	 0,  8, "\x0c\xb1\xba\0\0\0\0\0", probe_zfs },
+  { "zfs",     392,	 0,  8, "\0\0\0\0\0\xba\xb1\x0c", probe_zfs },
+  { "zfs",     392,	 0,  8, "\x0c\xb1\xba\0\0\0\0\0", probe_zfs },
   { "hfsplus",	 1,	 0,  2, "BD",			probe_hfsplus },
   { "hfsplus",	 1,	 0,  2, "H+",			probe_hfsplus },
   { "hfsplus",	 1,	 0,  2, "HX",			probe_hfsplus },
@@ -1506,6 +1601,7 @@ static struct blkid_magic type_array[] = {
   { "lvm2pv",	 1,  0x218,  8, "LVM2 001",		probe_lvm2 },
   { "btrfs",	 64,  0x40,  8, "_BHRfS_M",		probe_btrfs },
   { "f2fs",	 1,      0,  4, "\x10\x20\xf5\xf2",	probe_f2fs },
+  { "exfat",     0,      3,  8, "EXFAT   ",             probe_exfat },
   {   NULL,	 0,	 0,  0, NULL,			NULL }
 };
 
@@ -1601,7 +1697,7 @@ try_again:
 			continue;
 
 		idx = id->bim_kboff + (id->bim_sboff >> 10);
-		buf = get_buffer(&probe, idx << 10, 1024);
+		buf = get_buffer(&probe, (__u64) idx << 10, 1024);
 		if (!buf)
 			continue;
 

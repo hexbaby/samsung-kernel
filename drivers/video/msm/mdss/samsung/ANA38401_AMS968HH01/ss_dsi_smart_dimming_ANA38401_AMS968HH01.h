@@ -113,7 +113,7 @@ enum {
 #define VT_300CD_G_20 0x00
 #define VT_300CD_B_20 0x00
 
-#define HBM_INTERPOLATION_STEP 7
+#define HBM_INTERPOLATION_STEP 8
 
 enum {
 	V1_INDEX = 0,
@@ -209,7 +209,7 @@ struct SMART_DIM {
 	int hbm_brightness_level;
 } __packed;
 
-static int hbm_interpolation_candela_table[HBM_INTERPOLATION_STEP] = {430, 442, 454, 465, 477, 488, 500};
+static int hbm_interpolation_candela_table[HBM_INTERPOLATION_STEP] = {378, 395, 413, 430, 448, 465, 483, 500};
 
 #define CANDELA_MAX_TABLE 64
 #define RGB_COMPENSATION 24

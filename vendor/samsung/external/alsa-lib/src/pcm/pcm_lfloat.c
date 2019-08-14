@@ -26,7 +26,7 @@
  *
  */
   
-#include <byteswap.h>
+#include "bswap.h"
 #include "pcm_local.h"
 #include "pcm_plugin.h"
 
@@ -286,11 +286,11 @@ static int snd_pcm_lfloat_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
 		err = INTERNAL(snd_pcm_hw_params_get_format)(params, &dst_format);
 	}
 	if (snd_pcm_format_linear(src_format)) {
-		lfloat->int32_idx = snd_pcm_linear_get32_index(src_format, SND_PCM_FORMAT_S32);
+		lfloat->int32_idx = snd_pcm_linear_get_index(src_format, SND_PCM_FORMAT_S32);
 		lfloat->float32_idx = snd_pcm_lfloat_put_s32_index(dst_format);
 		lfloat->func = snd_pcm_lfloat_convert_integer_float;
 	} else {
-		lfloat->int32_idx = snd_pcm_linear_put32_index(SND_PCM_FORMAT_S32, dst_format);
+		lfloat->int32_idx = snd_pcm_linear_put_index(SND_PCM_FORMAT_S32, dst_format);
 		lfloat->float32_idx = snd_pcm_lfloat_get_s32_index(src_format);
 		lfloat->func = snd_pcm_lfloat_convert_float_integer;
 	}
@@ -363,6 +363,9 @@ static const snd_pcm_ops_t snd_pcm_lfloat_ops = {
 	.async = snd_pcm_generic_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_generic_query_chmaps,
+	.get_chmap = snd_pcm_generic_get_chmap,
+	.set_chmap = snd_pcm_generic_set_chmap,
 };
 
 /**
@@ -409,7 +412,7 @@ int snd_pcm_lfloat_open(snd_pcm_t **pcmp, const char *name, snd_pcm_format_t sfo
 	pcm->private_data = lfloat;
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;
-	pcm->monotonic = slave->monotonic;
+	pcm->tstamp_type = slave->tstamp_type;
 	snd_pcm_set_hw_ptr(pcm, &lfloat->plug.hw_ptr, -1, 0);
 	snd_pcm_set_appl_ptr(pcm, &lfloat->plug.appl_ptr, -1, 0);
 	*pcmp = pcm;

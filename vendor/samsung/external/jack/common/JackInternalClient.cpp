@@ -99,7 +99,7 @@ int JackInternalClient::Open(const char* server_name, const char* name, int uuid
     SetupDriverSync(false);
 
     JackGlobals::fClientTable[fClientControl.fRefNum] = this;
-    JackGlobals::fServerRunning = true;
+    JackGlobals::fServerRunning[fClientControl.fRefNum] = true;
     
     jack_log("JackInternalClient::Open name = %s refnum = %ld", name_res, fClientControl.fRefNum);
     return 0;

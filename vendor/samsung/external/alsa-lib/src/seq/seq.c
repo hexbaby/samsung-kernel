@@ -974,12 +974,16 @@ static int snd_seq_open_noupdate(snd_seq_t **seqp, snd_config_t *root,
 int snd_seq_open(snd_seq_t **seqp, const char *name, 
 		 int streams, int mode)
 {
+	snd_config_t *top;
 	int err;
+
 	assert(seqp && name);
-	err = snd_config_update();
+	err = snd_config_update_ref(&top);
 	if (err < 0)
 		return err;
-	return snd_seq_open_noupdate(seqp, snd_config, name, streams, mode, 0);
+	err = snd_seq_open_noupdate(seqp, top, name, streams, mode, 0);
+	snd_config_unref(top);
+	return err;
 }
 
 /**
@@ -1522,6 +1526,32 @@ int snd_seq_client_info_get_error_bounce(const snd_seq_client_info_t *info)
 }
 
 /**
+ * \brief Get the sound card number.
+ * \param info client_info container
+ * \return card number or -1 if value is not available.
+ *
+ * Only available for SND_SEQ_KERNEL_CLIENT clients.
+ */
+int snd_seq_client_info_get_card(const snd_seq_client_info_t *info)
+{
+	assert(info);
+	return info->card;
+}
+
+/**
+ * \brief Get the owning PID.
+ * \param info client_info container
+ * \return pid or -1 if value is not available.
+ *
+ * Only available for SND_SEQ_USER_CLIENT clients.
+ */
+int snd_seq_client_info_get_pid(const snd_seq_client_info_t *info)
+{
+	assert(info);
+	return info->pid;
+}
+
+/**
  * \brief (DEPRECATED) Get the event filter bitmap of a client_info container
  * \param info client_info container
  * \return NULL if no event filter, or pointer to event filter bitmap
@@ -1899,7 +1929,7 @@ int snd_seq_port_info_get_port(const snd_seq_port_info_t *info)
 const snd_seq_addr_t *snd_seq_port_info_get_addr(const snd_seq_port_info_t *info)
 {
 	assert(info);
-	return &info->addr;
+	return (const snd_seq_addr_t *) &info->addr;
 }
 
 /**
@@ -2094,7 +2124,7 @@ void snd_seq_port_info_set_port(snd_seq_port_info_t *info, int port)
 void snd_seq_port_info_set_addr(snd_seq_port_info_t *info, const snd_seq_addr_t *addr)
 {
 	assert(info);
-	info->addr = *addr;
+	info->addr = *(const struct sndrv_seq_addr *)addr;
 }
 
 /**
@@ -2444,7 +2474,7 @@ void snd_seq_port_subscribe_copy(snd_seq_port_subscribe_t *dst, const snd_seq_po
 const snd_seq_addr_t *snd_seq_port_subscribe_get_sender(const snd_seq_port_subscribe_t *info)
 {
 	assert(info);
-	return &info->sender;
+	return (const snd_seq_addr_t *)&info->sender;
 }
 
 /**
@@ -2456,7 +2486,7 @@ const snd_seq_addr_t *snd_seq_port_subscribe_get_sender(const snd_seq_port_subsc
 const snd_seq_addr_t *snd_seq_port_subscribe_get_dest(const snd_seq_port_subscribe_t *info)
 {
 	assert(info);
-	return &info->dest;
+	return (const snd_seq_addr_t *)&info->dest;
 }
 
 /**
@@ -2729,7 +2759,7 @@ int snd_seq_query_subscribe_get_port(const snd_seq_query_subscribe_t *info)
 const snd_seq_addr_t *snd_seq_query_subscribe_get_root(const snd_seq_query_subscribe_t *info)
 {
 	assert(info);
-	return &info->root;
+	return (const snd_seq_addr_t *)&info->root;
 }
 
 /**
@@ -2781,7 +2811,7 @@ int snd_seq_query_subscribe_get_num_subs(const snd_seq_query_subscribe_t *info)
 const snd_seq_addr_t *snd_seq_query_subscribe_get_addr(const snd_seq_query_subscribe_t *info)
 {
 	assert(info);
-	return &info->addr;
+	return (const snd_seq_addr_t *)&info->addr;
 }
 
 /**
@@ -2872,7 +2902,7 @@ void snd_seq_query_subscribe_set_port(snd_seq_query_subscribe_t *info, int port)
 void snd_seq_query_subscribe_set_root(snd_seq_query_subscribe_t *info, const snd_seq_addr_t *addr)
 {
 	assert(info);
-	info->root = *addr;
+	info->root = *(const struct snd_seq_addr *)addr;
 }
 
 /**
@@ -3227,7 +3257,7 @@ int snd_seq_query_named_queue(snd_seq_t *seq, const char *name)
  */
 int snd_seq_get_queue_usage(snd_seq_t *seq, int q)
 {
-	struct sndrv_seq_queue_client info;
+	struct snd_seq_queue_client info;
 	int err;
 	assert(seq);
 	memset(&info, 0, sizeof(info));
@@ -3249,7 +3279,7 @@ int snd_seq_get_queue_usage(snd_seq_t *seq, int q)
  */
 int snd_seq_set_queue_usage(snd_seq_t *seq, int q, int used)
 {
-	struct sndrv_seq_queue_client info;
+	struct snd_seq_queue_client info;
 	assert(seq);
 	memset(&info, 0, sizeof(info));
 	info.queue = q;
@@ -3351,7 +3381,7 @@ snd_seq_tick_time_t snd_seq_queue_status_get_tick_time(const snd_seq_queue_statu
 const snd_seq_real_time_t *snd_seq_queue_status_get_real_time(const snd_seq_queue_status_t *info)
 {
 	assert(info);
-	return &info->time;
+	return (const snd_seq_real_time_t *)&info->time;
 }
 
 /**
@@ -4289,7 +4319,7 @@ int snd_seq_remove_events_get_queue(const snd_seq_remove_events_t *info)
 const snd_seq_timestamp_t *snd_seq_remove_events_get_time(const snd_seq_remove_events_t *info)
 {
 	assert(info);
-	return &info->time;
+	return (const snd_seq_timestamp_t *)&info->time;
 }
 
 /**
@@ -4302,7 +4332,7 @@ const snd_seq_timestamp_t *snd_seq_remove_events_get_time(const snd_seq_remove_e
 const snd_seq_addr_t *snd_seq_remove_events_get_dest(const snd_seq_remove_events_t *info)
 {
 	assert(info);
-	return &info->dest;
+	return (const snd_seq_addr_t *)&info->dest;
 }
 
 /**
@@ -4380,7 +4410,7 @@ void snd_seq_remove_events_set_queue(snd_seq_remove_events_t *info, int queue)
 void snd_seq_remove_events_set_time(snd_seq_remove_events_t *info, const snd_seq_timestamp_t *time)
 {
 	assert(info);
-	info->time = *time;
+	info->time = *(const union sndrv_seq_timestamp *)time;
 }
 
 /**
@@ -4393,7 +4423,7 @@ void snd_seq_remove_events_set_time(snd_seq_remove_events_t *info, const snd_seq
 void snd_seq_remove_events_set_dest(snd_seq_remove_events_t *info, const snd_seq_addr_t *addr)
 {
 	assert(info);
-	info->dest = *addr;
+	info->dest = *(const struct sndrv_seq_addr *)addr;
 }
 
 /**
@@ -4475,7 +4505,7 @@ static int remove_match(snd_seq_remove_events_t *info, snd_seq_event_t *ev)
 		if (info->remove_mode & SNDRV_SEQ_REMOVE_TIME_TICK)
 			res = snd_seq_compare_tick_time(&ev->time.tick, &info->time.tick);
 		else
-			res = snd_seq_compare_real_time(&ev->time.time, &info->time.time);
+			res = snd_seq_compare_real_time(&ev->time.time, (snd_seq_real_time_t *)&info->time.time);
 		if (!res)
 			return 0;
 	}
@@ -4483,7 +4513,7 @@ static int remove_match(snd_seq_remove_events_t *info, snd_seq_event_t *ev)
 		if (info->remove_mode & SNDRV_SEQ_REMOVE_TIME_TICK)
 			res = snd_seq_compare_tick_time(&ev->time.tick, &info->time.tick);
 		else
-			res = snd_seq_compare_real_time(&ev->time.time, &info->time.time);
+			res = snd_seq_compare_real_time(&ev->time.time, (snd_seq_real_time_t *)&info->time.time);
 		if (res)
 			return 0;
 	}

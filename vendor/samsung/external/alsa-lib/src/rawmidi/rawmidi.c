@@ -63,7 +63,7 @@ contents of written buffer - passed by snd_rawmidi_write() - atomically
 to output ring buffer in the kernel space. This flag also means that device
 is not opened exclusively, so more applications can share given rawmidi device.
 Note that applications must send the whole MIDI message including the running status,
-because another writting application might break the MIDI message in the output
+because another writing application might break the MIDI message in the output
 buffer.
 
 \subsection rawmidi_open_sync Sync open (flag)
@@ -201,6 +201,7 @@ static int snd_rawmidi_open_conf(snd_rawmidi_t **inputp, snd_rawmidi_t **outputp
 	if (err >= 0) {
 		if (snd_config_get_type(type_conf) != SND_CONFIG_TYPE_COMPOUND) {
 			SNDERR("Invalid type for RAWMIDI type %s definition", str);
+			err = -EINVAL;
 			goto _err;
 		}
 		snd_config_for_each(i, next, type_conf) {
@@ -255,8 +256,11 @@ static int snd_rawmidi_open_conf(snd_rawmidi_t **inputp, snd_rawmidi_t **outputp
 		snd_config_delete(type_conf);
 	if (err >= 0)
 		err = open_func(inputp, outputp, name, rawmidi_root, rawmidi_conf, mode);
-	if (err < 0)
+	if (err < 0) {
+		if (h)
+			snd_dlclose(h);
 		return err;
+	}
 	if (inputp) {
 		(*inputp)->dl_handle = h; h = NULL;
 		snd_rawmidi_params_default(*inputp, &params);
@@ -301,12 +305,16 @@ static int snd_rawmidi_open_noupdate(snd_rawmidi_t **inputp, snd_rawmidi_t **out
 int snd_rawmidi_open(snd_rawmidi_t **inputp, snd_rawmidi_t **outputp,
 		     const char *name, int mode)
 {
+	snd_config_t *top;
 	int err;
+
 	assert((inputp || outputp) && name);
-	err = snd_config_update();
+	err = snd_config_update_ref(&top);
 	if (err < 0)
 		return err;
-	return snd_rawmidi_open_noupdate(inputp, outputp, snd_config, name, mode);
+	err = snd_rawmidi_open_noupdate(inputp, outputp, top, name, mode);
+	snd_config_unref(top);
+	return err;
 }
 
 /**
@@ -986,21 +994,3 @@ ssize_t snd_rawmidi_read(snd_rawmidi_t *rawmidi, void *buffer, size_t size)
 	assert(buffer || size == 0);
 	return (rawmidi->ops->read)(rawmidi, buffer, size);
 }
-
-#ifndef DOC_HIDDEN
-int snd_rawmidi_conf_generic_id(const char *id)
-{
-	static const char ids[][8] = {
-		"comment",
-		"type",
-		"hint",
-	};
-	unsigned int k;
-
-	for (k = 0; k < sizeof ids / sizeof *ids; ++k) {
-		if (strcmp(id, ids[k]) == 0)
-			return 1;
-	}
-	return 0;
-}
-#endif

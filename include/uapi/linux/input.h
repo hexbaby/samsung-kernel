@@ -275,6 +275,8 @@ struct input_keymap_entry {
 #define SYN_CONFIG		1
 #define SYN_MT_REPORT		2
 #define SYN_DROPPED		3
+#define SYN_TIME_SEC		4
+#define SYN_TIME_NSEC		5
 #define SYN_MAX			0xf
 #define SYN_CNT			(SYN_MAX+1)
 
@@ -964,6 +966,7 @@ struct input_keymap_entry {
 #define ABS_MT_TOOL_X		0x3c	/* Center X tool position */
 #define ABS_MT_TOOL_Y		0x3d	/* Center Y tool position */
 #define ABS_MT_PALM		0x3e	/* palm touch */
+#define ABS_MT_CUSTOM		0x3e	/* custom event */
 #define ABS_MT_GRIP		0x3f	/* edge grip */
 
 #define ABS_MAX			0x3f

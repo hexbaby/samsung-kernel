@@ -435,7 +435,7 @@ static int eeprom_config_write_data(struct msm_eeprom_ctrl_t *e_ctrl,
 					compressed_buf[i], MSM_CAMERA_I2C_BYTE_DATA);
 			if (rc < 0) {
 				pr_err("%s:(%d) write failed\n", __func__, __LINE__);
-				return rc;
+				goto POWER_DOWN;
 			}
 		}
 
@@ -453,7 +453,7 @@ static int eeprom_config_write_data(struct msm_eeprom_ctrl_t *e_ctrl,
 					buf[i], MSM_CAMERA_I2C_BYTE_DATA);//(uint8_t *)crc)[i], MSM_CAMERA_I2C_BYTE_DATA); check
 			if (rc < 0) {
 				pr_err("%s:(%d) write failed\n", __func__, __LINE__);
-				return rc;
+				goto POWER_DOWN;
 			}
 		}
 
@@ -477,7 +477,7 @@ static int eeprom_config_write_data(struct msm_eeprom_ctrl_t *e_ctrl,
 					buf[i], MSM_CAMERA_I2C_BYTE_DATA);
 			if (rc < 0) {
 				pr_err("%s:(%d) write failed\n", __func__, __LINE__);
-				return rc;
+				goto POWER_DOWN;
 			}
 		}
 		rc = e_ctrl->i2c_client.i2c_func_tbl->i2c_write_table(
@@ -1058,7 +1058,7 @@ static int msm_eeprom_i2c_probe(struct i2c_client *client,
 	pr_info("cell-index/subdev_id %d, rc %d\n", e_ctrl->subdev_id, rc);
 	if (rc < 0) {
 		pr_err("failed read, rc %d\n", rc);
-		return rc;
+		goto board_free;
 	}
 
 	power_info = &e_ctrl->eboard_info->power_info;

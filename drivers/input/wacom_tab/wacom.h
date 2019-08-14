@@ -1,20 +1,7 @@
-#ifndef _LINUX_WACOM_H
-#define _LINUX_WACOM_H
+#ifndef _LINUX_WACOM_H_
+#define _LINUX_WACOM_H_
 
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/kernel.h>
-#include <linux/input.h>
-#include <linux/i2c.h>
-#include <linux/interrupt.h>
-#include <linux/slab.h>
-#include <linux/hrtimer.h>
-#include <linux/gpio.h>
-#include <linux/irq.h>
-#include <linux/delay.h>
 #include <linux/wakelock.h>
-#include <linux/firmware.h>
-#include <linux/pm_qos.h>
 
 #include "wacom_i2c.h"
 
@@ -33,13 +20,7 @@
 #define WACOM_FW_SIZE 32768
 #endif
 
-/* SURVEY MODE is LPM mode */
-#define WACOM_USE_SURVEY_MODE
-
-#define WACOM_NORMAL_MODE	false
-#define WACOM_BOOT_MODE		true
-
-/*Wacom Command*/
+/* Wacom Command */
 #define COM_COORD_NUM		14
 #define COM_RESERVED_NUM	1
 #define COM_QUERY_NUM		15
@@ -48,18 +29,20 @@
 #define COM_QUERY		0x2A
 #define COM_SURVEYSCAN		0x2B
 #define COM_SURVEYEXIT		0x2D
+
 #define COM_SAMPLERATE_STOP	0x30
 #define COM_SAMPLERATE_40	0x33
 #define COM_SAMPLERATE_80	0x32
 #define COM_SAMPLERATE_133	0x31
 #define COM_SAMPLERATE_START	COM_SAMPLERATE_133
-#define COM_FLASH		0xff
+
 #define COM_CHECKSUM		0x63
 
 #define COM_NORMAL_SENSE_MODE	0xDB
 #define COM_LOW_SENSE_MODE	0xDC
-
 #define COM_REQUEST_SENSE_MODE	0xDD
+
+#define COM_FLASH		0xFF
 
 /* query data format */
 #define EPEN_REG_HEADER		0x00
@@ -78,51 +61,26 @@
 #define EPEN_REG_HEIGHT		0X0D
 #define EPEN_REG_FORMATVER	0X0E
 
-/*Information for input_dev*/
-#define EMR 0
-#define WACOM_PKGLEN_I2C_EMR 0
-
-/*Special keys*/
-#define EPEN_TOOL_PEN		0x220
-#define EPEN_TOOL_RUBBER	0x221
-#define EPEN_STYLUS			0x22b
-#define EPEN_STYLUS2		0x22c
-
-#define WACOM_DELAY_FOR_RST_RISING 200
-/* #define INIT_FIRMWARE_FLASH */
+/* SURVEY MODE is LPM mode */
+#define WACOM_USE_SURVEY_MODE
 
 #define WACOM_PDCT_WORK_AROUND
-#define WACOM_USE_QUERY_DATA
 
-/*PDCT Signal*/
-#define PDCT_NOSIGNAL 1
-#define PDCT_DETECT_PEN 0
+/* PDCT Signal */
+#define PDCT_NOSIGNAL	1
+#define PDCT_DETECT_PEN	0
 
-#define WACOM_PRESSURE_MAX 1023
+#define WACOM_I2C_MODE_BOOT	true
+#define WACOM_I2C_MODE_NORMAL	false
 
-/*Digitizer Type*/
-#define EPEN_DTYPE_B660	1
-#define EPEN_DTYPE_B713 2
-#define EPEN_DTYPE_B746 3
-#define EPEN_DTYPE_B804 4
-#define EPEN_DTYPE_B878 5
+#define EPEN_RESUME_DELAY	180
+#define EPEN_OFF_TIME_LIMIT	10000 // usec
 
-#define EPEN_DTYPE_B887 6
-#define EPEN_DTYPE_B911 7
-#define EPEN_DTYPE_B934 8
-#define EPEN_DTYPE_B968 9
-
-#define WACOM_I2C_MODE_BOOT 1
-#define WACOM_I2C_MODE_NORMAL 0
-
-#define EPEN_RESUME_DELAY 180
-#define EPEN_OFF_TIME_LIMIT 10000	// usec
-
-
-#if 1//defined(CONFIG_HA)
 /* softkey block workaround */
-#define WACOM_USE_SOFTKEY_BLOCK
+//#define WACOM_USE_SOFTKEY_BLOCK
+#ifdef WACOM_USE_SOFTKEY_BLOCK
 #define SOFTKEY_BLOCK_DURATION (HZ / 10)
+#endif
 
 /* LCD freq sync */
 #ifdef CONFIG_WACOM_LCD_FREQ_COMPENSATE
@@ -137,44 +95,11 @@
 
 #define LCD_FREQ_SUPPORT_HWID 8
 
-/*IRQ TRIGGER TYPE*/
-/*#define EPEN_IRQF_TRIGGER_TYPE IRQF_TRIGGER_FALLING*/
+#define FW_UPDATE_RUNNING	1
+#define FW_UPDATE_PASS		2
+#define FW_UPDATE_FAIL		-1
 
-#define WACOM_USE_PDATA
-
-#define WACOM_USE_SOFTKEY
-
-/* For Android origin */
-#define WACOM_POSX_MAX WACOM_MAX_COORD_Y
-#define WACOM_POSY_MAX WACOM_MAX_COORD_X
-
-#define COOR_WORK_AROUND
-
-/*Box Filter Parameters*/
-//#define  X_INC_S1  1500
-//#define  X_INC_E1  (WACOM_MAX_COORD_X - 1500)
-//#define  Y_INC_S1  1500
-//#define  Y_INC_E1  (WACOM_MAX_COORD_Y - 1500)
-//
-//#define  Y_INC_S2  500
-//#define  Y_INC_E2  (WACOM_MAX_COORD_Y - 500)
-//#define  Y_INC_S3  1100
-//#define  Y_INC_E3  (WACOM_MAX_COORD_Y - 1100)
-
-
-/*HWID to distinguish Digitizer*/
-//#define WACOM_DTYPE_B934_HWID 4
-//#define WACOM_DTYPE_B968_HWID 6
-
-#endif /*End of Model config*/
-
-#ifdef WACOM_USE_PDATA
-#undef WACOM_USE_QUERY_DATA
-#endif
-
-#define FW_UPDATE_RUNNING 1
-#define FW_UPDATE_PASS 2
-#define FW_UPDATE_FAIL -1
+struct wacom_i2c;
 
 /*Parameters for wacom own features*/
 struct wacom_features {
@@ -213,16 +138,32 @@ struct fw_image {
 	u8 data[0];
 } __attribute__ ((packed));
 
+#ifdef WACOM_USE_SURVEY_MODE
+/*
+ * struct epen_pos - for using to send coordinate in survey mode
+ * @id: for extension of function
+ *      0 -> not use
+ *      1 -> for Screen off Memo
+ *      2 -> for oter app or function
+ * @x: x coordinate
+ * @y: y coordinate
+ */
+struct epen_pos {
+	u8 id;
+	int x;
+	int y;
+};
+#endif
+
 struct wacom_i2c {
 	struct i2c_client *client;
 	struct i2c_client *client_boot;
-	struct completion init_done;
 	struct input_dev *input_dev;
 	struct mutex lock;
 	struct mutex irq_lock;
 	struct wake_lock fw_wakelock;
 	struct wake_lock det_wakelock;
-	struct device	*dev;
+	struct device *dev;
 	int irq;
 	int irq_pdct;
 	int pen_pdct;
@@ -235,8 +176,9 @@ struct wacom_i2c {
 	bool checksum_result;
 	struct wacom_features *wac_feature;
 	struct wacom_g5_platform_data *pdata;
-	struct wacom_g5_callbacks callbacks;
 	struct delayed_work resume_work;
+	struct work_struct reset_work;
+	bool reset_on_going;
 	bool connection_check;
 	int  fail_channel;
 	int  min_adc_val;
@@ -244,13 +186,18 @@ struct wacom_i2c {
 	volatile int power_state;
 	bool boot_mode;
 	bool query_status;
+	int wcharging_mode;
 #ifdef WACOM_USE_SURVEY_MODE
+	bool send_done;
 	bool survey_state;
 	bool aop_mode;
+	bool garbage_irq;
+	bool timeout;
 	struct wake_lock wakelock;
 	struct completion resume_done;
+	struct delayed_work irq_ignore_work;
+	struct epen_pos survey_pos;
 #endif
-	int wcharging_mode;
 #ifdef LCD_FREQ_SYNC
 	int lcd_freq;
 	bool lcd_freq_wait;
@@ -264,13 +211,17 @@ struct wacom_i2c {
 	struct delayed_work softkey_block_work;
 #endif
 	struct work_struct update_work;
-	const struct firmware *firm_data;
 	struct workqueue_struct *fw_wq;
-	u8 fw_path;
+	const struct firmware *firm_data;
 	struct fw_image *fw_img;
+	u8 *fw_data;
+	u32 fw_ver_file;
+	char fw_chksum[5];
+	u8 fw_update_way;
 	bool do_crc_check;
-	struct pinctrl *pinctrl_irq;
-	struct pinctrl_state *pin_state_irq;
+	void (*compulsory_flash_mode)(struct wacom_i2c *, bool);
+	int (*reset_platform_hw)(struct wacom_i2c *);
+	int (*get_irq_state)(struct wacom_i2c *);
 };
 
-#endif /* _LINUX_WACOM_H */
+#endif /* _LINUX_WACOM_H_ */

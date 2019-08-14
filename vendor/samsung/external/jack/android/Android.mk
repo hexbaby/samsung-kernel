@@ -2,6 +2,8 @@
 # jack-1.9.9.5
 #
 
+ifeq (true,$(call spf_check,SEC_PRODUCT_FEATURE_AUDIO_JAM,TRUE))
+
 LOCAL_PATH := $(call my-dir)
 JACK_ROOT := $(call my-dir)/..
 SUPPORT_ALSA_IN_JACK := true
@@ -17,7 +19,6 @@ ALSA_INCLUDES := vendor/marvell/external/alsa-lib/include
 else
 ALSA_INCLUDES := vendor/samsung/external/alsa-lib/include
 endif
-
 #ifneq ($(filter msm% apq% ,$(TARGET_BOARD_PLATFORM)),)
 WORKAROUND_QC_JACK_ALSA := true
 #endif
@@ -27,6 +28,18 @@ endif
 
 ifneq ($(filter msm8916 msm8952 msm8953,$(TARGET_BOARD_PLATFORM)),)
 SUPPORT_LOW_PERFOMANCE_PLATFORM := true
+endif
+
+ifneq ($(filter msm8953,$(TARGET_BOARD_PLATFORM)),)
+SUPPORT_RECOVERY_PTR_MISS_MATCHING := true
+endif
+
+ifeq ($(TARGET_SOC),exynos8890)
+SUPPORT_RECOVERY_PTR_MISS_MATCHING := true
+endif
+
+ifeq (true,$(call spf_check,SEC_PRODUCT_FEATURE_AUDIO_NUMBER_OF_SPEAKER,4))
+SUPPORT_4SPEAKER := true
 endif
 
 #ifeq ($(TARGET_ARCH), arm64)
@@ -66,140 +79,71 @@ common_c_includes := \
     bionic/libc
 #    $(JACK_STL_INCLUDES)
 
-# copy common source file
-common_libsource_server_dir = .server
-common_libsource_client_dir = .client
-
-$(shell rm -rf $(LOCAL_PATH)/$(common_libsource_server_dir))
-$(shell rm -rf $(LOCAL_PATH)/$(common_libsource_client_dir))
-$(shell mkdir $(LOCAL_PATH)/$(common_libsource_server_dir))
-$(shell mkdir $(LOCAL_PATH)/$(common_libsource_client_dir))
-
-$(shell cp -f $(LOCAL_PATH)/../common/JackActivationCount.cpp       $(LOCAL_PATH)/$(common_libsource_server_dir)/JackActivationCount.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackAPI.cpp                   $(LOCAL_PATH)/$(common_libsource_server_dir)/JackAPI.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackClient.cpp                $(LOCAL_PATH)/$(common_libsource_server_dir)/JackClient.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackConnectionManager.cpp     $(LOCAL_PATH)/$(common_libsource_server_dir)/JackConnectionManager.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/ringbuffer.c                  $(LOCAL_PATH)/$(common_libsource_server_dir)/ringbuffer.c)
-$(shell cp -f $(LOCAL_PATH)/JackError.cpp                           $(LOCAL_PATH)/$(common_libsource_server_dir)/JackError.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackException.cpp             $(LOCAL_PATH)/$(common_libsource_server_dir)/JackException.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackFrameTimer.cpp            $(LOCAL_PATH)/$(common_libsource_server_dir)/JackFrameTimer.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackGraphManager.cpp          $(LOCAL_PATH)/$(common_libsource_server_dir)/JackGraphManager.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackPort.cpp                  $(LOCAL_PATH)/$(common_libsource_server_dir)/JackPort.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackPortType.cpp              $(LOCAL_PATH)/$(common_libsource_server_dir)/JackPortType.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackAudioPort.cpp             $(LOCAL_PATH)/$(common_libsource_server_dir)/JackAudioPort.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackMidiPort.cpp              $(LOCAL_PATH)/$(common_libsource_server_dir)/JackMidiPort.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackMidiAPI.cpp               $(LOCAL_PATH)/$(common_libsource_server_dir)/JackMidiAPI.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackEngineControl.cpp         $(LOCAL_PATH)/$(common_libsource_server_dir)/JackEngineControl.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackShmMem.cpp                $(LOCAL_PATH)/$(common_libsource_server_dir)/JackShmMem.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackGenericClientChannel.cpp  $(LOCAL_PATH)/$(common_libsource_server_dir)/JackGenericClientChannel.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackGlobals.cpp               $(LOCAL_PATH)/$(common_libsource_server_dir)/JackGlobals.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackDebugClient.cpp           $(LOCAL_PATH)/$(common_libsource_server_dir)/JackDebugClient.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackTransportEngine.cpp       $(LOCAL_PATH)/$(common_libsource_server_dir)/JackTransportEngine.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/timestamps.c                  $(LOCAL_PATH)/$(common_libsource_server_dir)/timestamps.c)
-$(shell cp -f $(LOCAL_PATH)/../common/JackTools.cpp                 $(LOCAL_PATH)/$(common_libsource_server_dir)/JackTools.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackMessageBuffer.cpp         $(LOCAL_PATH)/$(common_libsource_server_dir)/JackMessageBuffer.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackEngineProfiling.cpp       $(LOCAL_PATH)/$(common_libsource_server_dir)/JackEngineProfiling.cpp)
-$(shell cp -f $(LOCAL_PATH)/JackAndroidThread.cpp                   $(LOCAL_PATH)/$(common_libsource_server_dir)/JackAndroidThread.cpp)
-$(shell cp -f $(LOCAL_PATH)/JackAndroidSemaphore.cpp                $(LOCAL_PATH)/$(common_libsource_server_dir)/JackAndroidSemaphore.cpp)
-$(shell cp -f $(LOCAL_PATH)/../posix/JackPosixProcessSync.cpp       $(LOCAL_PATH)/$(common_libsource_server_dir)/JackPosixProcessSync.cpp)
-$(shell cp -f $(LOCAL_PATH)/../posix/JackPosixMutex.cpp             $(LOCAL_PATH)/$(common_libsource_server_dir)/JackPosixMutex.cpp)
-$(shell cp -f $(LOCAL_PATH)/../posix/JackSocket.cpp                 $(LOCAL_PATH)/$(common_libsource_server_dir)/JackSocket.cpp)
-$(shell cp -f $(LOCAL_PATH)/../linux/JackLinuxTime.c                $(LOCAL_PATH)/$(common_libsource_server_dir)/JackLinuxTime.c)
-
-$(shell cp -f $(LOCAL_PATH)/../common/JackActivationCount.cpp       $(LOCAL_PATH)/$(common_libsource_client_dir)/JackActivationCount.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackAPI.cpp                   $(LOCAL_PATH)/$(common_libsource_client_dir)/JackAPI.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackClient.cpp                $(LOCAL_PATH)/$(common_libsource_client_dir)/JackClient.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackConnectionManager.cpp     $(LOCAL_PATH)/$(common_libsource_client_dir)/JackConnectionManager.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/ringbuffer.c                  $(LOCAL_PATH)/$(common_libsource_client_dir)/ringbuffer.c)
-$(shell cp -f $(LOCAL_PATH)/JackError.cpp                           $(LOCAL_PATH)/$(common_libsource_client_dir)/JackError.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackException.cpp             $(LOCAL_PATH)/$(common_libsource_client_dir)/JackException.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackFrameTimer.cpp            $(LOCAL_PATH)/$(common_libsource_client_dir)/JackFrameTimer.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackGraphManager.cpp          $(LOCAL_PATH)/$(common_libsource_client_dir)/JackGraphManager.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackPort.cpp                  $(LOCAL_PATH)/$(common_libsource_client_dir)/JackPort.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackPortType.cpp              $(LOCAL_PATH)/$(common_libsource_client_dir)/JackPortType.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackAudioPort.cpp             $(LOCAL_PATH)/$(common_libsource_client_dir)/JackAudioPort.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackMidiPort.cpp              $(LOCAL_PATH)/$(common_libsource_client_dir)/JackMidiPort.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackMidiAPI.cpp               $(LOCAL_PATH)/$(common_libsource_client_dir)/JackMidiAPI.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackEngineControl.cpp         $(LOCAL_PATH)/$(common_libsource_client_dir)/JackEngineControl.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackShmMem.cpp                $(LOCAL_PATH)/$(common_libsource_client_dir)/JackShmMem.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackGenericClientChannel.cpp  $(LOCAL_PATH)/$(common_libsource_client_dir)/JackGenericClientChannel.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackGlobals.cpp               $(LOCAL_PATH)/$(common_libsource_client_dir)/JackGlobals.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackDebugClient.cpp           $(LOCAL_PATH)/$(common_libsource_client_dir)/JackDebugClient.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackTransportEngine.cpp       $(LOCAL_PATH)/$(common_libsource_client_dir)/JackTransportEngine.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/timestamps.c                  $(LOCAL_PATH)/$(common_libsource_client_dir)/timestamps.c)
-$(shell cp -f $(LOCAL_PATH)/../common/JackTools.cpp                 $(LOCAL_PATH)/$(common_libsource_client_dir)/JackTools.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackMessageBuffer.cpp         $(LOCAL_PATH)/$(common_libsource_client_dir)/JackMessageBuffer.cpp)
-$(shell cp -f $(LOCAL_PATH)/../common/JackEngineProfiling.cpp       $(LOCAL_PATH)/$(common_libsource_client_dir)/JackEngineProfiling.cpp)
-$(shell cp -f $(LOCAL_PATH)/JackAndroidThread.cpp                   $(LOCAL_PATH)/$(common_libsource_client_dir)/JackAndroidThread.cpp)
-$(shell cp -f $(LOCAL_PATH)/JackAndroidSemaphore.cpp                $(LOCAL_PATH)/$(common_libsource_client_dir)/JackAndroidSemaphore.cpp)
-$(shell cp -f $(LOCAL_PATH)/../posix/JackPosixProcessSync.cpp       $(LOCAL_PATH)/$(common_libsource_client_dir)/JackPosixProcessSync.cpp)
-$(shell cp -f $(LOCAL_PATH)/../posix/JackPosixMutex.cpp             $(LOCAL_PATH)/$(common_libsource_client_dir)/JackPosixMutex.cpp)
-$(shell cp -f $(LOCAL_PATH)/../posix/JackSocket.cpp                 $(LOCAL_PATH)/$(common_libsource_client_dir)/JackSocket.cpp)
-$(shell cp -f $(LOCAL_PATH)/../linux/JackLinuxTime.c                $(LOCAL_PATH)/$(common_libsource_client_dir)/JackLinuxTime.c)
-
 common_libsource_server := \
-    $(common_libsource_server_dir)/JackActivationCount.cpp \
-    $(common_libsource_server_dir)/JackAPI.cpp \
-    $(common_libsource_server_dir)/JackClient.cpp \
-    $(common_libsource_server_dir)/JackConnectionManager.cpp \
-    $(common_libsource_server_dir)/ringbuffer.c \
-    $(common_libsource_server_dir)/JackError.cpp \
-    $(common_libsource_server_dir)/JackException.cpp \
-    $(common_libsource_server_dir)/JackFrameTimer.cpp \
-    $(common_libsource_server_dir)/JackGraphManager.cpp \
-    $(common_libsource_server_dir)/JackPort.cpp \
-    $(common_libsource_server_dir)/JackPortType.cpp \
-    $(common_libsource_server_dir)/JackAudioPort.cpp \
-    $(common_libsource_server_dir)/JackMidiPort.cpp \
-    $(common_libsource_server_dir)/JackMidiAPI.cpp \
-    $(common_libsource_server_dir)/JackEngineControl.cpp \
-    $(common_libsource_server_dir)/JackShmMem.cpp \
-    $(common_libsource_server_dir)/JackGenericClientChannel.cpp \
-    $(common_libsource_server_dir)/JackGlobals.cpp \
-    $(common_libsource_server_dir)/JackDebugClient.cpp \
-    $(common_libsource_server_dir)/JackTransportEngine.cpp \
-    $(common_libsource_server_dir)/timestamps.c \
-    $(common_libsource_server_dir)/JackTools.cpp \
-    $(common_libsource_server_dir)/JackMessageBuffer.cpp \
-    $(common_libsource_server_dir)/JackEngineProfiling.cpp \
-    $(common_libsource_server_dir)/JackAndroidThread.cpp \
-    $(common_libsource_server_dir)/JackAndroidSemaphore.cpp \
-    $(common_libsource_server_dir)/JackPosixProcessSync.cpp \
-    $(common_libsource_server_dir)/JackPosixMutex.cpp \
-    $(common_libsource_server_dir)/JackSocket.cpp \
-    $(common_libsource_server_dir)/JackLinuxTime.c
+    ../common/JackActivationCount.cpp \
+    ../common/JackAPI.cpp \
+    ../common/JackClient.cpp \
+    ../common/JackConnectionManager.cpp \
+    ../common/ringbuffer.c \
+    JackError.cpp \
+    ../common/JackException.cpp \
+    ../common/JackFrameTimer.cpp \
+    ../common/JackGraphManager.cpp \
+    ../common/JackPort.cpp \
+    ../common/JackPortType.cpp \
+    ../common/JackAudioPort.cpp \
+    ../common/JackMidiPort.cpp \
+    ../common/JackMidiAPI.cpp \
+    ../common/JackEngineControl.cpp \
+    ../common/JackShmMem.cpp \
+    ../common/JackGenericClientChannel.cpp \
+    ../common/JackGlobals.cpp \
+    ../common/JackDebugClient.cpp \
+    ../common/JackTransportEngine.cpp \
+    ../common/timestamps.c \
+    ../common/JackTools.cpp \
+    ../common/JackMessageBuffer.cpp \
+    ../common/JackEngineProfiling.cpp \
+    ../common/JackDebugger.cpp \
+    JackAndroidThread.cpp \
+    JackAndroidSemaphore.cpp \
+    ../posix/JackPosixProcessSync.cpp \
+    ../posix/JackPosixMutex.cpp \
+    ../posix/JackSocket.cpp \
+    ../linux/JackLinuxTime.c
 
 common_libsource_client := \
-    $(common_libsource_client_dir)/JackActivationCount.cpp \
-    $(common_libsource_client_dir)/JackAPI.cpp \
-    $(common_libsource_client_dir)/JackClient.cpp \
-    $(common_libsource_client_dir)/JackConnectionManager.cpp \
-    $(common_libsource_client_dir)/ringbuffer.c \
-    $(common_libsource_client_dir)/JackError.cpp \
-    $(common_libsource_client_dir)/JackException.cpp \
-    $(common_libsource_client_dir)/JackFrameTimer.cpp \
-    $(common_libsource_client_dir)/JackGraphManager.cpp \
-    $(common_libsource_client_dir)/JackPort.cpp \
-    $(common_libsource_client_dir)/JackPortType.cpp \
-    $(common_libsource_client_dir)/JackAudioPort.cpp \
-    $(common_libsource_client_dir)/JackMidiPort.cpp \
-    $(common_libsource_client_dir)/JackMidiAPI.cpp \
-    $(common_libsource_client_dir)/JackEngineControl.cpp \
-    $(common_libsource_client_dir)/JackShmMem.cpp \
-    $(common_libsource_client_dir)/JackGenericClientChannel.cpp \
-    $(common_libsource_client_dir)/JackGlobals.cpp \
-    $(common_libsource_client_dir)/JackDebugClient.cpp \
-    $(common_libsource_client_dir)/JackTransportEngine.cpp \
-    $(common_libsource_client_dir)/timestamps.c \
-    $(common_libsource_client_dir)/JackTools.cpp \
-    $(common_libsource_client_dir)/JackMessageBuffer.cpp \
-    $(common_libsource_client_dir)/JackEngineProfiling.cpp \
-    $(common_libsource_client_dir)/JackAndroidThread.cpp \
-    $(common_libsource_client_dir)/JackAndroidSemaphore.cpp \
-    $(common_libsource_client_dir)/JackPosixProcessSync.cpp \
-    $(common_libsource_client_dir)/JackPosixMutex.cpp \
-    $(common_libsource_client_dir)/JackSocket.cpp \
-    $(common_libsource_client_dir)/JackLinuxTime.c
+    ../common/JackActivationCount.cpp \
+    ../common/JackAPI.cpp \
+    ../common/JackClient.cpp \
+    ../common/JackConnectionManager.cpp \
+    ../common/ringbuffer.c \
+    JackError.cpp \
+    ../common/JackException.cpp \
+    ../common/JackFrameTimer.cpp \
+    ../common/JackGraphManager.cpp \
+    ../common/JackPort.cpp \
+    ../common/JackPortType.cpp \
+    ../common/JackAudioPort.cpp \
+    ../common/JackMidiPort.cpp \
+    ../common/JackMidiAPI.cpp \
+    ../common/JackEngineControl.cpp \
+    ../common/JackShmMem.cpp \
+    ../common/JackGenericClientChannel.cpp \
+    ../common/JackGlobals.cpp \
+    ../common/JackDebugClient.cpp \
+    ../common/JackTransportEngine.cpp \
+    ../common/timestamps.c \
+    ../common/JackTools.cpp \
+    ../common/JackMessageBuffer.cpp \
+    ../common/JackEngineProfiling.cpp \
+    ../common/JackDebugger.cpp \
+    JackAndroidThread.cpp \
+    JackAndroidSemaphore.cpp \
+    ../posix/JackPosixProcessSync.cpp \
+    ../posix/JackPosixMutex.cpp \
+    ../posix/JackSocket.cpp \
+    ../linux/JackLinuxTime.c
 
 server_libsource := \
     ../common/JackAudioDriver.cpp \
@@ -251,7 +195,7 @@ net_libsource := \
     ../posix/JackPosixMutex.cpp \
     ../common/ringbuffer.c \
     ../posix/JackNetUnixSocket.cpp \
-    $(common_libsource_server_dir)/JackAndroidThread.cpp \
+    JackAndroidThread.cpp \
     ../linux/JackLinuxTime.c
 
 client_libsource := \
@@ -291,7 +235,7 @@ LOCAL_SRC_FILES := JackLogger.cpp
 LOCAL_CFLAGS := -O0 -g -Wall
 LOCAL_LDFLAGS := -ldl $(JACK_STL_LDFLAGS)
 LOCAL_C_INCLUDES := $(common_c_includes)
-LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils
+LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils liblog
 LOCAL_MODULE_TAGS := eng optional
 LOCAL_MODULE := libjacklogger
 ifeq ($(TARGET_ARCH), arm64)
@@ -311,7 +255,7 @@ LOCAL_CFLAGS := $(common_cflags) -DSERVER_SIDE
 LOCAL_CPPFLAGS := $(common_cppflags)
 LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
 LOCAL_C_INCLUDES := $(common_c_includes) frameworks/av/media/utils/include
-LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libjackshm
+LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libjackshm liblog
 LOCAL_MODULE_TAGS := eng optional
 LOCAL_MODULE := libjackserver
 ifeq ($(SUPPORT_ANDROID_REALTIME_SCHED), true)
@@ -335,6 +279,12 @@ LOCAL_CFLAGS += -DMID_ASYNC_MODE
 endif
 ifneq ($(filter poseidon% a8%, $(TARGET_PRODUCT)),)
 LOCAL_CFLAGS += -DMID_ASYNC_MODE
+endif
+ifeq ($(SUPPORT_4SPEAKER), true)
+LOCAL_CFLAGS += -DUSE_4SPEAKER
+endif
+ifneq ($(filter msm8998,$(TARGET_BOARD_PLATFORM)),)
+LOCAL_CFLAGS += -DENABLE_CPU_AFFINITY_TO_BIG_CORE
 endif
 ifeq ($(TARGET_ARCH), arm64)
 LOCAL_MULTILIB := 32
@@ -368,7 +318,7 @@ LOCAL_CFLAGS := $(common_cflags)
 LOCAL_CPPFLAGS := $(common_cppflags)
 LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
 LOCAL_C_INCLUDES := $(common_c_includes) frameworks/av/media/utils/include
-LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libjackshm
+LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libjackshm liblog
 LOCAL_MODULE_TAGS := eng optional
 LOCAL_MODULE := libjack
 
@@ -599,6 +549,12 @@ ifeq ($(SUPPORT_JACK_LOGGER), true)
 LOCAL_SHARED_LIBRARIES += libjacklogger
 LOCAL_CFLAGS += -DENABLE_JACK_LOGGER
 endif
+ifeq ($(SUPPORT_RECOVERY_PTR_MISS_MATCHING), true)
+LOCAL_CFLAGS += -DENABLE_RECOVERY_PTR_MISS_MATCHING
+endif
+ifneq ($(filter msm8998,$(TARGET_BOARD_PLATFORM)),)
+LOCAL_CFLAGS += -DENABLE_POLL_IN_READ_IMMEDIATELY
+endif
 
 ifeq ($(TARGET_ARCH), arm64)
 LOCAL_MULTILIB := 32
@@ -752,7 +708,7 @@ LOCAL_SRC_FILES := BnAndroidShm.cpp BpAndroidShm.cpp IAndroidShm.cpp AndroidShm.
 LOCAL_CFLAGS := $(common_shm_cflags) -DSERVER_SIDE
 LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
 LOCAL_C_INCLUDES := $(common_c_includes)
-LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libbinder
+LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libbinder liblog
 LOCAL_MODULE_TAGS := eng optional
 LOCAL_MODULE := libjackshm
 #ifeq ($(TARGET_ARCH), arm64)
@@ -764,42 +720,73 @@ include $(BUILD_SHARED_LIBRARY)
 # ========================================================
 # jack_goldfish.so - Goldfish driver for emulator
 # ========================================================
-include $(CLEAR_VARS)
+#include $(CLEAR_VARS)
 
-LOCAL_SRC_FILES := JackGoldfishDriver.cpp
-LOCAL_CFLAGS := $(common_cflags) -DSERVER_SIDE
-LOCAL_CPPFLAGS := $(common_cppflags)
-LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
-LOCAL_C_INCLUDES := $(common_c_includes)
-LOCAL_SHARED_LIBRARIES := libc libdl libcutils libjackserver
-LOCAL_MODULE_RELATIVE_PATH := jack
-LOCAL_MODULE_TAGS := eng optional
-LOCAL_MODULE := jack_goldfish
-ifeq ($(TARGET_ARCH), arm64)
-LOCAL_MULTILIB := 32
-endif
+#LOCAL_SRC_FILES := JackGoldfishDriver.cpp
+#LOCAL_CFLAGS := $(common_cflags) -DSERVER_SIDE
+#LOCAL_CPPFLAGS := $(common_cppflags)
+#LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
+#LOCAL_C_INCLUDES := $(common_c_includes)
+#LOCAL_SHARED_LIBRARIES := libc libdl libcutils libjackserver
+#LOCAL_MODULE_RELATIVE_PATH := jack
+#LOCAL_MODULE_TAGS := eng optional
+#LOCAL_MODULE := jack_goldfish
+#ifeq ($(TARGET_ARCH), arm64)
+#LOCAL_MULTILIB := 32
+#endif
 
-include $(BUILD_SHARED_LIBRARY)
+#include $(BUILD_SHARED_LIBRARY)
 
 # ========================================================
 # jack_opensles.so - OpenSL ES driver
 # ========================================================
+#include $(CLEAR_VARS)
+#
+#LOCAL_SRC_FILES := OpenSLDriver.cpp \
+#		../common/JackDebugger.cpp
+#LOCAL_CFLAGS := $(common_cflags) -DSERVER_SIDE
+#LOCAL_CPPFLAGS := $(common_cppflags)
+##LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
+#LOCAL_C_INCLUDES := $(common_c_includes) frameworks/wilhelm/include
+#LOCAL_SHARED_LIBRARIES := libc libdl libcutils libjackserver libOpenSLES
+#ifeq ($(SUPPORT_JACK_LOGGER), true)
+#LOCAL_SHARED_LIBRARIES += libjacklogger
+#LOCAL_CFLAGS += -DENABLE_JACK_LOGGER
+#endif
+#LOCAL_MODULE_RELATIVE_PATH := jack
+#LOCAL_MODULE_TAGS := eng optional
+#LOCAL_MODULE := jack_opensles
+#ifeq ($(TARGET_ARCH), arm64)
+#LOCAL_MULTILIB := 32
+#endif
+#
+#include $(BUILD_SHARED_LIBRARY)
+
+
+# ========================================================
+# jack_aaudio.so - AAudio driver
+# ========================================================
 include $(CLEAR_VARS)
 
-LOCAL_SRC_FILES := JackOpenSLESDriver.cpp opensl_io.c
+LOCAL_SRC_FILES := AAudioDriver.cpp \
+		../common/JackDebugger.cpp
 LOCAL_CFLAGS := $(common_cflags) -DSERVER_SIDE
-LOCAL_CPPFLAGS := $(common_cppflags)
-LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
-LOCAL_C_INCLUDES := $(common_c_includes) frameworks/wilhelm/include
-LOCAL_SHARED_LIBRARIES := libc libdl libcutils libjackserver libOpenSLES
+LOCAL_CPPFLAGS := $(common_cppflags) -std=c++14
+LOCAL_C_INCLUDES := $(common_c_includes) frameworks/av/media/libaaudio/include
+LOCAL_SHARED_LIBRARIES := libc libdl libcutils libjackserver libaaudio
+ifeq ($(SUPPORT_JACK_LOGGER), true)
+LOCAL_SHARED_LIBRARIES += libjacklogger
+LOCAL_CFLAGS += -DENABLE_JACK_LOGGER
+endif
 LOCAL_MODULE_RELATIVE_PATH := jack
 LOCAL_MODULE_TAGS := eng optional
-LOCAL_MODULE := jack_opensles
+LOCAL_MODULE := jack_aaudio
 ifeq ($(TARGET_ARCH), arm64)
 LOCAL_MULTILIB := 32
 endif
 
 include $(BUILD_SHARED_LIBRARY)
+
 
 ##########################################################
 # android/AndroidShmServer
@@ -815,7 +802,7 @@ LOCAL_CFLAGS := $(common_cflags)
 LOCAL_CPPFLAGS := $(common_cppflags)
 LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
 LOCAL_C_INCLUDES := $(common_c_includes)
-LOCAL_SHARED_LIBRARIES := libcutils libutils libbinder libjackshm
+LOCAL_SHARED_LIBRARIES := libcutils libutils libbinder libjackshm liblog
 LOCAL_MODULE_TAGS := eng optional
 LOCAL_MODULE:= androidshmservice
 ifeq ($(TARGET_ARCH), arm64)
@@ -834,7 +821,7 @@ LOCAL_CFLAGS := $(common_cflags) -DLOG_TAG=\"ShmServiceTest\"
 LOCAL_CPPFLAGS := $(common_cppflags)
 LOCAL_LDFLAGS := $(common_ldflags) $(JACK_STL_LDFLAGS)
 LOCAL_C_INCLUDES := $(common_c_includes)
-LOCAL_SHARED_LIBRARIES := libcutils libutils libjackshm libbinder
+LOCAL_SHARED_LIBRARIES := libcutils libutils libjackshm libbinder liblog
 LOCAL_MODULE_TAGS := eng optional
 LOCAL_MODULE := shmservicetest
 ifeq ($(TARGET_ARCH), arm64)
@@ -1581,3 +1568,4 @@ endif
 
 include $(BUILD_EXECUTABLE)
 
+endif

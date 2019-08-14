@@ -20,6 +20,7 @@ static const u8 sm5705_mask_reg[] = {
 	[MUIC_INT1]     = SM5705_MUIC_REG_INTMASK1,
 	[MUIC_INT2]     = SM5705_MUIC_REG_INTMASK2,
 	[MUIC_INT3_AFC] = SM5705_MUIC_REG_INTMASK3_AFC,
+	[MUIC_RESET]    = 0x00,
 };
 
 static struct i2c_client *get_i2c(struct sm5705_dev *sm5705, int src)
@@ -66,6 +67,8 @@ static const struct sm5705_irq_data sm5705_irqs[] = {
 	DECLARE_IRQ(SM5705_MUIC_IRQ_INT3_VBUS_UPDATE,       MUIC_INT3_AFC,  1 << 2),
 	DECLARE_IRQ(SM5705_MUIC_IRQ_INT3_AFC_ACCEPTED,      MUIC_INT3_AFC,  1 << 1),
 	DECLARE_IRQ(SM5705_MUIC_IRQ_INT3_AFC_TA_ATTACHED,	MUIC_INT3_AFC,  1 << 0),
+
+	DECLARE_IRQ(SM5705_MUIC_IRQ_RESET,	MUIC_RESET,  1 << 0),
 };
 
 static void sm5705_irq_lock(struct irq_data *data)
@@ -134,17 +137,39 @@ static irqreturn_t sm5705_irq_thread(int irq, void *data)
 	struct sm5705_dev *sm5705 = data;
 	u8 irq_reg[SM5705_IRQ_GROUP_NR] = {0};
 	int i, ret;
+	u8 value = 0;
 
 	ret = sm5705_bulk_read(sm5705->muic, SM5705_MUIC_REG_INT1, SM5705_NUM_IRQ_MUIC_REGS, &irq_reg[MUIC_INT1]);
 	if (ret) {
 		pr_err("%s:%s fail to read MUIC_INT source: %d\n", UNIVERSAL_MFD_DEV_NAME, __func__, ret);
 		return IRQ_NONE;
 	}
-
-	for (i = MUIC_INT1; i <= MUIC_INT3_AFC; i++) {
-		pr_debug("%s:%s MUIC_INT%d = 0x%x\n", UNIVERSAL_MFD_DEV_NAME, __func__, (i + 1), irq_reg[i]);
+	ret = sm5705_read_reg(sm5705->muic, SM5705_MUIC_REG_HIDDEN_3A, &value);
+	if (ret) {
+		pr_err("%s:%s fail to read Hidden reg 0x3A: %d\n", UNIVERSAL_MFD_DEV_NAME, __func__, ret);
+		return IRQ_NONE;
 	}
-		
+
+	pr_info("%s:%s MUIC_INT[1:0x%x, 2:0x%x, 3:0x%x] Hidden 0x3A[0x%x]\n",
+			UNIVERSAL_MFD_DEV_NAME, __func__, irq_reg[0], irq_reg[1], irq_reg[2], value);
+
+	if (((irq_reg[0] + irq_reg[1] + irq_reg[2]) == 0) && ((value & 0x40) == 0x00)) {
+		char mesg[256] = "";
+		pr_err("%s:%s Abnormal state!!\n", UNIVERSAL_MFD_DEV_NAME, __func__);
+		for (i = 0x01; i <= 0x0E; i++) {
+			sm5705_read_reg(sm5705->muic, i, &value);
+			sprintf(mesg+strlen(mesg), "0x%x:0x%x ", i, value);
+		}
+		pr_err("%s, %s\n", __func__, mesg);
+		memset(mesg, 0, sizeof(mesg));
+		for (i = 0x10; i <= 0x1B; i++) {
+			sm5705_read_reg(sm5705->muic, i, &value);
+			sprintf(mesg+strlen(mesg), "0x%x:0x%x ",i , value);
+		}
+		pr_err("%s, %s\n", __func__, mesg);
+		irq_reg[MUIC_RESET] = 0x1;
+	}
+
 	/* Apply masking */
 	for (i = 0; i < SM5705_IRQ_GROUP_NR; i++) {
 		irq_reg[i] &= ~sm5705->irq_masks_cur[i];
@@ -164,6 +189,7 @@ int sm5705_muic_irq_init(struct sm5705_dev *sm5705)
 {
 	int i;
 	int ret;
+	u8 irq_reg[SM5705_IRQ_GROUP_NR] = {0};
 
 	if (!sm5705->irq) {
 		dev_warn(sm5705->dev, "No interrupt specified.\n");
@@ -205,6 +231,19 @@ int sm5705_muic_irq_init(struct sm5705_dev *sm5705)
 #else
 		irq_set_noprobe(cur_irq);
 #endif
+	}
+
+	/* afc interrupt catch */
+	ret = sm5705_bulk_read(sm5705->muic, SM5705_MUIC_REG_INT1, SM5705_NUM_IRQ_MUIC_REGS, &irq_reg[MUIC_INT1]);
+	if (ret) {
+		pr_err("%s:%s fail to read MUIC_INT source: %d\n", UNIVERSAL_MFD_DEV_NAME, __func__, ret);
+		return 0;
+	}
+	pr_info("%s:%s MUIC_INT[1:0x%x, 2:0x%x, 3:0x%x]\n",
+			UNIVERSAL_MFD_DEV_NAME, __func__, irq_reg[0], irq_reg[1], irq_reg[2]);
+	if (irq_reg[2] == 0x01) {
+		pr_info("%s: AFC_TA_ATTACHED\n", __func__);
+		sm5705_write_reg(sm5705->muic, 0x0F, 0x01);
 	}
 
 	irq_set_status_flags(sm5705->irq, IRQ_NOAUTOEN); 

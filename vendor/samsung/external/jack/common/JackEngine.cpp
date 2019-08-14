@@ -45,8 +45,8 @@ JackEngine::JackEngine(JackGraphManager* manager,
 #ifdef __ANDROID__
                        , jackctl_server_t * server_control
 #endif
-) 
-                    : JackLockAble(control->fServerName), 
+)
+                    : JackLockAble(control->fServerName),
                     fSignal(control->fServerName)
 {
     fGraphManager = manager;
@@ -64,7 +64,10 @@ JackEngine::JackEngine(JackGraphManager* manager,
 	fServerControl = server_control;
 #endif
 #if defined (__ANDROID__) && defined (ENABLE_JACK_LOGGER)
-	mJackLogger = new JackLogger();
+    mJackLogger = NULL;
+    if(JackGlobals::fVerbose == true){
+	    mJackLogger = new JackLogger();
+    }
 #endif
 
 }
@@ -117,14 +120,14 @@ int JackEngine::Close()
 void JackEngine::ShutDown()
 {
     jack_log("JackEngine::ShutDown");
-  
+
     // Shutdown remaining clients (RT is stopped)
     if (fEngineControl->fDriverNum >= 0) {
 	    for (int i = fEngineControl->fDriverNum; i < CLIENT_NUM; i++) {
 	        if (JackLoadableInternalClient* loadable_client = dynamic_cast<JackLoadableInternalClient*>(fClientTable[i])) {
 	            jack_log("JackEngine::ShutDown loadable client = %s", loadable_client->GetClientControl()->fName);
 	            loadable_client->ShutDown();
-	        } 
+	        }
 	    }
     }
 }
@@ -201,7 +204,7 @@ bool JackEngine::Process(jack_time_t cur_cycle_begin, jack_time_t prev_cycle_end
 
     // Cycle  begin
     fEngineControl->CycleBegin(fClientTable, fGraphManager, cur_cycle_begin, prev_cycle_end);
-  
+
     // Graph
     if (fGraphManager->IsFinishedGraph()) {
         ProcessNext(cur_cycle_begin);
@@ -299,18 +302,18 @@ int JackEngine::ComputeTotalLatencies()
 //---------------
 
 int JackEngine::ClientNotify(JackClientInterface* client, int refnum, const char* name, int notify, int sync, const char* message, int value1, int value2)
-{   
+{
     if (!client) {
         return 0;
     }
-    
+
     if (!client->GetClientControl()->fCallback[notify]) {
         jack_log("JackEngine::ClientNotify: no callback for notification = %ld", notify);
         return 0;
     }
-    
+
     int ret;
-   
+
     // External client
     if (dynamic_cast<JackExternalClient*>(client)) {
        ret = client->ClientNotify(refnum, name, notify, sync, message, value1, value2);
@@ -322,7 +325,7 @@ int JackEngine::ClientNotify(JackClientInterface* client, int refnum, const char
             Lock();
         }
     }
-    
+
     if (ret < 0) {
         jack_error("NotifyClient fails name = %s notification = %ld val1 = %ld val2 = %ld", name, notify, value1, value2);
     }
@@ -351,7 +354,7 @@ void JackEngine::NotifyClients(int event, int sync, const char* message, int val
 int JackEngine::NotifyAddClient(JackClientInterface* new_client, const char* new_name, int refnum)
 {
     jack_log("JackEngine::NotifyAddClient: name = %s", new_name);
-    
+
     // Notify existing clients of the new client and new client of existing clients.
     for (int i = 0; i < CLIENT_NUM; i++) {
         JackClientInterface* old_client = fClientTable[i];
@@ -679,8 +682,14 @@ int JackEngine::ClientExternalOpen(const char* name, int pid, int uuid, int* ref
 
     if (!fSignal.LockedTimedWait(DRIVER_OPEN_TIMEOUT * 1000000)) {
         // Failure if RT thread is not running (problem with the driver...)
-        jack_error("Driver is not running");
-        goto error;
+        jack_error("Driver is not running in ClientExternalOpen");
+        jack_error("try to restart audio driver");
+        JackServerGlobals::fInstance->RestartAudioDriver();
+
+        if (!fSignal.LockedTimedWait((DRIVER_OPEN_TIMEOUT - 2) * 1000000)) {
+            jack_error("After restart audio driver but Driver is not running in ClientExternalOpen");
+            goto error;
+        }
     }
 
     fClientTable[refnum] = client;
@@ -724,8 +733,14 @@ int JackEngine::ClientInternalOpen(const char* name, int* ref, JackEngineControl
 
     if (wait && !fSignal.LockedTimedWait(DRIVER_OPEN_TIMEOUT * 1000000)) {
         // Failure if RT thread is not running (problem with the driver...)
-        jack_error("Driver is not running");
-        goto error;
+        jack_error("Driver is not running in ClientInternalOpen");
+        jack_error("try to restart audio driver");
+        JackServerGlobals::fInstance->RestartAudioDriver();
+
+        if (!fSignal.LockedTimedWait((DRIVER_OPEN_TIMEOUT - 2) * 1000000)) {
+            jack_error("After restart audio driver but Driver is not running in ClientInternalOpen");
+            goto error;
+        }
     }
 
     fClientTable[refnum] = client;
@@ -757,7 +772,7 @@ int JackEngine::ClientExternalClose(int refnum)
     if ((CLIENT_NUM <= refnum) || (0 > refnum)) {
          return -1;
     }
-	
+
     JackClientInterface* client = fClientTable[refnum];
     int res = ClientCloseAux(refnum, true);
     client->Close();
@@ -779,7 +794,7 @@ int JackEngine::ClientCloseAux(int refnum, bool wait)
     if ((CLIENT_NUM <= refnum) || (0 > refnum)) {
          return -1;
     }
-	
+
     JackClientInterface* client = fClientTable[refnum];
     fEngineControl->fTransport.ResetTimebase(refnum);
 
@@ -920,26 +935,27 @@ int JackEngine::ClientSwitchMaster(int refnum, int type, int param)
     if ((CLIENT_NUM <= refnum) || (0 > refnum)) {
          return -1;
     }
-	
+
     JackClientInterface* client = fClientTable[refnum];
     jack_log("JackEngine::ClientSwitchMaster ref = %ld, name = %s, type = %d, param = %d", refnum, client->GetClientControl()->fName, type, param);
 
 	const int MASTER_DRIVER_COUNT = 4;
-	char* MASTER_DRIVER_NAMES[MASTER_DRIVER_COUNT] = {"dummy", "alsa", "opensles", "goldfish"};
+	char* MASTER_DRIVER_NAMES[MASTER_DRIVER_COUNT] = {"dummy", "alsa", "opensles", "aaudio"};
 	if(type >= MASTER_DRIVER_COUNT || type < 0){
 		jack_log("JackEngine::ClientSwitchMaster invalid type = %d", type);
 		return -1;
 	}
 
     jackctl_driver_t * driver_ctr;
-
 	driver_ctr = jackctl_server_get_driver(fServerControl, MASTER_DRIVER_NAMES[type]);
 
-	if( 1 == type ){  // alsa
+	if( 1 == type || 2 == type || 3 == type){  // alsa, opensles or aaudio
 		jackctl_driver_restore_parameters(driver_ctr);
-		jackctl_driver_update_parameters(MASTER_DRIVER_NAMES[type], driver_ctr);
+		if (1 == type) { // only alsa
+			jackctl_driver_update_parameters(MASTER_DRIVER_NAMES[type], driver_ctr);
+		}
 	}
-	
+
 	jackctl_server_switch_master(fServerControl, driver_ctr);
 
     return 0;
@@ -951,6 +967,10 @@ int JackEngine::ClientStartDump(int refnum, int type, int param)
 {
     if ((CLIENT_NUM <= refnum) || (0 > refnum)) {
          return -1;
+    }
+
+    if(mJackLogger != NULL){
+        return -1;
     }
 
     JackClientInterface* client = fClientTable[refnum];
@@ -965,6 +985,10 @@ int JackEngine::ClientStopDump(int refnum, int param)
          return -1;
     }
 
+    if(mJackLogger != NULL){
+        return -1;
+    }
+
     JackClientInterface* client = fClientTable[refnum];
     jack_log("JackEngine::ClientStopDump ref = %ld name = %s", refnum, client->GetClientControl()->fName);
 	mJackLogger->excuteCommand(JackLogger::LOG_COMMAND_PCM_DUMP, JackLogger::COMMAND_PARAM_PCM_DUMP_STOP);
@@ -975,6 +999,10 @@ int JackEngine::ClientDump(int refnum, int param)
 {
     if ((CLIENT_NUM <= refnum) || (0 > refnum)) {
          return -1;
+    }
+
+    if(mJackLogger != NULL){
+        return -1;
     }
 
     JackClientInterface* client = fClientTable[refnum];
@@ -1242,7 +1270,7 @@ int JackEngine::SessionReply(int refnum)
         }
         fSessionResult = NULL;
     }
-    
+
     return 0;
 }
 

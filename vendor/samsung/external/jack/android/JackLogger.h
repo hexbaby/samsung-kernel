@@ -1,8 +1,6 @@
 #ifndef JACKLOGGER_H
 #define JACKLOGGER_H
 
-#include <binder/Parcel.h>
-
 namespace Jack {
     
     class JackLogger 

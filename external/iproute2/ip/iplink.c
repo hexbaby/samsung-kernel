@@ -39,6 +39,12 @@
 #define LIBDIR "/usr/lib"
 #endif
 
+#ifndef IFF_NOMULTIPATH
+#define IFF_NOMULTIPATH	0x80000
+#define IFF_MPBACKUP    0x100000
+#define IFF_MPHANDOVER	0x200000
+#endif
+
 static void usage(void) __attribute__((noreturn));
 static int iplink_have_newlink(void);
 
@@ -63,6 +69,7 @@ void iplink_usage(void)
 	fprintf(stderr, "	                  [ dynamic { on | off } ]\n");
 	fprintf(stderr, "	                  [ multicast { on | off } ]\n");
 	fprintf(stderr, "	                  [ allmulticast { on | off } ]\n");
+	fprintf(stderr, "	                  [ multipath { on | off | backup | handover} ]\n");
 	fprintf(stderr, "	                  [ promisc { on | off } ]\n");
 	fprintf(stderr, "	                  [ trailers { on | off } ]\n");
 	fprintf(stderr, "	                  [ txqueuelen PACKETS ]\n");
@@ -497,6 +504,21 @@ int iplink_parse(int argc, char **argv, struct iplink_req *req,
 				req->i.ifi_flags &= ~IFF_ALLMULTI;
 			else
 				return on_off("allmulticast", *argv);
+		} else if (strcmp(*argv, "multipath") == 0) {
+			NEXT_ARG();
+			req->i.ifi_change |= IFF_NOMULTIPATH;
+			req->i.ifi_change |= IFF_MPBACKUP;
+			req->i.ifi_change |= IFF_MPHANDOVER;
+			if (strcmp(*argv, "on") == 0) {
+				req->i.ifi_flags &= ~IFF_NOMULTIPATH;
+			} else if (strcmp(*argv, "off") == 0) {
+				req->i.ifi_flags |= IFF_NOMULTIPATH;
+			} else if (strcmp(*argv, "backup") == 0) {
+				req->i.ifi_flags |= IFF_MPBACKUP;
+			} else if (strcmp(*argv, "handover") == 0) {
+				req->i.ifi_flags |= IFF_MPHANDOVER;
+			} else
+				return on_off("multipath", *argv);
 		} else if (strcmp(*argv, "promisc") == 0) {
 			NEXT_ARG();
 			req->i.ifi_change |= IFF_PROMISC;

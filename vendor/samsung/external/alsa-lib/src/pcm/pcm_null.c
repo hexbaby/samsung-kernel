@@ -26,11 +26,8 @@
  *
  */
   
-#include <byteswap.h>
+#include "bswap.h"
 #include <limits.h>
-#ifndef ANDROID
-#include <sys/shm.h>
-#endif
 #include "pcm_local.h"
 #include "pcm_plugin.h"
 
@@ -46,6 +43,7 @@ typedef struct {
 	snd_pcm_uframes_t appl_ptr;
 	snd_pcm_uframes_t hw_ptr;
 	int poll_fd;
+	snd_pcm_chmap_query_t **chmap;
 } snd_pcm_null_t;
 #endif
 
@@ -81,15 +79,26 @@ static int snd_pcm_null_info(snd_pcm_t *pcm, snd_pcm_info_t * info)
 	return 0;
 }
 
+static snd_pcm_sframes_t snd_pcm_null_avail_update(snd_pcm_t *pcm)
+{
+	snd_pcm_null_t *null = pcm->private_data;
+        if (null->state == SND_PCM_STATE_PREPARED) {
+                /* it is required to return the correct avail count for */
+                /* the prepared stream, otherwise the start is not called */
+                return snd_pcm_mmap_avail(pcm);
+        }
+	return pcm->buffer_size;
+}
+
 static int snd_pcm_null_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 {
 	snd_pcm_null_t *null = pcm->private_data;
 	memset(status, 0, sizeof(*status));
 	status->state = null->state;
 	status->trigger_tstamp = null->trigger_tstamp;
-	gettimestamp(&status->tstamp, pcm->monotonic);
-	status->avail = pcm->buffer_size;
-	status->avail_max = status->avail;
+	gettimestamp(&status->tstamp, pcm->tstamp_type);
+	status->avail = snd_pcm_null_avail_update(pcm);
+	status->avail_max = pcm->buffer_size;
 	return 0;
 }
 
@@ -110,20 +119,18 @@ static int snd_pcm_null_delay(snd_pcm_t *pcm ATTRIBUTE_UNUSED, snd_pcm_sframes_t
 	return 0;
 }
 
-static int snd_pcm_null_prepare(snd_pcm_t *pcm)
-{
-	snd_pcm_null_t *null = pcm->private_data;
-	null->state = SND_PCM_STATE_PREPARED;
-	*pcm->appl.ptr = 0;
-	*pcm->hw.ptr = 0;
-	return 0;
-}
-
 static int snd_pcm_null_reset(snd_pcm_t *pcm)
 {
 	*pcm->appl.ptr = 0;
 	*pcm->hw.ptr = 0;
 	return 0;
+}
+
+static int snd_pcm_null_prepare(snd_pcm_t *pcm)
+{
+	snd_pcm_null_t *null = pcm->private_data;
+	null->state = SND_PCM_STATE_PREPARED;
+	return snd_pcm_null_reset(pcm);
 }
 
 static int snd_pcm_null_start(snd_pcm_t *pcm)
@@ -168,6 +175,17 @@ static int snd_pcm_null_pause(snd_pcm_t *pcm, int enable)
 	}
 	return 0;
 }
+
+static snd_pcm_sframes_t snd_pcm_null_rewindable(snd_pcm_t *pcm)
+{
+	return pcm->buffer_size;
+}
+
+static snd_pcm_sframes_t snd_pcm_null_forwardable(snd_pcm_t *pcm ATTRIBUTE_UNUSED)
+{
+	return 0;
+}
+
 
 static snd_pcm_sframes_t snd_pcm_null_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
 {
@@ -241,11 +259,6 @@ static snd_pcm_sframes_t snd_pcm_null_mmap_commit(snd_pcm_t *pcm,
 	return snd_pcm_null_forward(pcm, size);
 }
 
-static snd_pcm_sframes_t snd_pcm_null_avail_update(snd_pcm_t *pcm)
-{
-	return pcm->buffer_size;
-}
-
 static int snd_pcm_null_hw_refine(snd_pcm_t *pcm ATTRIBUTE_UNUSED, snd_pcm_hw_params_t *params)
 {
 	int err = snd_pcm_hw_refine_soft(pcm, params);
@@ -270,6 +283,24 @@ static int snd_pcm_null_sw_params(snd_pcm_t *pcm ATTRIBUTE_UNUSED, snd_pcm_sw_pa
 	return 0;
 }
 
+static snd_pcm_chmap_query_t **snd_pcm_null_query_chmaps(snd_pcm_t *pcm)
+{
+	snd_pcm_null_t *null = pcm->private_data;
+
+	if (null->chmap)
+		return _snd_pcm_copy_chmap_query(null->chmap);
+	return NULL;
+}
+
+static snd_pcm_chmap_t *snd_pcm_null_get_chmap(snd_pcm_t *pcm)
+{
+	snd_pcm_null_t *null = pcm->private_data;
+
+	if (null->chmap)
+		return _snd_pcm_choose_fixed_chmap(pcm, null->chmap);
+	return NULL;
+}
+
 static void snd_pcm_null_dump(snd_pcm_t *pcm, snd_output_t *out)
 {
 	snd_output_printf(out, "Null PCM\n");
@@ -292,6 +323,9 @@ static const snd_pcm_ops_t snd_pcm_null_ops = {
 	.async = snd_pcm_null_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_null_query_chmaps,
+	.get_chmap = snd_pcm_null_get_chmap,
+	.set_chmap = NULL,
 };
 
 static const snd_pcm_fast_ops_t snd_pcm_null_fast_ops = {
@@ -305,7 +339,9 @@ static const snd_pcm_fast_ops_t snd_pcm_null_fast_ops = {
 	.drop = snd_pcm_null_drop,
 	.drain = snd_pcm_null_drain,
 	.pause = snd_pcm_null_pause,
+	.rewindable = snd_pcm_null_rewindable,
 	.rewind = snd_pcm_null_rewind,
+	.forwardable = snd_pcm_null_forwardable,
 	.forward = snd_pcm_null_forward,
 	.resume = snd_pcm_null_resume,
 	.writei = snd_pcm_null_writei,
@@ -387,6 +423,7 @@ and /dev/full (capture, must be readable).
 \code
 pcm.name {
         type null               # Null PCM
+	[chmap MAP]		# Provide channel maps; MAP is a string array
 }
 \endcode
 
@@ -417,6 +454,10 @@ int _snd_pcm_null_open(snd_pcm_t **pcmp, const char *name,
 		       snd_pcm_stream_t stream, int mode)
 {
 	snd_config_iterator_t i, next;
+	snd_pcm_null_t *null;
+	snd_pcm_chmap_query_t **chmap = NULL;
+	int err;
+
 	snd_config_for_each(i, next, conf) {
 		snd_config_t *n = snd_config_iterator_entry(i);
 		const char *id;
@@ -424,10 +465,28 @@ int _snd_pcm_null_open(snd_pcm_t **pcmp, const char *name,
 			continue;
 		if (snd_pcm_conf_generic_id(id))
 			continue;
+		if (strcmp(id, "chmap") == 0) {
+			snd_pcm_free_chmaps(chmap);
+			chmap = _snd_pcm_parse_config_chmaps(n);
+			if (!chmap) {
+				SNDERR("Invalid channel map for %s", id);
+				return -EINVAL;
+			}
+			continue;
+		}
 		SNDERR("Unknown field %s", id);
+		snd_pcm_free_chmaps(chmap);
 		return -EINVAL;
 	}
-	return snd_pcm_null_open(pcmp, name, stream, mode);
+	err = snd_pcm_null_open(pcmp, name, stream, mode);
+	if (err < 0) {
+		snd_pcm_free_chmaps(chmap);
+		return err;
+	}
+
+	null = (*pcmp)->private_data;
+	null->chmap = chmap;
+	return 0;
 }
 #ifndef DOC_HIDDEN
 SND_DLSYM_BUILD_VERSION(_snd_pcm_null_open, SND_PCM_DLSYM_VERSION);

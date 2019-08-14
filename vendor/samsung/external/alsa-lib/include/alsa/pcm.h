@@ -44,8 +44,23 @@ extern "C" {
 
 /** PCM generic info container */
 typedef struct _snd_pcm_info snd_pcm_info_t;
-/** PCM hardware configuration space container */
+
+/** PCM hardware configuration space container
+ *
+ *  snd_pcm_hw_params_t is an opaque structure which contains a set of possible
+ *  PCM hardware configurations. For example, a given instance might include a
+ *  range of buffer sizes, a range of period sizes, and a set of several sample
+ *  formats. Some subset of all possible combinations these sets may be valid,
+ *  but not necessarily any combination will be valid.
+ *
+ *  When a parameter is set or restricted using a snd_pcm_hw_params_set*
+ *  function, all of the other ranges will be updated to exclude as many
+ *  impossible configurations as possible. Attempting to set a parameter
+ *  outside of its acceptable range will result in the function failing
+ *  and an error code being returned.
+ */
 typedef struct _snd_pcm_hw_params snd_pcm_hw_params_t;
+
 /** PCM software configuration container */
 typedef struct _snd_pcm_sw_params snd_pcm_sw_params_t;
 /** PCM status container */
@@ -184,7 +199,25 @@ typedef enum _snd_pcm_format {
 	SND_PCM_FORMAT_U18_3LE,
 	/** Unsigned 18bit Big Endian in 3bytes format */
 	SND_PCM_FORMAT_U18_3BE,
-	SND_PCM_FORMAT_LAST = SND_PCM_FORMAT_U18_3BE,
+	/* G.723 (ADPCM) 24 kbit/s, 8 samples in 3 bytes */
+	SND_PCM_FORMAT_G723_24,
+	/* G.723 (ADPCM) 24 kbit/s, 1 sample in 1 byte */
+	SND_PCM_FORMAT_G723_24_1B,
+	/* G.723 (ADPCM) 40 kbit/s, 8 samples in 3 bytes */
+	SND_PCM_FORMAT_G723_40,
+	/* G.723 (ADPCM) 40 kbit/s, 1 sample in 1 byte */
+	SND_PCM_FORMAT_G723_40_1B,
+	/* Direct Stream Digital (DSD) in 1-byte samples (x8) */
+	SND_PCM_FORMAT_DSD_U8,
+	/* Direct Stream Digital (DSD) in 2-byte samples (x16) */
+	SND_PCM_FORMAT_DSD_U16_LE,
+	/* Direct Stream Digital (DSD) in 4-byte samples (x32) */
+	SND_PCM_FORMAT_DSD_U32_LE,
+	/* Direct Stream Digital (DSD) in 2-byte samples (x16) */
+	SND_PCM_FORMAT_DSD_U16_BE,
+	/* Direct Stream Digital (DSD) in 4-byte samples (x32) */
+	SND_PCM_FORMAT_DSD_U32_BE,
+	SND_PCM_FORMAT_LAST = SND_PCM_FORMAT_DSD_U32_BE,
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 	/** Signed 16 bit CPU endian */
@@ -290,6 +323,33 @@ typedef enum _snd_pcm_tstamp {
 	SND_PCM_TSTAMP_LAST = SND_PCM_TSTAMP_ENABLE
 } snd_pcm_tstamp_t;
 
+typedef enum _snd_pcm_tstamp_type {
+	SND_PCM_TSTAMP_TYPE_GETTIMEOFDAY = 0,	/**< gettimeofday equivalent */
+	SND_PCM_TSTAMP_TYPE_MONOTONIC,	/**< posix_clock_monotonic equivalent */
+	SND_PCM_TSTAMP_TYPE_MONOTONIC_RAW,	/**< monotonic_raw (no NTP) */
+	SND_PCM_TSTAMP_TYPE_LAST = SND_PCM_TSTAMP_TYPE_MONOTONIC_RAW,
+} snd_pcm_tstamp_type_t;
+
+typedef struct _snd_pcm_audio_tstamp_config {
+	/* 5 of max 16 bits used */
+	unsigned int type_requested:4;
+	unsigned int report_delay:1; /* add total delay to A/D or D/A */
+} snd_pcm_audio_tstamp_config_t;
+
+typedef struct _snd_pcm_audio_tstamp_report {
+	/* 6 of max 16 bits used for bit-fields */
+
+	/* for backwards compatibility */
+	unsigned int valid:1;
+
+	/* actual type if hardware could not support requested timestamp */
+	unsigned int actual_type:4;
+
+	/* accuracy represented in ns units */
+	unsigned int accuracy_report:1; /* 0 if accuracy unknown, 1 if accuracy field is valid */
+	unsigned int accuracy; /* up to 4.29s, will be packed in separate field  */
+} snd_pcm_audio_tstamp_report_t;
+
 /** Unsigned frames quantity */
 typedef unsigned long snd_pcm_uframes_t;
 /** Signed frames quantity */
@@ -299,6 +359,8 @@ typedef long snd_pcm_sframes_t;
 #define SND_PCM_NONBLOCK		0x00000001
 /** Async notification (flag for open mode) \hideinitializer */
 #define SND_PCM_ASYNC			0x00000002
+/** In an abort state (internal, not allowed for open) */
+#define SND_PCM_ABORT			0x00008000
 /** Disable automatic (but not forced!) rate resamplinig */
 #define SND_PCM_NO_AUTO_RESAMPLE	0x00010000
 /** Disable automatic (but not forced!) channel conversion */
@@ -410,6 +472,9 @@ int snd_pcm_open(snd_pcm_t **pcm, const char *name,
 int snd_pcm_open_lconf(snd_pcm_t **pcm, const char *name, 
 		       snd_pcm_stream_t stream, int mode,
 		       snd_config_t *lconf);
+int snd_pcm_open_fallback(snd_pcm_t **pcm, snd_config_t *root,
+			  const char *name, const char *orig_name,
+			  snd_pcm_stream_t stream, int mode);
 
 int snd_pcm_close(snd_pcm_t *pcm);
 const char *snd_pcm_name(snd_pcm_t *pcm);
@@ -419,6 +484,7 @@ int snd_pcm_poll_descriptors_count(snd_pcm_t *pcm);
 int snd_pcm_poll_descriptors(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int space);
 int snd_pcm_poll_descriptors_revents(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int nfds, unsigned short *revents);
 int snd_pcm_nonblock(snd_pcm_t *pcm, int nonblock);
+static __inline__ int snd_pcm_abort(snd_pcm_t *pcm) { return snd_pcm_nonblock(pcm, 2); }
 int snd_async_add_pcm_handler(snd_async_handler_t **handler, snd_pcm_t *pcm, 
 			      snd_async_callback_t callback, void *private_data);
 snd_pcm_t *snd_async_handler_get_pcm(snd_async_handler_t *handler);
@@ -455,6 +521,96 @@ int snd_pcm_wait(snd_pcm_t *pcm, int timeout);
 
 int snd_pcm_link(snd_pcm_t *pcm1, snd_pcm_t *pcm2);
 int snd_pcm_unlink(snd_pcm_t *pcm);
+
+/** channel mapping API version number */
+#define SND_CHMAP_API_VERSION	((1 << 16) | (0 << 8) | 1)
+
+/** channel map list type */
+enum snd_pcm_chmap_type {
+	SND_CHMAP_TYPE_NONE = 0,/**< unspecified channel position */
+	SND_CHMAP_TYPE_FIXED,	/**< fixed channel position */
+	SND_CHMAP_TYPE_VAR,	/**< freely swappable channel position */
+	SND_CHMAP_TYPE_PAIRED,	/**< pair-wise swappable channel position */
+	SND_CHMAP_TYPE_LAST = SND_CHMAP_TYPE_PAIRED, /**< last entry */
+};
+
+/** channel positions */
+enum snd_pcm_chmap_position {
+	SND_CHMAP_UNKNOWN = 0,	/**< unspecified */
+	SND_CHMAP_NA,		/**< N/A, silent */
+	SND_CHMAP_MONO,		/**< mono stream */
+	SND_CHMAP_FL,		/**< front left */
+	SND_CHMAP_FR,		/**< front right */
+	SND_CHMAP_RL,		/**< rear left */
+	SND_CHMAP_RR,		/**< rear right */
+	SND_CHMAP_FC,		/**< front center */
+	SND_CHMAP_LFE,		/**< LFE */
+	SND_CHMAP_SL,		/**< side left */
+	SND_CHMAP_SR,		/**< side right */
+	SND_CHMAP_RC,		/**< rear center */
+	SND_CHMAP_FLC,		/**< front left center */
+	SND_CHMAP_FRC,		/**< front right center */
+	SND_CHMAP_RLC,		/**< rear left center */
+	SND_CHMAP_RRC,		/**< rear right center */
+	SND_CHMAP_FLW,		/**< front left wide */
+	SND_CHMAP_FRW,		/**< front right wide */
+	SND_CHMAP_FLH,		/**< front left high */
+	SND_CHMAP_FCH,		/**< front center high */
+	SND_CHMAP_FRH,		/**< front right high */
+	SND_CHMAP_TC,		/**< top center */
+	SND_CHMAP_TFL,		/**< top front left */
+	SND_CHMAP_TFR,		/**< top front right */
+	SND_CHMAP_TFC,		/**< top front center */
+	SND_CHMAP_TRL,		/**< top rear left */
+	SND_CHMAP_TRR,		/**< top rear right */
+	SND_CHMAP_TRC,		/**< top rear center */
+	SND_CHMAP_TFLC,		/**< top front left center */
+	SND_CHMAP_TFRC,		/**< top front right center */
+	SND_CHMAP_TSL,		/**< top side left */
+	SND_CHMAP_TSR,		/**< top side right */
+	SND_CHMAP_LLFE,		/**< left LFE */
+	SND_CHMAP_RLFE,		/**< right LFE */
+	SND_CHMAP_BC,		/**< bottom center */
+	SND_CHMAP_BLC,		/**< bottom left center */
+	SND_CHMAP_BRC,		/**< bottom right center */
+	SND_CHMAP_LAST = SND_CHMAP_BRC,
+};
+
+/** bitmask for channel position */
+#define SND_CHMAP_POSITION_MASK		0xffff
+
+/** bit flag indicating the channel is phase inverted */
+#define SND_CHMAP_PHASE_INVERSE		(0x01 << 16)
+/** bit flag indicating the non-standard channel value */
+#define SND_CHMAP_DRIVER_SPEC		(0x02 << 16)
+
+/** the channel map header */
+typedef struct snd_pcm_chmap {
+	unsigned int channels;	/**< number of channels */
+	unsigned int pos[0];	/**< channel position array */
+} snd_pcm_chmap_t;
+
+/** the header of array items returned from snd_pcm_query_chmaps() */
+typedef struct snd_pcm_chmap_query {
+	enum snd_pcm_chmap_type type;	/**< channel map type */
+	snd_pcm_chmap_t map;		/**< available channel map */
+} snd_pcm_chmap_query_t;
+
+
+snd_pcm_chmap_query_t **snd_pcm_query_chmaps(snd_pcm_t *pcm);
+snd_pcm_chmap_query_t **snd_pcm_query_chmaps_from_hw(int card, int dev,
+						     int subdev,
+						     snd_pcm_stream_t stream);
+void snd_pcm_free_chmaps(snd_pcm_chmap_query_t **maps);
+snd_pcm_chmap_t *snd_pcm_get_chmap(snd_pcm_t *pcm);
+int snd_pcm_set_chmap(snd_pcm_t *pcm, const snd_pcm_chmap_t *map);
+
+const char *snd_pcm_chmap_type_name(enum snd_pcm_chmap_type val);
+const char *snd_pcm_chmap_name(enum snd_pcm_chmap_position val);
+const char *snd_pcm_chmap_long_name(enum snd_pcm_chmap_position val);
+int snd_pcm_chmap_print(const snd_pcm_chmap_t *map, size_t maxlen, char *buf);
+unsigned int snd_pcm_chmap_from_string(const char *str);
+snd_pcm_chmap_t *snd_pcm_chmap_parse_string(const char *str);
 
 //int snd_pcm_mixer_element(snd_pcm_t *pcm, snd_mixer_t *mixer, snd_mixer_elem_t **elem);
 
@@ -532,6 +688,8 @@ int snd_pcm_hw_params_is_half_duplex(const snd_pcm_hw_params_t *params);
 int snd_pcm_hw_params_is_joint_duplex(const snd_pcm_hw_params_t *params);
 int snd_pcm_hw_params_can_sync_start(const snd_pcm_hw_params_t *params);
 int snd_pcm_hw_params_can_disable_period_wakeup(const snd_pcm_hw_params_t *params);
+int snd_pcm_hw_params_supports_audio_wallclock_ts(const snd_pcm_hw_params_t *params); /* deprecated, use audio_ts_type */
+int snd_pcm_hw_params_supports_audio_ts_type(const snd_pcm_hw_params_t *params, int type);
 int snd_pcm_hw_params_get_rate_numden(const snd_pcm_hw_params_t *params,
 				      unsigned int *rate_num,
 				      unsigned int *rate_den);
@@ -720,6 +878,8 @@ int snd_pcm_sw_params_get_boundary(const snd_pcm_sw_params_t *params, snd_pcm_uf
 
 int snd_pcm_sw_params_set_tstamp_mode(snd_pcm_t *pcm, snd_pcm_sw_params_t *params, snd_pcm_tstamp_t val);
 int snd_pcm_sw_params_get_tstamp_mode(const snd_pcm_sw_params_t *params, snd_pcm_tstamp_t *val);
+int snd_pcm_sw_params_set_tstamp_type(snd_pcm_t *pcm, snd_pcm_sw_params_t *params, snd_pcm_tstamp_type_t val);
+int snd_pcm_sw_params_get_tstamp_type(const snd_pcm_sw_params_t *params, snd_pcm_tstamp_type_t *val);
 int snd_pcm_sw_params_set_avail_min(snd_pcm_t *pcm, snd_pcm_sw_params_t *params, snd_pcm_uframes_t val);
 int snd_pcm_sw_params_get_avail_min(const snd_pcm_sw_params_t *params, snd_pcm_uframes_t *val);
 int snd_pcm_sw_params_set_period_event(snd_pcm_t *pcm, snd_pcm_sw_params_t *params, int val);
@@ -840,6 +1000,31 @@ void snd_pcm_status_get_trigger_tstamp(const snd_pcm_status_t *obj, snd_timestam
 void snd_pcm_status_get_trigger_htstamp(const snd_pcm_status_t *obj, snd_htimestamp_t *ptr);
 void snd_pcm_status_get_tstamp(const snd_pcm_status_t *obj, snd_timestamp_t *ptr);
 void snd_pcm_status_get_htstamp(const snd_pcm_status_t *obj, snd_htimestamp_t *ptr);
+void snd_pcm_status_get_audio_htstamp(const snd_pcm_status_t *obj, snd_htimestamp_t *ptr);
+void snd_pcm_status_get_driver_htstamp(const snd_pcm_status_t *obj, snd_htimestamp_t *ptr);
+void snd_pcm_status_get_audio_htstamp_report(const snd_pcm_status_t *obj,
+					     snd_pcm_audio_tstamp_report_t *audio_tstamp_report);
+void snd_pcm_status_set_audio_htstamp_config(snd_pcm_status_t *obj,
+					     snd_pcm_audio_tstamp_config_t *audio_tstamp_config);
+
+static inline void snd_pcm_pack_audio_tstamp_config(unsigned int *data,
+						snd_pcm_audio_tstamp_config_t *config)
+{
+	*data = config->report_delay;
+	*data <<= 4;
+	*data |= config->type_requested;
+}
+
+static inline void snd_pcm_unpack_audio_tstamp_report(unsigned int data, unsigned int accuracy,
+						snd_pcm_audio_tstamp_report_t *report)
+{
+	data >>= 16;
+	report->valid = data & 1;
+	report->actual_type = (data >> 1) & 0xF;
+	report->accuracy_report = (data >> 5) & 1;
+	report->accuracy = accuracy;
+}
+
 snd_pcm_sframes_t snd_pcm_status_get_delay(const snd_pcm_status_t *obj);
 snd_pcm_uframes_t snd_pcm_status_get_avail(const snd_pcm_status_t *obj);
 snd_pcm_uframes_t snd_pcm_status_get_avail_max(const snd_pcm_status_t *obj);

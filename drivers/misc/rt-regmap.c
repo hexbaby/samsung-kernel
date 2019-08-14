@@ -59,8 +59,9 @@ struct reg_index_offset {
 struct rt_debug_data {
 	struct reg_index_offset rio;
 	unsigned int reg_addr;
+#ifdef CONFIG_DEBUG_FS
 	unsigned int reg_size;
-	unsigned char part_id;
+#endif
 };
 
 /* rt_regmap_device
@@ -1291,12 +1292,10 @@ static int general_read(struct seq_file *seq_file, void *_data)
 	struct rt_debug_st *st = (struct rt_debug_st *)seq_file->private;
 	struct rt_regmap_device *rd = st->info;
 	rt_register_map_t rm;
-	char lbuf[900];
 	unsigned char reg_data[24] = { 0 };
 	unsigned char data;
 	int i = 0, rc = 0, size = 0;
 
-	lbuf[0] = '\0';
 	switch (st->id) {
 	case RT_DBG_REG:
 		seq_printf(seq_file, "0x%04x\n", rd->dbg_data.reg_addr);
@@ -1980,6 +1979,10 @@ struct rt_regmap_device *rt_regmap_device_register
 	char device_name[32];
 	unsigned char data;
 
+	if (!props) {
+		dev_err(parent, "rt_regmap_device prop is null\n");
+		return NULL;
+	}
 	dev_info(parent, "regmap_device_register: name = %s\n", props->name);
 	rd = devm_kzalloc(parent, sizeof(*rd), GFP_KERNEL);
 	if (!rd) {
@@ -1995,8 +1998,7 @@ struct rt_regmap_device *rt_regmap_device_register
 	dev_set_drvdata(&rd->dev, drvdata);
 	sprintf(device_name, "rt_regmap_%s", props->name);
 	dev_set_name(&rd->dev, device_name);
-	if (props)
-		memcpy(&rd->props, props, sizeof(struct rt_regmap_properties));
+	memcpy(&rd->props, props, sizeof(struct rt_regmap_properties));
 
 	/* check rt_registe_map format */
 	ret = rt_regmap_check(rd);

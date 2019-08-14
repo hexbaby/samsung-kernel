@@ -28,6 +28,7 @@
 #include "local.h"
 
 #ifndef DOC_HIDDEN
+#define DEV_SKIP	9999 /* some non-existing device number */
 struct hint_list {
 	char **list;
 	unsigned int count;
@@ -52,10 +53,11 @@ static int hint_list_add(struct hint_list *list,
 {
 	char *x;
 
-	if (list->count == list->allocated) {
+	if (list->count + 1 >= list->allocated) {
 		char **n = realloc(list->list, (list->allocated + 10) * sizeof(char *));
 		if (n == NULL)
 			return -ENOMEM;
+		memset(n + list->allocated, 0, 10 * sizeof(*n));
 		list->allocated += 10;
 		list->list = n;
 	}
@@ -80,7 +82,8 @@ static void zero_handler(const char *file ATTRIBUTE_UNUSED,
 			 int line ATTRIBUTE_UNUSED,
 			 const char *function ATTRIBUTE_UNUSED,
 			 int err ATTRIBUTE_UNUSED,
-			 const char *fmt ATTRIBUTE_UNUSED, ...)
+			 const char *fmt ATTRIBUTE_UNUSED,
+			 va_list arg ATTRIBUTE_UNUSED)
 {
 }
 
@@ -88,51 +91,48 @@ static int get_dev_name1(struct hint_list *list, char **res, int device,
 			 int stream)
 {
 	*res = NULL;
-	if (device < 0)
+	if (device < 0 || device == DEV_SKIP)
 		return 0;
 	switch (list->iface) {
 #ifdef BUILD_HWDEP
 	case SND_CTL_ELEM_IFACE_HWDEP:
 		{
-			snd_hwdep_info_t *info;
-			snd_hwdep_info_alloca(&info);
-			snd_hwdep_info_set_device(info, device);
-			if (snd_ctl_hwdep_info(list->ctl, info) < 0)
+			snd_hwdep_info_t info = {0};
+			snd_hwdep_info_set_device(&info, device);
+			if (snd_ctl_hwdep_info(list->ctl, &info) < 0)
 				return 0;
-			*res = strdup(snd_hwdep_info_get_name(info));
+			*res = strdup(snd_hwdep_info_get_name(&info));
 			return 0;
 		}
 #endif
 #ifdef BUILD_PCM
 	case SND_CTL_ELEM_IFACE_PCM:
 		{
-			snd_pcm_info_t *info;
-			snd_pcm_info_alloca(&info);
-			snd_pcm_info_set_device(info, device);
-			snd_pcm_info_set_stream(info, stream ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK);
-			if (snd_ctl_pcm_info(list->ctl, info) < 0)
+			snd_pcm_info_t info = {0};
+			snd_pcm_info_set_device(&info, device);
+			snd_pcm_info_set_stream(&info, stream ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK);
+			if (snd_ctl_pcm_info(list->ctl, &info) < 0)
 				return 0;
-			switch (snd_pcm_info_get_class(info)) {
+			switch (snd_pcm_info_get_class(&info)) {
 			case SND_PCM_CLASS_MODEM:
 			case SND_PCM_CLASS_DIGITIZER:
 				return -ENODEV;
 			default:
 				break;
 			}
-			*res = strdup(snd_pcm_info_get_name(info));
+			*res = strdup(snd_pcm_info_get_name(&info));
 			return 0;
 		}
 #endif
 #ifdef BUILD_RAWMIDI
 	case SND_CTL_ELEM_IFACE_RAWMIDI:
 		{
-			snd_rawmidi_info_t *info;
-			snd_rawmidi_info_alloca(&info);
-			snd_rawmidi_info_set_device(info, device);
-			snd_rawmidi_info_set_stream(info, stream ? SND_RAWMIDI_STREAM_INPUT : SND_RAWMIDI_STREAM_OUTPUT);
-			if (snd_ctl_rawmidi_info(list->ctl, info) < 0)
+			snd_rawmidi_info_t info = {0};
+			snd_rawmidi_info_set_device(&info, device);
+			snd_rawmidi_info_set_stream(&info, stream ? SND_RAWMIDI_STREAM_INPUT : SND_RAWMIDI_STREAM_OUTPUT);
+			if (snd_ctl_rawmidi_info(list->ctl, &info) < 0)
 				return 0;
-			*res = strdup(snd_rawmidi_info_get_name(info));
+			*res = strdup(snd_rawmidi_info_get_name(&info));
 			return 0;
 		}
 #endif
@@ -208,11 +208,12 @@ static char *get_dev_name(struct hint_list *list)
 #define BUF_SIZE 128
 #endif
 
-static int try_config(struct hint_list *list,
+static int try_config(snd_config_t *config,
+		      struct hint_list *list,
 		      const char *base,
 		      const char *name)
 {
-	snd_lib_error_handler_t eh;
+	snd_local_error_handler_t eh;
 	snd_config_t *res = NULL, *cfg, *cfg1, *n;
 	snd_config_iterator_t i, next;
 	char *buf, *buf1 = NULL, *buf2;
@@ -228,7 +229,7 @@ static int try_config(struct hint_list *list,
 		return -ENOMEM;
 	sprintf(buf, "%s.%s", base, name);
 	/* look for redirection */
-	if (snd_config_search(snd_config, buf, &cfg) >= 0 &&
+	if (snd_config_search(config, buf, &cfg) >= 0 &&
 	    snd_config_get_string(cfg, &str) >= 0 &&
 	    ((strncmp(base, str, strlen(base)) == 0 &&
 	     str[strlen(base)] == '.') || strchr(str, '.') == NULL))
@@ -239,10 +240,9 @@ static int try_config(struct hint_list *list,
 		sprintf(buf, "%s:CARD=%s", name, snd_ctl_card_info_get_id(list->info));
 	else
 		strcpy(buf, name);
-	eh = snd_lib_error;
-	snd_lib_error_set_handler(&zero_handler);
-	err = snd_config_search_definition(snd_config, base, buf, &res);
-	snd_lib_error_set_handler(eh);
+	eh = snd_lib_error_set_local(&zero_handler);
+	err = snd_config_search_definition(config, base, buf, &res);
+	snd_lib_error_set_local(eh);
 	if (err < 0)
 		goto __skip_add;
 	cleanup_res = 1;
@@ -270,7 +270,6 @@ static int try_config(struct hint_list *list,
 	if (snd_config_search(cfg1, "type", &cfg) >= 0 &&
 	    snd_config_get_string(cfg, &str) >= 0 &&
 	    strcmp(str, "hw") == 0) {
-	    	dev = 0;
 		list->device_input = -1;
 		list->device_output = -1;
 		if (snd_config_search(cfg1, "device", &cfg) >= 0) {
@@ -316,7 +315,9 @@ static int try_config(struct hint_list *list,
 				err = -EINVAL;
 				goto __cleanup;
 			}
-			list->device_output = -1;
+			/* skip the counterpart if only a single direction is defined */
+			if (list->device_output < 0)
+				list->device_output = DEV_SKIP;
 		}
 		if (snd_config_search(cfg, "device_output", &n) >= 0) {
 			if (snd_config_get_integer(n, &list->device_output) < 0) {
@@ -324,6 +325,9 @@ static int try_config(struct hint_list *list,
 				err = -EINVAL;
 				goto __cleanup;
 			}
+			/* skip the counterpart if only a single direction is defined */
+			if (list->device_input < 0)
+				list->device_input = DEV_SKIP;
 		}
 	} else if (level == 1 && !list->show_all)
 		goto __skip_add;
@@ -337,10 +341,9 @@ static int try_config(struct hint_list *list,
 		goto __ok;
 	/* find, if all parameters have a default, */
 	/* otherwise filter this definition */
-	eh = snd_lib_error;
-	snd_lib_error_set_handler(&zero_handler);
-	err = snd_config_search_alias_hooks(snd_config, base, buf, &res);
-	snd_lib_error_set_handler(eh);
+	eh = snd_lib_error_set_local(&zero_handler);
+	err = snd_config_search_alias_hooks(config, base, buf, &res);
+	snd_lib_error_set_local(eh);
 	if (err < 0)
 		goto __cleanup;
 	if (snd_config_search(res, "@args", &cfg) >= 0) {
@@ -406,26 +409,25 @@ static const next_devices_t next_devices[] = {
 };
 #endif
 
-static int add_card(struct hint_list *list, int card)
+static int add_card(snd_config_t *config, snd_config_t *rw_config, struct hint_list *list, int card)
 {
 	int err, ok;
 	snd_config_t *conf, *n;
 	snd_config_iterator_t i, next;
 	const char *str;
 	char ctl_name[16];
-	snd_ctl_card_info_t *info;
+	snd_ctl_card_info_t info = {0};
 	int device, max_device = 0;
 	
-	snd_ctl_card_info_alloca(&info);
-	list->info = info;
-	err = snd_config_search(snd_config, list->siface, &conf);
+	list->info = &info;
+	err = snd_config_search(config, list->siface, &conf);
 	if (err < 0)
 		return err;
 	sprintf(ctl_name, "hw:%i", card);
 	err = snd_ctl_open(&list->ctl, ctl_name, 0);
 	if (err < 0)
 		return err;
-	err = snd_ctl_card_info(list->ctl, info);
+	err = snd_ctl_card_info(list->ctl, &info);
 	if (err < 0)
 		goto __error;
 	snd_config_for_each(i, next, conf) {
@@ -449,7 +451,7 @@ static int add_card(struct hint_list *list, int card)
 			ok = 0;
 			for (device = 0; err >= 0 && device <= max_device; device++) {
 				list->device = device;
-				err = try_config(list, list->siface, str);
+				err = try_config(rw_config, list, list->siface, str);
 				if (err < 0)
 					break;
 				ok++;
@@ -464,7 +466,7 @@ static int add_card(struct hint_list *list, int card)
 		if (err < 0) {
 			list->card = card;
 			list->device = -1;
-			err = try_config(list, list->siface, str);
+			err = try_config(rw_config, list, list->siface, str);
 		}
 		if (err == -ENOMEM)
 			goto __error;
@@ -493,14 +495,15 @@ static int get_card_name(struct hint_list *list, int card)
 	return 0;
 }
 
-static int add_software_devices(struct hint_list *list)
+static int add_software_devices(snd_config_t *config, snd_config_t *rw_config,
+				struct hint_list *list)
 {
 	int err;
 	snd_config_t *conf, *n;
 	snd_config_iterator_t i, next;
 	const char *str;
 
-	err = snd_config_search(snd_config, list->siface, &conf);
+	err = snd_config_search(config, list->siface, &conf);
 	if (err < 0)
 		return err;
 	snd_config_for_each(i, next, conf) {
@@ -509,7 +512,7 @@ static int add_software_devices(struct hint_list *list)
 			continue;
 		list->card = -1;
 		list->device = -1;
-		err = try_config(list, list->siface, str);
+		err = try_config(rw_config, list, list->siface, str);
 		if (err == -ENOMEM)
 			return -ENOMEM;
 	}
@@ -517,15 +520,18 @@ static int add_software_devices(struct hint_list *list)
 }
 
 /**
- * \brief Return string list with device name hints.
+ * \brief Get a set of device name hints
  * \param card Card number or -1 (means all cards)
  * \param iface Interface identification (like "pcm", "rawmidi", "timer", "seq")
- * \param hints Result - array of string with device name hints
+ * \param hints Result - array of device name hints
  * \result zero if success, otherwise a negative error code
  *
- * Note: The device description is separated with '|' char.
+ * hints will receive a NULL-terminated array of device name hints,
+ * which can be passed to #snd_device_name_get_hint to extract usable
+ * values. When no longer needed, hints should be passed to
+ * #snd_device_name_free_hint to release resources.
  *
- * User defined hints are gathered from namehint.IFACE tree like:
+ * User-defined hints are gathered from namehint.IFACE tree like:
  *
  * <code>
  * namehint.pcm {<br>
@@ -533,6 +539,8 @@ static int add_software_devices(struct hint_list *list)
  *   myplug "plug:front:Do all conversions for front speakers"<br>
  * }
  * </code>
+ *
+ * Note: The device description is separated with '|' char.
  *
  * Special variables: defaults.namehint.showall specifies if all device
  * definitions are accepted (boolean type).
@@ -542,18 +550,24 @@ int snd_device_name_hint(int card, const char *iface, void ***hints)
 	struct hint_list list;
 	char ehints[24];
 	const char *str;
-	snd_config_t *conf;
+	snd_config_t *conf, *local_config = NULL, *local_config_rw = NULL;
+	snd_config_update_t *local_config_update = NULL;
 	snd_config_iterator_t i, next;
 	int err;
 
 	if (hints == NULL)
 		return -EINVAL;
-	err = snd_config_update();
+	err = snd_config_update_r(&local_config, &local_config_update, NULL);
+	if (err < 0)
+		return err;
+	err = snd_config_copy(&local_config_rw, local_config);
 	if (err < 0)
 		return err;
 	list.list = NULL;
 	list.count = list.allocated = 0;
 	list.siface = iface;
+	list.show_all = 0;
+	list.cardname = NULL;
 	if (strcmp(iface, "card") == 0)
 		list.iface = SND_CTL_ELEM_IFACE_CARD;
 	else if (strcmp(iface, "pcm") == 0)
@@ -568,18 +582,19 @@ int snd_device_name_hint(int card, const char *iface, void ***hints)
 		list.iface = SND_CTL_ELEM_IFACE_HWDEP;
 	else if (strcmp(iface, "ctl") == 0)
 		list.iface = SND_CTL_ELEM_IFACE_MIXER;
-	else
-		return -EINVAL;
-	list.show_all = 0;
-	list.cardname = NULL;
-	if (snd_config_search(snd_config, "defaults.namehint.showall", &conf) >= 0)
+	else {
+		err = -EINVAL;
+		goto __error;
+	}
+
+	if (snd_config_search(local_config, "defaults.namehint.showall", &conf) >= 0)
 		list.show_all = snd_config_get_bool(conf) > 0;
 	if (card >= 0) {
 		err = get_card_name(&list, card);
 		if (err >= 0)
-			err = add_card(&list, card);
+			err = add_card(local_config, local_config_rw, &list, card);
 	} else {
-		add_software_devices(&list);
+		add_software_devices(local_config, local_config_rw, &list);
 		err = snd_card_next(&card);
 		if (err < 0)
 			goto __error;
@@ -587,7 +602,7 @@ int snd_device_name_hint(int card, const char *iface, void ***hints)
 			err = get_card_name(&list, card);
 			if (err < 0)
 				goto __error;
-			err = add_card(&list, card);
+			err = add_card(local_config, local_config_rw, &list, card);
 			if (err < 0)
 				goto __error;
 			err = snd_card_next(&card);
@@ -596,7 +611,7 @@ int snd_device_name_hint(int card, const char *iface, void ***hints)
 		}
 	}
 	sprintf(ehints, "namehint.%s", list.siface);
-	err = snd_config_search(snd_config, ehints, &conf);
+	err = snd_config_search(local_config, ehints, &conf);
 	if (err >= 0) {
 		snd_config_for_each(i, next, conf) {
 			if (snd_config_get_string(snd_config_iterator_entry(i),
@@ -609,25 +624,28 @@ int snd_device_name_hint(int card, const char *iface, void ***hints)
 	}
 	err = 0;
       __error:
-      	if (err < 0) {
+	/* add an empty entry if nothing has been added yet; the caller
+	 * expects non-NULL return
+	 */
+	if (!err && !list.list)
+		err = hint_list_add(&list, NULL, NULL);
+	if (err < 0)
       		snd_device_name_free_hint((void **)list.list);
-      		if (list.cardname)
-	      		free(list.cardname);
-      		return err;
-      	} else {
-      		err = hint_list_add(&list, NULL, NULL);
-      		if (err < 0)
-      			goto __error;
+	else
       		*hints = (void **)list.list;
-      		if (list.cardname)
-	      		free(list.cardname);
-	}
-      	return 0;
+	free(list.cardname);
+	if (local_config_rw)
+		snd_config_delete(local_config_rw);
+	if (local_config)
+		snd_config_delete(local_config);
+	if (local_config_update)
+		snd_config_update_free(local_config_update);
+	return err;
 }
 
 /**
- * \brief Free a string list with device name hints.
- * \param hints A string list to free
+ * \brief Free a list of device name hints.
+ * \param hints List to free
  * \result zero if success, otherwise a negative error code
  */
 int snd_device_name_free_hint(void **hints)
@@ -646,16 +664,17 @@ int snd_device_name_free_hint(void **hints)
 }
 
 /**
- * \brief Get a hint Free a string list with device name hints.
+ * \brief Extract a value from a hint
  * \param hint A pointer to hint
- * \param id Hint ID (see bellow)
+ * \param id Hint value to extract ("NAME", "DESC", or "IOID", see below)
  * \result an allocated ASCII string if success, otherwise NULL
  *
  * List of valid IDs:
  * NAME - name of device
  * DESC - description of device
- * IOID - input / output identification (Input or Output strings),
- *        not present (NULL) means both
+ * IOID - input / output identification ("Input" or "Output"), NULL means both
+ *
+ * The return value should be freed when no longer needed.
  */
 char *snd_device_name_get_hint(const void *hint, const char *id)
 {

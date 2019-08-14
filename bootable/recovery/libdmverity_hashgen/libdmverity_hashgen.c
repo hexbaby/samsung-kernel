@@ -185,9 +185,9 @@ static void* hash_create_job(void *args){
 		exit(EXIT_FAILURE); 
 	}
 
-	fd = open(data_device, O_RDONLY);
+	fd = TEMP_FAILURE_RETRY(open(data_device, O_RDONLY));
 	if( fd == -1) {
-        printf("Cannot open device %s.\n", data_device);
+        printf("Cannot open device %s. %s \n", data_device, strerror(errno));
 		free(data_buffer); 
         exit(EXIT_FAILURE); 
 	}
@@ -216,7 +216,7 @@ static void* hash_create_job(void *args){
 			blocks_to_calc = 0;
 		}
 
-		if( read(fd, data_buffer, read_size * data_block_size) < 0  ){ 
+		if( TEMP_FAILURE_RETRY(read(fd, data_buffer, read_size * data_block_size)) < 0  ){ 
 			printf("Cannot read data device block.");
 			free(data_buffer);
 			close(fd); 
@@ -252,21 +252,23 @@ static void* hash_create_job(void *args){
 static int get_max_thread_num()
 {
  #define NTHREADS 4
-	 char core_num;
+	 char core_num[8];
 	 int m_thread;
 	 int fd;
 	 /* Get Max cpu_num from kernel side */
-	 fd = open("/sys/devices/system/cpu/kernel_max", O_RDONLY);
+	 memset(core_num,0,sizeof(core_num));
+	 fd = TEMP_FAILURE_RETRY(open("/sys/devices/system/cpu/kernel_max", O_RDONLY));
 
 	 if (fd < 0) {
 		 fprintf(stderr, "Failed to open sys node\n");
+		 printf("Cannot open sys mode %s.\n", strerror(errno));
 		 /* Default Thread number = 4 */	
 		 return NTHREADS;
 	 }
-	 read(fd, &core_num, sizeof(core_num));
+	 TEMP_FAILURE_RETRY(read(fd, core_num, sizeof(core_num)));
 	 close(fd);
-	 m_thread = atoi(&core_num) + 1;
-	 printf("core_num = %c thread_num = %d\n", core_num, m_thread);
+	 m_thread = atoi(core_num) + 1;
+	 printf("thread_num = %d\n", m_thread);
 	 return m_thread;
 }
 
@@ -378,7 +380,7 @@ static int get_max_thread_num()
 	 /*  back to create_hash procedure */ 
 	 while (blocks_to_write--) {
 		 left_bytes = hash_block_size;
-		 for (i = 0; i < hash_per_block; i++) {
+		 for (i = 0; i < (unsigned int)hash_per_block; i++) {
 			 if (!data_block_count)
 				 break;
 			 data_block_count--;
@@ -466,7 +468,7 @@ static int get_max_thread_num()
 	 memset(left_block, 0, hash_block_size);
 	 while (blocks_to_write--) {
 		 left_bytes = hash_block_size;
-		 for (i = 0; i < hash_per_block; i++) {
+		 for (i = 0; i < (unsigned int)hash_per_block; i++) {
 			 if (!blocks)
 				 break;
 			 blocks--;

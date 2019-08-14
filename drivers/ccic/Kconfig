@@ -51,3 +51,11 @@ config CCIC_WATER_DETECT
 	help
 	  If you say yes here you will get support for
 	  water detect Enable
+
+config CCIC_MANUAL_UPDATE
+	bool "support CCIC manual update"
+	depends on CCIC_S2MM005
+	default n
+	help
+	  If you say yes here you will get support for
+	  ccic manual update

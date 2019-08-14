@@ -82,6 +82,13 @@ typedef enum {
 	PD_TA_TYPE,
 } pd_usb_state_t;
 
+#if defined(CONFIG_VBUS_NOTIFIER)
+typedef enum {
+	EVENT_LOAD = 0,
+	EVENT_CANCEL,
+} muic_fake_event;
+#endif
+
 typedef struct
 {
 	uint64_t src:4;
@@ -107,25 +114,40 @@ typedef struct _manager_data_t
 //	struct workqueue_struct *typec_manager_wq;
 	struct delayed_work cable_check_work;
 	struct delayed_work muic_noti_work;
+	struct delayed_work rtctime_update_work;
+#if defined(CONFIG_VBUS_NOTIFIER)
+	struct delayed_work vbus_noti_work;
+#endif
 
 	int muic_action;
 	int muic_cable_type;
 	int muic_data_refresh;
 	int muic_attach_state_without_ccic;
+#if defined(CONFIG_VBUS_NOTIFIER)
+	int muic_fake_event_wq_processing;
+#endif
 	int vbus_state;
 
 	int ccic_attach_state;	// USB_STATUS_NOTIFY_DETACH, UFP, DFP, DRP, NO_USB
 	int ccic_drp_state;
+	int ccic_rid_state;
 	int cable_type;
 	int prev_muic_cable_type;
 	bool exception_upsm_mode;
-	unsigned char usb_state[15];
-	int is_usb;
+	int usb_enum_state;
+	bool usb_enable_state;
 	int pd_con_state;
 	int water_det;
 	int is_UFPS;
-        void *pd;
-	int cur_rid;
+	void *pd;
+	int water_count;
+	int dry_count;
+	int usb210_count;
+	int usb310_count;
+	int waterChg_count;
+	unsigned long waterDet_duration;
+	unsigned long waterDet_time;
+	unsigned long dryDet_time;
 }manager_data_t;
 
 

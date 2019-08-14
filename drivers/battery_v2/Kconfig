@@ -672,6 +672,12 @@ config MACH_KOR_EARJACK_WR
 	help
 	  Say Y to enable earjack-noise workaround at charging
 
+config STORE_MODE
+	bool "enable store mode"
+	default n
+	help
+	  Say Y to enable CONFIG_STORE_MODE
+
 config SW_SELF_DISCHARGING
 	bool "enable sw_self_discharging"
 	default n
@@ -696,3 +702,21 @@ config BATTERY_NOTIFIER
 	default n
 	help
 	  Say Y to enable battery notifier
+
+config CHANGE_VBUS_VOLTAGE
+	bool "enable change vbus voltage"
+	default n
+	help
+	  Say Y to enable CONFIG_CHANGE_VBUS_VOLTAGE
+
+config DISABLE_SAFETY_TIMER
+	bool "disable safety timer"
+	default n
+	help
+	  Say Y to enable CONFIG_DISABLE_SAFETY_TIMER
+
+config ENABLE_100MA_CHARGING_BEFORE_USB_CONFIGURED
+	bool "enable 100mA before usb configured"
+	default n
+	help
+	  Say Y to enable 100mA before usb configured

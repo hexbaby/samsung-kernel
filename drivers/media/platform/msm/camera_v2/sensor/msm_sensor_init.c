@@ -13,7 +13,9 @@
 #define pr_fmt(fmt) "MSM-SENSOR-INIT %s:%d " fmt "\n", __func__, __LINE__
 
 /* Header files */
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 #include <linux/device.h>
+#endif
 #include "msm_sensor_init.h"
 #include "msm_sensor_driver.h"
 #include "msm_sensor.h"
@@ -23,7 +25,9 @@
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 extern struct kset *devices_kset;
+#endif
 static struct msm_sensor_init_t *s_init;
 struct class *camera_class;
 static struct v4l2_file_operations msm_sensor_init_v4l2_subdev_fops;
@@ -627,6 +631,7 @@ static ssize_t front_sensorid_exif_store(struct device *dev,
 	return size;
 }
 
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 #define FROM_MODULE_ID_SIZE	10
 uint8_t rear_module_id[FROM_MODULE_ID_SIZE + 1] = "\0";
 static ssize_t back_camera_moduleid_show(struct device *dev,
@@ -639,6 +644,7 @@ static ssize_t back_camera_moduleid_show(struct device *dev,
 	  rear_module_id[0], rear_module_id[1], rear_module_id[2], rear_module_id[3], rear_module_id[4],
 	  rear_module_id[5], rear_module_id[6], rear_module_id[7], rear_module_id[8], rear_module_id[9]);
 }
+#endif
 
 #if defined(CONFIG_COMPANION3)
 extern int comp_fac_i2c_check;
@@ -745,10 +751,12 @@ static DEVICE_ATTR(rear_sensorid_exif, S_IRUGO|S_IWUSR|S_IWGRP,
 		rear_sensorid_exif_show, rear_sensorid_exif_store);
 static DEVICE_ATTR(front_sensorid_exif, S_IRUGO|S_IWUSR|S_IWGRP,
 		front_sensorid_exif_show, front_sensorid_exif_store);
-static DEVICE_ATTR(ssrm_camera_info, S_IRUGO|S_IWUSR|S_IWGRP,
-		ssrm_camera_info_show, ssrm_camera_info_store);
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 static DEVICE_ATTR(rear_moduleid, S_IRUGO, back_camera_moduleid_show, NULL);
 static DEVICE_ATTR(SVC_rear_module, S_IRUGO, back_camera_moduleid_show, NULL);
+#endif
+static DEVICE_ATTR(ssrm_camera_info, S_IRUGO|S_IWUSR|S_IWGRP,
+		ssrm_camera_info_show, ssrm_camera_info_store);
 
 #if defined(CONFIG_SEC_GRACEQLTE_PROJECT)
 static DEVICE_ATTR(iris_camfw, S_IRUGO|S_IWUSR|S_IWGRP,
@@ -770,6 +778,7 @@ static DEVICE_ATTR(companion_ic_check, S_IRUGO|S_IWUSR|S_IWGRP,
 		back_camera_comp_ic_check_show, back_camera_comp_ic_check_store);
 #endif
 
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 int svc_cheating_prevent_device_file_create(struct kobject **obj)
 {
 	struct kernfs_node *SVC_sd;
@@ -800,6 +809,7 @@ int svc_cheating_prevent_device_file_create(struct kobject **obj)
 	*obj = Camera;
 	return 0;
 }
+#endif
 
 static int __init msm_sensor_init_module(void)
 {
@@ -808,11 +818,11 @@ static int __init msm_sensor_init_module(void)
 #if defined(CONFIG_SEC_GRACEQLTE_PROJECT)
 	struct device         *cam_dev_iris;
 #endif
-	struct kobject *SVC = 0;
 	int ret = 0;
-
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
+	struct kobject *SVC = 0;
 	svc_cheating_prevent_device_file_create(&SVC);
-
+#endif
 	camera_class = class_create(THIS_MODULE, "camera");
 	if (IS_ERR(camera_class))
 	    pr_err("failed to create device cam_dev_rear!\n");
@@ -957,6 +967,7 @@ static int __init msm_sensor_init_module(void)
 		ret = -ENODEV;
 		goto device_create_fail;
 	}
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 	if (device_create_file(cam_dev_back, &dev_attr_rear_moduleid) < 0) {
 		printk("Failed to create device file!(%s)!\n",
 			dev_attr_rear_moduleid.attr.name);
@@ -969,12 +980,11 @@ static int __init msm_sensor_init_module(void)
 		ret = -ENODEV;
 		goto device_create_fail;
 	}
-
+#endif
 	if (device_create_file(cam_dev_back, &dev_attr_ssrm_camera_info) < 0) {
 		printk("Failed to create device file!(%s)!\n",
 			dev_attr_ssrm_camera_info.attr.name);
 	}
-
 	cam_dev_front = device_create(camera_class, NULL,
 		2, NULL, "front");
 	if (IS_ERR(cam_dev_front)) {

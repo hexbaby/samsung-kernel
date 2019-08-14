@@ -163,6 +163,7 @@ enum VDM_MSG_IRQ_State {
 #define REG_RX_DIS_ATTENTION			0x05C0
 
 #define GEAR_VR_DETACH_WAIT_MS 1000
+#define DISPLAY_PORT_SVID		0xFF01
 
 void send_alternate_message(void * data, int cmd);
 void receive_alternate_message(void * data, VDM_MSG_IRQ_STATUS_Type *VDM_MSG_IRQ_State);

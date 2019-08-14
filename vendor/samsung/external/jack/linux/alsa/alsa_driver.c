@@ -694,7 +694,7 @@ alsa_driver_set_parameters (alsa_driver_t *driver,
 		}
 	}
 #endif
-	
+
 
 	/* check the rate, since thats rather important */
 
@@ -1016,7 +1016,7 @@ alsa_driver_get_channel_addresses (alsa_driver_t *driver,
 
 #ifdef __ANDROID__
 static int
-alsa_driver_get_channel_addresses_2nd (alsa_driver_t *driver, 
+alsa_driver_get_channel_addresses_2nd (alsa_driver_t *driver,
 					snd_pcm_uframes_t *playback_avail,
 					snd_pcm_uframes_t *playback_offset)
 {
@@ -1400,11 +1400,11 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 #if defined (__ANDROID__)
     int capture_arrange = 0;
     int capture_period_div = 0;
-    int capture_period_mod = 0;    
-    
+    int capture_period_mod = 0;
+
     int playback_arrange = 0;
     int playback_period_div = 0;
-    int playback_period_mod = 0; 
+    int playback_period_mod = 0;
 #endif
 
 	*status = -1;
@@ -1423,7 +1423,7 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 
   again:
 
-	while (need_playback || need_capture 
+	while (need_playback || need_capture
 #ifdef __ANDROID__
 		|| need_playback_2nd
 #endif
@@ -1619,6 +1619,25 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 #if defined (__ANDROID__) && defined (WORKAROUND_SLSI_USBAUDIO_NOISE)
 				poll_time_capture = poll_ret;
 #endif
+#ifdef ENABLE_POLL_IN_READ_IMMEDIATELY
+				if (driver->capture_handle) {
+					if ((capture_avail = snd_pcm_avail_update (
+						     driver->capture_handle)) < 0) {
+						if (capture_avail == -EPIPE ) {
+							xrun_detected = TRUE;
+						} else {
+							jack_error ("unknown ALSA avail_update return"
+								    " value (%u)", capture_avail);
+						}
+					}
+
+					alsa_driver_read(driver,  driver->frames_per_cycle);
+
+				} else {
+					/* odd, but see min() computation below */
+					capture_avail = INT_MAX;
+				}
+#endif
 			}
 		}
 
@@ -1630,7 +1649,13 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 			return 0;
 		}
 
-	}
+		if (xrun_detected) {
+			jack_error("xrun_detected - do recovery alsa");
+			*status = alsa_driver_xrun_recovery (driver, delayed_usecs);
+			return 0;
+		}
+
+	}  // end while
 
 #if defined (__ANDROID__) && defined (WORKAROUND_SLSI_USBAUDIO_NOISE)
 	if (driver->playback_handle && driver->capture_handle) {
@@ -1641,6 +1666,7 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 	}
 #endif
 
+#ifndef ENABLE_POLL_IN_READ_IMMEDIATELY
 	if (driver->capture_handle) {
 		if ((capture_avail = snd_pcm_avail_update (
 			     driver->capture_handle)) < 0) {
@@ -1653,8 +1679,8 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 		}
 #if 0 //defined (__ANDROID__)
         capture_period_div = capture_avail / driver->frames_per_cycle;
-        capture_period_mod = capture_avail % driver->frames_per_cycle;        
-        if(capture_avail > driver->frames_per_cycle && capture_period_div % 2 == 0){         
+        capture_period_mod = capture_avail % driver->frames_per_cycle;
+        if(capture_avail > driver->frames_per_cycle && capture_period_div % 2 == 0){
             capture_arrange = (capture_period_mod)? capture_period_mod : driver->frames_per_cycle;
             jack_error("alsa_driver_wait capture re-arrange avail %d to %d", capture_avail , capture_avail - capture_arrange);
             alsa_driver_read(driver, capture_arrange);
@@ -1675,6 +1701,8 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 		capture_avail = INT_MAX;
 	}
 
+#endif
+
 	if (driver->playback_handle) {
 		if ((playback_avail = snd_pcm_avail_update (
 			     driver->playback_handle)) < 0) {
@@ -1687,8 +1715,8 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 		}
 #if 0 //defined (__ANDROID__)
         playback_period_div = playback_avail / driver->frames_per_cycle;
-        playback_period_mod = playback_avail % driver->frames_per_cycle;        
-        if(playback_avail > driver->frames_per_cycle && playback_period_div % 2 == 0){         
+        playback_period_mod = playback_avail % driver->frames_per_cycle;
+        if(playback_avail > driver->frames_per_cycle && playback_period_div % 2 == 0){
             playback_arrange = (playback_period_mod)? playback_period_mod : driver->frames_per_cycle;
             jack_error("alsa_driver_wait playback re-arrange avail %d to %d", playback_avail ,playback_avail - playback_arrange);
             alsa_driver_write(driver, playback_arrange);
@@ -1700,21 +1728,22 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 		playback_avail = INT_MAX;
 	}
 
-	if (xrun_detected) {
-		*status = alsa_driver_xrun_recovery (driver, delayed_usecs);
-		return 0;
-	}
-
 	*status = 0;
 	driver->last_wait_ust = poll_ret;
 
-	avail = capture_avail < playback_avail ? capture_avail : playback_avail;
+	if(need_capture != 0){
+		avail = capture_avail < playback_avail ? capture_avail : playback_avail;
+	}else {
+		avail = playback_avail;
+	}
 
 #ifdef DEBUG_WAKEUP
 	fprintf (stderr, "wakeup complete, avail = %lu, pavail = %lu "
 		 "cavail = %lu\n",
 		 avail, playback_avail, capture_avail);
 #endif
+
+//	jack_log("avail = %lu, capture_avail=%lu, playback_avail=%lu, cycle=%lu", avail, capture_avail, playback_avail, driver->frames_per_cycle);
 
 	/* mark all channels not done for now. read/write will change this */
 
@@ -1728,6 +1757,8 @@ alsa_driver_wait (alsa_driver_t *driver, int extra_fd, int *status, float
 }
 
 #if defined(__ANDROID__) && defined(ENABLE_RECOVERY_PTR_MISS_MATCHING)
+typedef unsigned long snd_pcm_uframes_t;
+
 typedef struct sndrv_interval {
 	unsigned int min, max;
 	unsigned int openmin:1,
@@ -1738,7 +1769,7 @@ typedef struct sndrv_interval {
 
 typedef struct _snd_pcm_rbptr {
 	snd_pcm_t *master;
-	volatile unsigned long *ptr;
+	volatile snd_pcm_uframes_t *ptr;
 	int fd;
 	off_t offset;
 	int link_dst_count;
@@ -1749,9 +1780,9 @@ typedef struct _snd_pcm_rbptr {
 
 typedef struct _snd_pcm_channel_info {
 	unsigned int channel;
-	void *addr;			/* base address of channel samples */
-	unsigned int first;		/* offset to first sample in bits */
-	unsigned int step;		/* samples distance in bits */
+	void *addr;
+	unsigned int first;
+	unsigned int step;
 	enum { SND_PCM_AREA_SHM, SND_PCM_AREA_MMAP, SND_PCM_AREA_LOCAL } type;
 	union {
 		struct {
@@ -1779,6 +1810,9 @@ typedef struct {
 	void (*dump)(snd_pcm_t *pcm, snd_output_t *out);
 	int (*mmap)(snd_pcm_t *pcm);
 	int (*munmap)(snd_pcm_t *pcm);
+	snd_pcm_chmap_query_t **(*query_chmaps)(snd_pcm_t *pcm);
+	snd_pcm_chmap_t *(*get_chmap)(snd_pcm_t *pcm);
+	int (*set_chmap)(snd_pcm_t *pcm, const snd_pcm_chmap_t *map);
 } snd_pcm_ops_t;
 
 typedef struct {
@@ -1787,29 +1821,30 @@ typedef struct {
 	int (*reset)(snd_pcm_t *pcm);
 	int (*start)(snd_pcm_t *pcm);
 	int (*drop)(snd_pcm_t *pcm);
-	int (*drain)(snd_pcm_t *pcm);
-	int (*pause)(snd_pcm_t *pcm, int enable);
-	snd_pcm_state_t (*state)(snd_pcm_t *pcm);
-	int (*hwsync)(snd_pcm_t *pcm);
-	int (*delay)(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp);
-	int (*resume)(snd_pcm_t *pcm);
+	int (*drain)(snd_pcm_t *pcm); /* need own locking */
+	int (*pause)(snd_pcm_t *pcm, int enable); /* locked */
+	snd_pcm_state_t (*state)(snd_pcm_t *pcm); /* locked */
+	int (*hwsync)(snd_pcm_t *pcm); /* locked */
+	int (*delay)(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp); /* locked */
+	int (*resume)(snd_pcm_t *pcm); /* need own locking */
 	int (*link)(snd_pcm_t *pcm1, snd_pcm_t *pcm2);
 	int (*link_slaves)(snd_pcm_t *pcm, snd_pcm_t *master);
 	int (*unlink)(snd_pcm_t *pcm);
-	snd_pcm_sframes_t (*rewindable)(snd_pcm_t *pcm);
-	snd_pcm_sframes_t (*rewind)(snd_pcm_t *pcm, snd_pcm_uframes_t frames);
-	snd_pcm_sframes_t (*forwardable)(snd_pcm_t *pcm);
-	snd_pcm_sframes_t (*forward)(snd_pcm_t *pcm, snd_pcm_uframes_t frames);
-	snd_pcm_sframes_t (*writei)(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size);
-	snd_pcm_sframes_t (*writen)(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size);
-	snd_pcm_sframes_t (*readi)(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t size);
-	snd_pcm_sframes_t (*readn)(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size);
-	snd_pcm_sframes_t (*avail_update)(snd_pcm_t *pcm);
-	snd_pcm_sframes_t (*mmap_commit)(snd_pcm_t *pcm, snd_pcm_uframes_t offset, snd_pcm_uframes_t size);
-	int (*htimestamp)(snd_pcm_t *pcm, snd_pcm_uframes_t *avail, snd_htimestamp_t *tstamp);
-	int (*poll_descriptors_count)(snd_pcm_t *pcm);
-	int (*poll_descriptors)(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int space);
-	int (*poll_revents)(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int nfds, unsigned short *revents);
+	snd_pcm_sframes_t (*rewindable)(snd_pcm_t *pcm); /* locked */
+	snd_pcm_sframes_t (*rewind)(snd_pcm_t *pcm, snd_pcm_uframes_t frames); /* locked */
+	snd_pcm_sframes_t (*forwardable)(snd_pcm_t *pcm); /* locked */
+	snd_pcm_sframes_t (*forward)(snd_pcm_t *pcm, snd_pcm_uframes_t frames); /* locked */
+	snd_pcm_sframes_t (*writei)(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size); /* need own locking */
+	snd_pcm_sframes_t (*writen)(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size); /* need own locking */
+	snd_pcm_sframes_t (*readi)(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t size); /* need own locking */
+	snd_pcm_sframes_t (*readn)(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size); /* need own locking */
+	snd_pcm_sframes_t (*avail_update)(snd_pcm_t *pcm); /* locked */
+	snd_pcm_sframes_t (*mmap_commit)(snd_pcm_t *pcm, snd_pcm_uframes_t offset, snd_pcm_uframes_t size); /* locked */
+	int (*htimestamp)(snd_pcm_t *pcm, snd_pcm_uframes_t *avail, snd_htimestamp_t *tstamp); /* locked */
+	int (*poll_descriptors_count)(snd_pcm_t *pcm); /* locked */
+	int (*poll_descriptors)(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int space); /* locked */
+	int (*poll_revents)(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int nfds, unsigned short *revents); /* locked */
+	int (*may_wait_for_avail_min)(snd_pcm_t *pcm, snd_pcm_uframes_t avail);
 } snd_pcm_fast_ops_t;
 
 struct list_head {
@@ -1827,44 +1862,45 @@ typedef struct _snd_pcm {
 	int poll_fd;
 	unsigned short poll_events;
 	int setup: 1,
-	    monotonic: 1,
 	    compat: 1;
 	snd_pcm_access_t access;	/* access mode */
 	snd_pcm_format_t format;	/* SND_PCM_FORMAT_* */
 	snd_pcm_subformat_t subformat;	/* subformat */
 	unsigned int channels;		/* channels */
 	unsigned int rate;		/* rate in Hz */
-	unsigned long /*snd_pcm_uframes_t*/ period_size;
+	snd_pcm_uframes_t period_size;
 	unsigned int period_time;	/* period duration */
 	snd_interval_t periods;
 	snd_pcm_tstamp_t tstamp_mode;	/* timestamp mode */
+	snd_pcm_tstamp_type_t tstamp_type;	/* timestamp type */
 	unsigned int period_step;
 	snd_pcm_uframes_t avail_min;	/* min avail frames for wakeup */
 	int period_event;
-	unsigned long start_threshold;
-	unsigned long stop_threshold;
-	unsigned long silence_threshold;	/* Silence filling happens when
+	snd_pcm_uframes_t start_threshold;
+	snd_pcm_uframes_t stop_threshold;
+	snd_pcm_uframes_t silence_threshold;	/* Silence filling happens when
 					   noise is nearest than this */
-	unsigned long silence_size;	/* Silence filling size */
-	unsigned long boundary;	/* pointers wrap point */
+	snd_pcm_uframes_t silence_size;	/* Silence filling size */
+	snd_pcm_uframes_t boundary;	/* pointers wrap point */
 	unsigned int info;		/* Info for returned setup */
 	unsigned int msbits;		/* used most significant bits */
 	unsigned int rate_num;		/* rate numerator */
 	unsigned int rate_den;		/* rate denominator */
 	unsigned int hw_flags;		/* actual hardware flags */
-	unsigned long fifo_size;	/* chip FIFO size in frames */
-	unsigned long buffer_size;
+	snd_pcm_uframes_t fifo_size;	/* chip FIFO size in frames */
+	snd_pcm_uframes_t buffer_size;
 	snd_interval_t buffer_time;
 	unsigned int sample_bits;
 	unsigned int frame_bits;
 	snd_pcm_rbptr_t appl;
 	snd_pcm_rbptr_t hw;
-	unsigned long min_align;
+	snd_pcm_uframes_t min_align;
 	unsigned int mmap_rw: 1;	/* use always mmapped buffer */
 	unsigned int mmap_shadow: 1;	/* don't call actual mmap,
 					 * use the mmaped buffer of the slave
 					 */
 	unsigned int donot_close: 1;	/* don't close this PCM */
+	unsigned int own_state_check:1; /* plugin has own PCM state check */
 	snd_pcm_channel_info_t *mmap_channels;
 	snd_pcm_channel_area_t *running_areas;
 	snd_pcm_channel_area_t *stopped_areas;
@@ -1966,6 +2002,7 @@ alsa_driver_write (alsa_driver_t* driver, jack_nframes_t nframes)
 	snd_pcm_sframes_t nwritten;
 	snd_pcm_sframes_t contiguous;
 	snd_pcm_uframes_t offset;
+
 //	jack_port_t *port;
 	int err;
 
@@ -2084,11 +2121,14 @@ alsa_driver_write (alsa_driver_t* driver, jack_nframes_t nframes)
 		playback_handle_logging = driver->playback_handle;
 		unsigned long diff_ptr = *(playback_handle_logging->appl.ptr) - *(playback_handle_logging->hw.ptr);
 
-		if ( diff_ptr < (orig_nframes*2) ){
-			float delayed_usecs = 0;
-			jack_error ("hw_ptr error - do alsa_refresh diff[%li] contiguous[%d], hw_ptr[%li] appl_ptr[%li]", 
+		if ( diff_ptr == orig_nframes ) {
+		    jack_error ("hw_ptr error - diff[ %li ]  contiguous[ %d ]    hw_ptr[ %li ]   appl_ptr[ %li ]",
 				diff_ptr, contiguous, *(playback_handle_logging->hw.ptr), *(playback_handle_logging->appl.ptr));
 			(*(playback_handle_logging->appl.ptr)) += orig_nframes;
+		} else if ( diff_ptr == 0 ) {
+		    jack_error ("hw_ptr error - diff[ %li ]   contiguous[ %d ]    hw_ptr[ %li ]   appl_ptr[ %li ]",
+				diff_ptr, contiguous, *(playback_handle_logging->hw.ptr), *(playback_handle_logging->appl.ptr));
+			(*(playback_handle_logging->appl.ptr)) += (orig_nframes * 2);
 		}
 #endif
 		nframes -= contiguous;
@@ -2201,7 +2241,7 @@ alsa_driver_delete (alsa_driver_t *driver)
 
 	if (driver->playback_handle) {
 		snd_pcm_close (driver->playback_handle);
-		driver->capture_handle = 0;
+		driver->playback_handle = 0;
 	}
 
 #ifdef __ANDROID__
@@ -2552,7 +2592,7 @@ alsa_driver_new (char *name, char *playback_alsa_device,
 
 			driver->playback_2nd_handle = NULL;
 		}
-	
+
 		if (driver->playback_2nd_handle) {
 			snd_pcm_nonblock (driver->playback_2nd_handle, 0);
 		}

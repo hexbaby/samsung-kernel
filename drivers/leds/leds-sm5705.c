@@ -20,9 +20,13 @@
 #include <linux/leds-sm5705.h>
 #include <linux/mfd/sm5705/sm5705.h>
 #include <linux/muic/sm5705-muic.h>
+#include <linux/muic/muic_afc.h>
 #include <linux/battery/charger/sm5705_charger_oper.h>
-
-#define CONFIG_OF 1
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+#define RETRY_CNT 3
+extern int32_t afc_checked_for_camera;
+static bool fimc_is_activated = 0;
+#endif
 
 enum {
 	SM5705_FLED_OFF_MODE					= 0x0,
@@ -45,8 +49,8 @@ struct sm5705_fled_info {
 };
 
 extern struct class *camera_class; /*sys/class/camera*/
-
-static DEFINE_SPINLOCK(fled_lock);
+bool assistive_light = false;
+static DEFINE_MUTEX(lock);
 static struct sm5705_fled_info *g_sm5705_fled;
 
 static inline int __get_revision_number(void)
@@ -140,7 +144,42 @@ static inline unsigned char _calc_torch_current_offset_to_mA(
 
 static inline unsigned short _calc_torch_current_mA_to_offset(unsigned char offset)
 {
-	return (((offset & 0x1F) + 1 + 4) * 10); // added 4 (+40mA)
+#if defined(CONFIG_SEC_GTS3LLTE_PROJECT) || defined(CONFIG_SEC_GTS3LWIFI_PROJECT)
+	unsigned short ret = 0;
+	/* Changing values based on inputs received from h/w engineer - Mr.Hanwoo Kim
+
+		level    value    lux_range    approx_current
+		  1        1        20-30            20
+		  2        2        30-40            33
+		  3        4        60-70            55
+		  4        6        80-90            85
+		  5        9       100-140           125
+	*/
+	switch (offset) {
+		case 1:
+			ret = 20;
+		break;
+		case 2:
+			ret = 33;
+		break;
+		case 4:
+			ret = 55;
+		break;
+		case 6:
+			ret = 85;
+		break;
+		case 9:
+			ret = 125;
+		break;
+		default:
+			ret = (((offset & 0x1F) + 1) * 10 + 5);
+	}
+	return ret;
+#else
+	//Changing Current value from 40mA to 60mA,
+	//added +2 value to make current value to 60mA
+	return (((offset & 0x1F) + 2) * 10);
+#endif
 }
 
 static int sm5705_FLEDx_set_torch_current(
@@ -164,37 +203,50 @@ static int sm5705_FLEDx_set_torch_current(
 /**
  * SM5705 Flash-LED to MUIC interface functions
  */
-static inline int sm5705_fled_muic_flash_work_on(
-	struct sm5705_fled_info *sm5705_fled)
+static int sm5705_fled_muic_flash_work_on(void)
 {
-#if defined(CONFIG_MUIC_SM5705_AFC)
-	/* MUIC 9V -> 5V function */
-	sm5705_muic_flash_state(1);
-	sm5705_muic_DP_RESET();
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+        if(fimc_is_activated == 0 && afc_checked_for_camera == 0){
+        	int retry = 0;
+		/* MUIC 9V -> 5V function */
+		for (retry = 0; retry < RETRY_CNT; retry++) {
+			if(muic_check_afc_state(1) == 1)
+		   	break;
+
+			pr_err("%s:%d ERROR: AFC disable unsuccessfull retrying after 30ms\n", __func__, __LINE__);
+			msleep(30);
+    		}
+
+		if (retry == RETRY_CNT) {
+			pr_err("%s:%d ERROR: AFC disable failed\n", __func__, __LINE__);
+			return -EINVAL;
+		}
+                fimc_is_activated = 1;	  
+       	}
 #endif
 
 	return 0;
 }
 
-static inline int sm5705_fled_muic_flash_work_off(
-	struct sm5705_fled_info *sm5705_fled)
+static void sm5705_fled_muic_flash_work_off(void)
 {
-#if defined(CONFIG_MUIC_SM5705_AFC)
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
 	/* MUIC 5V -> 9V function */
-	sm5705_muic_flash_state(0);
-	sm5705_muic_AFC_restart();
+        if (fimc_is_activated == 1 && afc_checked_for_camera == 0) {
+		muic_check_afc_state(0);
+		fimc_is_activated = 0;
+        }
 #endif
 
-	return 0;
 }
 
 static inline bool sm5705_fled_check_valid_vbus_from_MUIC(void)
 {
-#if defined(CONFIG_MUIC_SM5705_AFC)
-	if (sm5705_muic_voltate_state() < 9) {
-		return true;
-	}
-	return false;
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+    if (muic_check_afc_state(1) == 1) {
+        return true;
+    }
+    return false;
 #else
 	return true;
 #endif
@@ -297,7 +349,7 @@ static int sm5705_fled_turn_on_torch(struct sm5705_fled_info *sm5705_fled,
 	struct device *dev = sm5705_fled->dev;
 	int ret;
 
-	sm5705_fled_muic_flash_work_on(sm5705_fled);
+	
 
 	dev_err(dev, "%s: set FLED[%d] torch current (current_mA=%d)\n",
 			__func__, index, current_mA);
@@ -324,7 +376,7 @@ static int sm5705_fled_turn_on_torch(struct sm5705_fled_info *sm5705_fled,
 	return 0;
 }
 
-#if 0
+
 static int sm5705_fled_turn_on_flash(struct sm5705_fled_info *sm5705_fled, int index,
 	unsigned short current_mA)
 {
@@ -338,7 +390,13 @@ static int sm5705_fled_turn_on_flash(struct sm5705_fled_info *sm5705_fled, int i
 			__func__, index, current_mA);
 		return ret;
 	}
-
+	/*
+	Charger event need to push first before gpio enable.
+	In flash capture mode, when connect some types charger or USB, from pre-flash -> main-flash ,
+	torch on first and charger has been change as torch mode, if enable flash first, it will work
+	on torch mode which use flash current , Vbus will pull down and charger disconnect.
+	*/
+	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_FLASH, 1);
 
 	if (pdata->led[index].used_gpio) {
 		ret = sm5705_FLEDx_mode_enable(sm5705_fled, index,
@@ -358,13 +416,12 @@ static int sm5705_fled_turn_on_flash(struct sm5705_fled_info *sm5705_fled, int i
 			return ret;
 		}
 	}
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_FLASH, 1);
+
 
 	dev_info(dev, "%s: FLED[%d] Flash turn-on done.\n", __func__, index);
 
 	return 0;
 }
-#endif
 
 static int sm5705_fled_turn_off(struct sm5705_fled_info *sm5705_fled, int index)
 {
@@ -383,7 +440,7 @@ static int sm5705_fled_turn_off(struct sm5705_fled_info *sm5705_fled, int index)
 		return ret;
 	}
 
-	sm5705_fled_muic_flash_work_off(sm5705_fled);
+	sm5705_fled_muic_flash_work_off();
 
 	ret = sm5705_FLEDx_set_flash_current(sm5705_fled, index, 0);
 	if (IS_ERR_VALUE(ret)) {
@@ -408,7 +465,6 @@ static int sm5705_fled_turn_off(struct sm5705_fled_info *sm5705_fled, int index)
 /**
  *  For Export Flash control functions (external GPIO control)
  */
-static bool fimc_is_activated = 0;
 
 int sm5705_fled_prepare_flash(unsigned char index)
 {
@@ -419,14 +475,14 @@ int sm5705_fled_prepare_flash(unsigned char index)
 		return 0;
 	}
 
-	dev_info(g_sm5705_fled->dev, "%s: check - GPIO used, set - Torch/Flash current\n",
-		__func__);
-
 	if (g_sm5705_fled == NULL) {
 		pr_err("sm5705-fled: %s: invalid g_sm5705_fled, maybe not registed fled \
 			device driver\n", __func__);
 		return -ENXIO;
 	}
+
+	dev_info(g_sm5705_fled->dev, "%s: check - GPIO used, set - Torch/Flash current\n",
+                __func__);
 
 	if (g_sm5705_fled->pdata->led[index].used_gpio == 0) {
 		pr_err("sm5705-fled: %s: can't used external GPIO control, check device tree\n",
@@ -434,7 +490,7 @@ int sm5705_fled_prepare_flash(unsigned char index)
 		return -ENOENT;
 	}
 
-	sm5705_fled_muic_flash_work_on(g_sm5705_fled);
+	sm5705_fled_muic_flash_work_on();
 
 	pr_err("sm5705-fled: torch current : %d, flash_current : %d", g_sm5705_fled->pdata->led[index].torch_current_mA, g_sm5705_fled->pdata->led[index].flash_current_mA);
 
@@ -443,70 +499,67 @@ int sm5705_fled_prepare_flash(unsigned char index)
 	sm5705_FLEDx_set_flash_current(g_sm5705_fled, index,
 		g_sm5705_fled->pdata->led[index].flash_current_mA);
 
-	fimc_is_activated = 1;
-
 	return 0;
 }
 EXPORT_SYMBOL(sm5705_fled_prepare_flash);
 
 int sm5705_fled_torch_on(unsigned char index)
 {
+    if (assistive_light == false) {
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	/* used only Torch case - Ex> flashlight : Need to 9V -> 5V */
+	sm5705_fled_muic_flash_work_on();
+#endif
+	if (g_sm5705_fled == NULL) {
+                pr_err("sm5705-fled: %s: invalid g_sm5705_fled, maybe not registed fled \
+                        device driver\n", __func__);
+                return -ENXIO;
+        }
 	dev_info(g_sm5705_fled->dev, "%s: Torch - ON\n", __func__);
+        sm5705_fled_turn_on_torch(g_sm5705_fled, index,g_sm5705_fled->pdata->led[index].torch_current_mA);
+    }
 
-	/* CAUTION: SM5705 Flash-LED can't driving 9V_VBUS, MUST be "VBUS < 6V" */
-	if (sm5705_fled_check_valid_vbus_from_MUIC() == false) {
-		dev_err(g_sm5705_fled->dev, "%s: Can't used Flash_dev, now VBUS=9V\n",
-			__func__);
-		return -EBUSY;
-	}
-
-	sm5705_FLEDx_mode_enable(g_sm5705_fled, index,
-		SM5705_FLED_ON_EXTERNAL_CONTROL_MODE);
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_FLASH, 0);
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_TORCH, 1);
-
-	/* zero2lte - test temp code */
-	{
-		gpio_set_value(g_sm5705_fled->pdata->led[index].flash_en_pin, 0);
-		gpio_set_value(g_sm5705_fled->pdata->led[index].torch_en_pin, 1);
-	}
-
-	return 0;
+    return 0;
 }
 EXPORT_SYMBOL(sm5705_fled_torch_on);
 
 int sm5705_fled_flash_on(unsigned char index)
 {
-	dev_info(g_sm5705_fled->dev, "%s: Flash - ON\n", __func__);
 
+    if (assistive_light == false) {
+	if (g_sm5705_fled == NULL) {
+                pr_err("sm5705-fled: %s: invalid g_sm5705_fled, maybe not registed fled \
+                        device driver\n", __func__);
+                return -ENXIO;
+        }
+        /* CAUTION: SM5705 Flash-LED can't driving 9V_VBUS, MUST be "VBUS < 6V" */
+        if (sm5705_fled_check_valid_vbus_from_MUIC() == false) {
+            dev_err(g_sm5705_fled->dev, "%s: Can't used Flash_dev, now VBUS=9V\n", __func__);
+            return -EBUSY;
+        }
 
-	sm5705_FLEDx_mode_enable(g_sm5705_fled, index,
-		SM5705_FLED_ON_EXTERNAL_CONTROL_MODE);
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_TORCH, 0);
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_FLASH, 1);
+        dev_info(g_sm5705_fled->dev, "%s: Flash - ON\n", __func__);
+        sm5705_fled_turn_on_flash(g_sm5705_fled, index, g_sm5705_fled->pdata->led[index].flash_current_mA);
+    }
 
-	/* zero2lte - test temp code */
-	{
-		gpio_set_value(g_sm5705_fled->pdata->led[index].torch_en_pin, 0);
-		gpio_set_value(g_sm5705_fled->pdata->led[index].flash_en_pin, 1);
-	}
-
-	return 0;
+    return 0;
 }
 EXPORT_SYMBOL(sm5705_fled_flash_on);
 
 int sm5705_fled_led_off(unsigned char index)
 {
-	dev_info(g_sm5705_fled->dev, "%s: LED - OFF\n", __func__);
-
-	/* zero2lte - test temp code */
-	{
-		gpio_set_value(g_sm5705_fled->pdata->led[index].flash_en_pin, 0);
-		gpio_set_value(g_sm5705_fled->pdata->led[index].torch_en_pin, 0);
-	}
-	sm5705_FLEDx_mode_enable(g_sm5705_fled, index, SM5705_FLED_OFF_MODE);
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_TORCH, 0);
-	sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_FLASH, 0);
+    if(g_sm5705_fled == NULL){
+        printk("%s:invalid g_sm5705_fled, maybe not registed fled device driver\n",__func__);
+        return 0;
+    }
+    if (assistive_light == false) {
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+    	/* used only Torch case - Ex> flashlight : Need to 5V -> 9V */
+    	sm5705_fled_muic_flash_work_off();
+#endif
+        dev_info(g_sm5705_fled->dev, "%s: LED - OFF\n", __func__);
+        sm5705_fled_turn_off(g_sm5705_fled, index);
+    }
 
 	return 0;
 }
@@ -519,15 +572,15 @@ int sm5705_fled_close_flash(unsigned char index)
 		return 0;
 	}
 
-	dev_info(g_sm5705_fled->dev, "%s: Close Process\n", __func__);
-
 	if (g_sm5705_fled == NULL) {
 		pr_err("sm5705-fled: %s: invalid g_sm5705_fled, maybe not registed fled \
 			device driver\n", __func__);
 		return -ENXIO;
 	}
 
-	sm5705_fled_muic_flash_work_off(g_sm5705_fled);
+	dev_info(g_sm5705_fled->dev, "%s: Close Process\n", __func__);
+
+	sm5705_fled_muic_flash_work_off();
 
 	fimc_is_activated = 0;
 
@@ -544,11 +597,11 @@ static ssize_t sm5705_rear_flash_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct sm5705_fled_info *sm5705_fled = dev_get_drvdata(dev->parent);
-	unsigned long flags;
+	int retry;
 	int ret, value_u32;
 
 	if ((buf == NULL) || kstrtouint(buf, 10, &value_u32)) {
-		return -1;
+		return -EINVAL;
 	}
 
 	/* temp error canceling code */
@@ -559,27 +612,85 @@ static ssize_t sm5705_rear_flash_store(struct device *dev,
 	}
 
 	dev_info(dev, "%s: value=%d\n", __func__, value_u32);
-
-	spin_lock_irqsave(&fled_lock, flags);
+	mutex_lock(&lock);
 
 	switch (value_u32) {
 	case 0:
 		/* Turn off Torch */
 		ret = sm5705_fled_turn_off(sm5705_fled, REAR_FLASH_INDEX);
+
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+		/* MUIC 5V -> 9V function */
+		muic_torch_prepare(0);
+#endif
+		assistive_light = false;
 		break;
 	case 1:
 		/* Turn on Torch */
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+                /* MUIC 9V -> 5V function */
+		for (retry = 0; retry < 3; retry++) {
+			if(muic_torch_prepare(1) == 1)
+			   break;
+
+			pr_err("%s:%d ERROR: AFC disable unsuccessfull retrying after 30ms\n", __func__, __LINE__);
+			msleep(30);
+		}
+		if (retry == 3) {
+			pr_err("%s:%d ERROR: AFC disable failed\n", __func__, __LINE__);
+			mutex_unlock(&lock);
+			return -EINVAL;
+		}
+#endif
+		 /* Turn on Torch */
 		ret = sm5705_fled_turn_on_torch(sm5705_fled, REAR_FLASH_INDEX, 60);
+		assistive_light = true;
 		break;
 	case 100:
 		/* Factory mode Turn on Torch */
+ #ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+		/* MUIC 9V -> 5V function */
+		for (retry = 0; retry < 3; retry++) {
+			if(muic_torch_prepare(1) == 1)
+			   break;
+
+			pr_err("%s:%d ERROR: AFC disable unsuccessfull retrying after 30ms\n", __func__, __LINE__);
+			msleep(30);
+		}	
+
+		if (retry == 3) {
+			pr_err("%s:%d ERROR: AFC disable failed\n", __func__, __LINE__);
+			mutex_unlock(&lock);
+                        return -EINVAL;
+		}
+#endif
+		/*Turn on Torch */
 		ret = sm5705_fled_turn_on_torch(sm5705_fled, REAR_FLASH_INDEX, 240);
+		assistive_light = true;
 		break;
 	default:
 		if (value_u32 > 1000 && value_u32 < (1000 + 32)) {
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+			/* MUIC 9V -> 5V function */
+			for (retry = 0; retry < 3; retry++) {
+				if(muic_torch_prepare(1) == 1)
+				   break;
+
+				pr_err("%s:%d ERROR: AFC disable unsuccessfull"
+					" retrying after 30ms\n", __func__, __LINE__);
+				msleep(30);
+			}	
+
+			if (retry == 3) {
+				pr_err("%s:%d ERROR: AFC disable failed\n", __func__, __LINE__);
+				mutex_unlock(&lock);
+				return -EINVAL;
+			}
+#endif
 			/* Turn on Torch : 20mA ~ 320mA */
 			ret = sm5705_fled_turn_on_torch(sm5705_fled, REAR_FLASH_INDEX,
 				_calc_torch_current_mA_to_offset(value_u32 - 1000));
+			assistive_light = true;
 		} else {
 			dev_err(dev, "%s: can't process, invalid value=%d\n", __func__, value_u32);
 			ret = -EINVAL;
@@ -591,7 +702,8 @@ static ssize_t sm5705_rear_flash_store(struct device *dev,
 			__func__, value_u32, ret);
 	}
 
-	spin_unlock_irqrestore(&fled_lock, flags);
+
+	mutex_unlock(&lock);
 
 	return count;
 }
@@ -749,7 +861,7 @@ static int sm5705_fled_probe(struct platform_device *pdev)
 	struct sm5705_fled_info *sm5705_fled;
 	struct sm5705_fled_platform_data *sm5705_fled_pdata;
 	struct device *dev = &pdev->dev;
-	int i,ret;
+	int i, ret = 0;
 
 	if (IS_ERR_OR_NULL(camera_class)) {
 		dev_err(dev, "%s: can't find camera_class sysfs object, didn't used rear_flash attribute\n",
@@ -826,6 +938,7 @@ fled_init_err:
 
 fled_platfrom_data_err:
 	devm_kfree(dev, sm5705_fled);
+	g_sm5705_fled = NULL;
 
 	return ret;
 }

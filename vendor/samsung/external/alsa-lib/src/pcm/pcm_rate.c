@@ -28,11 +28,10 @@
  *
  */
 #include <inttypes.h>
-#include <byteswap.h>
+#include "bswap.h"
 #include "pcm_local.h"
 #include "pcm_plugin.h"
 #include "pcm_rate.h"
-#include "iatomic.h"
 
 #include "plugin_ops.h"
 
@@ -51,7 +50,6 @@ typedef struct _snd_pcm_rate snd_pcm_rate_t;
 
 struct _snd_pcm_rate {
 	snd_pcm_generic_t gen;
-	snd_atomic_write_t watom;
 	snd_pcm_uframes_t appl_ptr, hw_ptr;
 	snd_pcm_uframes_t last_commit_ptr;
 	snd_pcm_uframes_t orig_avail_min;
@@ -561,62 +559,9 @@ snd_pcm_rate_read_areas1(snd_pcm_t *pcm,
 		   pcm->channels, rate);
 }
 
-static inline snd_pcm_sframes_t snd_pcm_rate_move_applptr(snd_pcm_t *pcm, snd_pcm_sframes_t frames)
+static inline void snd_pcm_rate_sync_hwptr0(snd_pcm_t *pcm, snd_pcm_uframes_t slave_hw_ptr)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
-	snd_pcm_uframes_t orig_appl_ptr, appl_ptr = rate->appl_ptr, slave_appl_ptr;
-	snd_pcm_sframes_t diff, ndiff;
-	snd_pcm_t *slave = rate->gen.slave;
-
-	orig_appl_ptr = rate->appl_ptr;
-	if (frames > 0)
-		snd_pcm_mmap_appl_forward(pcm, frames);
-	else
-		snd_pcm_mmap_appl_backward(pcm, -frames);
-	slave_appl_ptr =
-		(appl_ptr / pcm->period_size) * rate->gen.slave->period_size;
-	diff = slave_appl_ptr - *slave->appl.ptr;
-	if (diff < -(snd_pcm_sframes_t)(slave->boundary / 2)) {
-		diff = (slave->boundary - *slave->appl.ptr) + slave_appl_ptr;
-	} else if (diff > (snd_pcm_sframes_t)(slave->boundary / 2)) {
-		diff = -((slave->boundary - slave_appl_ptr) + *slave->appl.ptr);
-	}
-	if (diff == 0)
-		return frames;
-	if (diff > 0) {
-		ndiff = snd_pcm_forward(rate->gen.slave, diff);
-	} else {
-		ndiff = snd_pcm_rewind(rate->gen.slave, diff);
-	}
-	if (ndiff < 0)
-		return diff;
-	slave_appl_ptr = *slave->appl.ptr;
-	rate->appl_ptr =
-		(slave_appl_ptr / rate->gen.slave->period_size) * pcm->period_size +
-		orig_appl_ptr % pcm->period_size;
-	if (pcm->stream == SND_PCM_STREAM_PLAYBACK)
-		rate->appl_ptr += rate->ops.input_frames(rate->obj, slave_appl_ptr % rate->gen.slave->period_size);
-	else
-		rate->appl_ptr += rate->ops.output_frames(rate->obj, slave_appl_ptr % rate->gen.slave->period_size);
-
-	diff = orig_appl_ptr - rate->appl_ptr;
-	if (diff < -(snd_pcm_sframes_t)(slave->boundary / 2)) {
-		diff = (slave->boundary - rate->appl_ptr) + orig_appl_ptr;
-	} else if (diff > (snd_pcm_sframes_t)(slave->boundary / 2)) {
-		diff = -((slave->boundary - orig_appl_ptr) + rate->appl_ptr);
-	}
-	if (frames < 0)
-		diff = -diff;
-
-	rate->last_commit_ptr = rate->appl_ptr - rate->appl_ptr % pcm->period_size;
-
-	return diff;
-}
-
-static inline void snd_pcm_rate_sync_hwptr(snd_pcm_t *pcm)
-{
-	snd_pcm_rate_t *rate = pcm->private_data;
-	snd_pcm_uframes_t slave_hw_ptr = *rate->gen.slave->hw.ptr;
 
 	if (pcm->stream != SND_PCM_STREAM_PLAYBACK)
 		return;
@@ -626,6 +571,14 @@ static inline void snd_pcm_rate_sync_hwptr(snd_pcm_t *pcm)
 	rate->hw_ptr =
 		(slave_hw_ptr / rate->gen.slave->period_size) * pcm->period_size +
 		rate->ops.input_frames(rate->obj, slave_hw_ptr % rate->gen.slave->period_size);
+
+	rate->hw_ptr %= pcm->boundary;
+}
+
+static inline void snd_pcm_rate_sync_hwptr(snd_pcm_t *pcm)
+{
+	snd_pcm_rate_t *rate = pcm->private_data;
+	snd_pcm_rate_sync_hwptr0(pcm, *rate->gen.slave->hw.ptr);
 }
 
 static int snd_pcm_rate_hwsync(snd_pcm_t *pcm)
@@ -634,19 +587,41 @@ static int snd_pcm_rate_hwsync(snd_pcm_t *pcm)
 	int err = snd_pcm_hwsync(rate->gen.slave);
 	if (err < 0)
 		return err;
-	snd_atomic_write_begin(&rate->watom);
 	snd_pcm_rate_sync_hwptr(pcm);
-	snd_atomic_write_end(&rate->watom);
 	return 0;
+}
+
+static snd_pcm_uframes_t snd_pcm_rate_playback_internal_delay(snd_pcm_t *pcm)
+{
+	snd_pcm_rate_t *rate = pcm->private_data;
+
+	if (rate->appl_ptr < rate->last_commit_ptr) {
+		return rate->appl_ptr - rate->last_commit_ptr + pcm->boundary;
+	} else {
+		return rate->appl_ptr - rate->last_commit_ptr;
+	}
 }
 
 static int snd_pcm_rate_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
 {
+	snd_pcm_rate_t *rate = pcm->private_data;
+	snd_pcm_sframes_t slave_delay;
+	int err;
+
 	snd_pcm_rate_hwsync(pcm);
-	if (pcm->stream == SND_PCM_STREAM_PLAYBACK)
-		*delayp = snd_pcm_mmap_playback_hw_avail(pcm);
-	else
-		*delayp = snd_pcm_mmap_capture_hw_avail(pcm);
+
+	err = snd_pcm_delay(rate->gen.slave, &slave_delay);
+	if (err < 0) {
+		return err;
+	}
+
+	if (pcm->stream == SND_PCM_STREAM_PLAYBACK) {
+		*delayp = rate->ops.input_frames(rate->obj, slave_delay)
+				+ snd_pcm_rate_playback_internal_delay(pcm);
+	} else {
+		*delayp = rate->ops.output_frames(rate->obj, slave_delay)
+				+ snd_pcm_mmap_capture_hw_avail(pcm);
+	}
 	return 0;
 }
 
@@ -655,15 +630,11 @@ static int snd_pcm_rate_prepare(snd_pcm_t *pcm)
 	snd_pcm_rate_t *rate = pcm->private_data;
 	int err;
 
-	snd_atomic_write_begin(&rate->watom);
 	err = snd_pcm_prepare(rate->gen.slave);
-	if (err < 0) {
-		snd_atomic_write_end(&rate->watom);
+	if (err < 0)
 		return err;
-	}
 	*pcm->hw.ptr = 0;
 	*pcm->appl.ptr = 0;
-	snd_atomic_write_end(&rate->watom);
 	err = snd_pcm_rate_init(pcm);
 	if (err < 0)
 		return err;
@@ -674,51 +645,37 @@ static int snd_pcm_rate_reset(snd_pcm_t *pcm)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
 	int err;
-	snd_atomic_write_begin(&rate->watom);
 	err = snd_pcm_reset(rate->gen.slave);
-	if (err < 0) {
-		snd_atomic_write_end(&rate->watom);
+	if (err < 0)
 		return err;
-	}
 	*pcm->hw.ptr = 0;
 	*pcm->appl.ptr = 0;
-	snd_atomic_write_end(&rate->watom);
 	err = snd_pcm_rate_init(pcm);
 	if (err < 0)
 		return err;
 	return 0;
 }
 
-static snd_pcm_sframes_t snd_pcm_rate_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
+static snd_pcm_sframes_t snd_pcm_rate_rewindable(snd_pcm_t *pcm ATTRIBUTE_UNUSED)
 {
-	snd_pcm_rate_t *rate = pcm->private_data;
-	snd_pcm_sframes_t n = snd_pcm_mmap_hw_avail(pcm);
-
-	if ((snd_pcm_uframes_t)n > frames)
-		frames = n;
-	if (frames == 0)
-		return 0;
-	
-	snd_atomic_write_begin(&rate->watom);
-	n = snd_pcm_rate_move_applptr(pcm, -frames);
-	snd_atomic_write_end(&rate->watom);
-	return n;
+	return 0;
 }
 
-static snd_pcm_sframes_t snd_pcm_rate_forward(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
+static snd_pcm_sframes_t snd_pcm_rate_forwardable(snd_pcm_t *pcm ATTRIBUTE_UNUSED)
 {
-	snd_pcm_rate_t *rate = pcm->private_data;
-	snd_pcm_sframes_t n = snd_pcm_mmap_avail(pcm);
+	return 0;
+}
 
-	if ((snd_pcm_uframes_t)n > frames)
-		frames = n;
-	if (frames == 0)
-		return 0;
-	
-	snd_atomic_write_begin(&rate->watom);
-	n = snd_pcm_rate_move_applptr(pcm, frames);
-	snd_atomic_write_end(&rate->watom);
-	return n;
+static snd_pcm_sframes_t snd_pcm_rate_rewind(snd_pcm_t *pcm ATTRIBUTE_UNUSED,
+                                             snd_pcm_uframes_t frames ATTRIBUTE_UNUSED)
+{
+        return 0;
+}
+
+static snd_pcm_sframes_t snd_pcm_rate_forward(snd_pcm_t *pcm ATTRIBUTE_UNUSED,
+                                              snd_pcm_uframes_t frames ATTRIBUTE_UNUSED)
+{
+        return 0;
 }
 
 static int snd_pcm_rate_commit_area(snd_pcm_t *pcm, snd_pcm_rate_t *rate,
@@ -986,9 +943,7 @@ static snd_pcm_sframes_t snd_pcm_rate_mmap_commit(snd_pcm_t *pcm,
 		if (err < 0)
 			return err;
 	}
-	snd_atomic_write_begin(&rate->watom);
 	snd_pcm_mmap_appl_forward(pcm, size);
-	snd_atomic_write_end(&rate->watom);
 	return size;
 }
 
@@ -1001,9 +956,7 @@ static snd_pcm_sframes_t snd_pcm_rate_avail_update(snd_pcm_t *pcm)
 	slave_size = snd_pcm_avail_update(slave);
 	if (pcm->stream == SND_PCM_STREAM_CAPTURE)
 		goto _capture;
-	snd_atomic_write_begin(&rate->watom);
 	snd_pcm_rate_sync_hwptr(pcm);
-	snd_atomic_write_end(&rate->watom);
 	snd_pcm_rate_sync_playback_area(pcm, rate->appl_ptr);
 	return snd_pcm_mmap_avail(pcm);
  _capture: {
@@ -1067,6 +1020,7 @@ static int snd_pcm_rate_poll_revents(snd_pcm_t *pcm, struct pollfd *pfds, unsign
 	return snd_pcm_poll_descriptors_revents(rate->gen.slave, pfds, nfds, revents);
 }
 
+/* locking */
 static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
@@ -1076,6 +1030,7 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 		snd_pcm_uframes_t size, ofs, saved_avail_min;
 		snd_pcm_sw_params_t sw_params;
 
+		__snd_pcm_lock(pcm);
 		/* temporarily set avail_min to one */
 		sw_params = rate->sw_params;
 		saved_avail_min = sw_params.avail_min;
@@ -1086,8 +1041,10 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 		ofs = rate->last_commit_ptr % pcm->buffer_size;
 		while (size > 0) {
 			snd_pcm_uframes_t psize, spsize;
+			int err;
 
-			if (snd_pcm_wait(rate->gen.slave, -1) < 0)
+			err = __snd_pcm_wait_in_lock(rate->gen.slave, -1);
+			if (err < 0)
 				break;
 			if (size > pcm->period_size) {
 				psize = pcm->period_size;
@@ -1105,6 +1062,7 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 		}
 		sw_params.avail_min = saved_avail_min;
 		snd_pcm_sw_params(rate->gen.slave, &sw_params);
+		__snd_pcm_unlock(pcm);
 	}
 	return snd_pcm_drain(rate->gen.slave);
 }
@@ -1121,7 +1079,7 @@ static snd_pcm_state_t snd_pcm_rate_state(snd_pcm_t *pcm)
 static int snd_pcm_rate_start(snd_pcm_t *pcm)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
-	snd_pcm_uframes_t avail;
+	snd_pcm_sframes_t avail;
 		
 	if (pcm->stream == SND_PCM_STREAM_CAPTURE)
 		return snd_pcm_start(rate->gen.slave);
@@ -1129,9 +1087,12 @@ static int snd_pcm_rate_start(snd_pcm_t *pcm)
 	if (snd_pcm_state(rate->gen.slave) != SND_PCM_STATE_PREPARED)
 		return -EBADFD;
 
-	gettimestamp(&rate->trigger_tstamp, pcm->monotonic);
+	gettimestamp(&rate->trigger_tstamp, pcm->tstamp_type);
 
 	avail = snd_pcm_mmap_playback_hw_avail(rate->gen.slave);
+	if (avail < 0) /* can't happen on healthy drivers */
+		return -EBADFD;
+
 	if (avail == 0) {
 		/* postpone the trigger since we have no data committed yet */
 		rate->start_pending = 1;
@@ -1145,35 +1106,32 @@ static int snd_pcm_rate_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
 	snd_pcm_sframes_t err;
-	snd_atomic_read_t ratom;
-	snd_atomic_read_init(&ratom, &rate->watom);
- _again:
-	snd_atomic_read_begin(&ratom);
+
 	err = snd_pcm_status(rate->gen.slave, status);
-	if (err < 0) {
-		snd_atomic_read_ok(&ratom);
+	if (err < 0)
 		return err;
-	}
 	if (pcm->stream == SND_PCM_STREAM_PLAYBACK) {
 		if (rate->start_pending)
 			status->state = SND_PCM_STATE_RUNNING;
 		status->trigger_tstamp = rate->trigger_tstamp;
 	}
-	snd_pcm_rate_sync_hwptr(pcm);
+	snd_pcm_rate_sync_hwptr0(pcm, status->hw_ptr);
 	status->appl_ptr = *pcm->appl.ptr;
 	status->hw_ptr = *pcm->hw.ptr;
 	if (pcm->stream == SND_PCM_STREAM_PLAYBACK) {
-		status->delay = snd_pcm_mmap_playback_hw_avail(pcm);
+		status->delay = rate->ops.input_frames(rate->obj, status->delay)
+					+ snd_pcm_rate_playback_internal_delay(pcm);
 		status->avail = snd_pcm_mmap_playback_avail(pcm);
 		status->avail_max = rate->ops.input_frames(rate->obj, status->avail_max);
 	} else {
-		status->delay = snd_pcm_mmap_capture_hw_avail(pcm);
+		/* FIXME: Maybe possible to somthing similar to
+		 * snd_pcm_rate_playback_internal_delay()
+		 * for the capture case.
+		 */
+		status->delay = rate->ops.output_frames(rate->obj, status->delay)
+					+ snd_pcm_mmap_capture_hw_avail(pcm);
 		status->avail = snd_pcm_mmap_capture_avail(pcm);
 		status->avail_max = rate->ops.output_frames(rate->obj, status->avail_max);
-	}
-	if (!snd_atomic_read_ok(&ratom)) {
-		snd_atomic_read_wait(&ratom);
-		goto _again;
 	}
 	return 0;
 }
@@ -1221,7 +1179,9 @@ static const snd_pcm_fast_ops_t snd_pcm_rate_fast_ops = {
 	.drop = snd_pcm_generic_drop,
 	.drain = snd_pcm_rate_drain,
 	.pause = snd_pcm_generic_pause,
+	.rewindable = snd_pcm_rate_rewindable,
 	.rewind = snd_pcm_rate_rewind,
+	.forwardable = snd_pcm_rate_forwardable,
 	.forward = snd_pcm_rate_forward,
 	.resume = snd_pcm_generic_resume,
 	.writei = snd_pcm_mmap_writei,
@@ -1234,6 +1194,7 @@ static const snd_pcm_fast_ops_t snd_pcm_rate_fast_ops = {
 	.poll_descriptors_count = snd_pcm_generic_poll_descriptors_count,
 	.poll_descriptors = snd_pcm_generic_poll_descriptors,
 	.poll_revents = snd_pcm_rate_poll_revents,
+	.may_wait_for_avail_min = snd_pcm_generic_may_wait_for_avail_min,
 };
 
 static const snd_pcm_ops_t snd_pcm_rate_ops = {
@@ -1249,6 +1210,9 @@ static const snd_pcm_ops_t snd_pcm_rate_ops = {
 	.async = snd_pcm_generic_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_generic_query_chmaps,
+	.get_chmap = snd_pcm_generic_get_chmap,
+	.set_chmap = snd_pcm_generic_set_chmap,
 };
 
 /**
@@ -1358,7 +1322,6 @@ int snd_pcm_rate_open(snd_pcm_t **pcmp, const char *name,
 	rate->gen.close_slave = close_slave;
 	rate->srate = srate;
 	rate->sformat = sformat;
-	snd_atomic_write_init(&rate->watom);
 
 	err = snd_pcm_new(&pcm, SND_PCM_TYPE_RATE, name, slave->stream, slave->mode);
 	if (err < 0) {
@@ -1391,12 +1354,14 @@ int snd_pcm_rate_open(snd_pcm_t **pcmp, const char *name,
 		}
 	} else {
 		SNDERR("Invalid type for rate converter");
-		snd_pcm_close(pcm);
+		snd_pcm_free(pcm);
+		free(rate);
 		return -EINVAL;
 	}
 	if (err < 0) {
 		SNDERR("Cannot find rate converter");
-		snd_pcm_close(pcm);
+		snd_pcm_free(pcm);
+		free(rate);
 		return -ENOENT;
 	}
 #else
@@ -1404,7 +1369,8 @@ int snd_pcm_rate_open(snd_pcm_t **pcmp, const char *name,
 	open_func = SND_PCM_RATE_PLUGIN_ENTRY(linear);
 	err = open_func(SND_PCM_RATE_PLUGIN_VERSION, &rate->obj, &rate->ops);
 	if (err < 0) {
-		snd_pcm_close(pcm);
+		snd_pcm_free(pcm);
+		free(rate);
 		return err;
 	}
 #endif
@@ -1412,7 +1378,8 @@ int snd_pcm_rate_open(snd_pcm_t **pcmp, const char *name,
 	if (! rate->ops.init || ! (rate->ops.convert || rate->ops.convert_s16) ||
 	    ! rate->ops.input_frames || ! rate->ops.output_frames) {
 		SNDERR("Inproper rate plugin %s initialization", type);
-		snd_pcm_close(pcm);
+		snd_pcm_free(pcm);
+		free(rate);
 		return err;
 	}
 
@@ -1422,7 +1389,7 @@ int snd_pcm_rate_open(snd_pcm_t **pcmp, const char *name,
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;
 	pcm->mmap_rw = 1;
-	pcm->monotonic = slave->monotonic;
+	pcm->tstamp_type = slave->tstamp_type;
 	snd_pcm_set_hw_ptr(pcm, &rate->hw_ptr, -1, 0);
 	snd_pcm_set_appl_ptr(pcm, &rate->appl_ptr, -1, 0);
 	*pcmp = pcm;

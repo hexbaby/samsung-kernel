@@ -59,6 +59,7 @@ enum ioctl_cmd {
 	GET_OTG_STATUS = 0x7,
 	GET_CHGTYPE = 0x08,
 	GET_RESID3 = 0x09,
+	GET_ADCERR = 0x0A,
 	GET_COMP2 = 0x10,
 	GET_COMN1 = 0x11,
 };
@@ -103,7 +104,9 @@ typedef struct _muic_vps_scatterred_type {
         u8      val2;
         u8      val3;
         u8      adc;
+	u8	adcerr;
         u8      vbvolt;
+	u8	chgtyp;
 }vps_scatterred_type;
 
 typedef struct _muic_vps_table_t {
@@ -173,6 +176,7 @@ typedef struct _muic_data_t {
 	struct device *dev;
 	struct i2c_client *i2c; /* i2c addr: 0x4A; MUIC */
 	struct mutex muic_mutex;
+	struct mutex lock;
 
 	/* model dependant muic platform data */
 	struct muic_platform_data *pdata;
@@ -209,6 +213,11 @@ typedef struct _muic_data_t {
 	bool			discard_interrupt;
 	bool			is_dcdtmr_intr;
 
+	/* Add Muic structure's member variable for VZW requirement(Rp0 Cable) */
+	bool			is_ccic_attach;
+	bool			retry_afc;
+	int			ccic_rp;
+
 	struct hv_data		*phv;
 
 #if defined(CONFIG_USB_EXTERNAL_NOTIFY)
@@ -240,17 +249,30 @@ typedef struct _muic_data_t {
 
 	/* Operation Mode */
 	enum muic_op_mode	opmode;
+	bool			afc_water_disable;
 #endif
 
 #if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
-	int is_flash_on;
+	int is_afc_5v;
+	bool is_camera_on;
+	bool check_charger_lcd_on;
 	int is_afc_device;
 	struct delayed_work	afc_retry_work;
-	struct delayed_work	afc_restart_work;
 	struct delayed_work	afc_delay_check_work;
 	int delay_check_count;
 #if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
 	int switch_gpio;
+#endif
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	int keyboard_state;
+#if defined(CONFIG_SEC_FACTORY)
+	bool is_keyboard_test;
+	bool is_pba_array;
+#endif
+#endif
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	bool switch_gpio_en;
+	struct delayed_work	switch_gpio_delay_work;
 #endif
 #endif
 }muic_data_t;

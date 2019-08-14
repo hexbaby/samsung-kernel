@@ -50,10 +50,19 @@ typedef enum {
 #endif
 } muic_notifier_device_t;
 
+typedef enum {
+	KEYBOARD_NOTIFY_DEV_TSP = 0,
+} keyboard_notifier_device_t;
+
 struct muic_notifier_struct {
 	muic_attached_dev_t attached_dev;
 	muic_notifier_cmd_t cmd;
 	CC_NOTI_ATTACH_TYPEDEF cxt;
+	struct blocking_notifier_head notifier_call_chain;
+};
+
+struct keyboard_notifier_struct {
+	muic_notifier_cmd_t cmd;
 	struct blocking_notifier_head notifier_call_chain;
 };
 
@@ -68,12 +77,17 @@ extern void muic_notifier_attach_attached_dev(muic_attached_dev_t new_dev);
 extern void muic_notifier_detach_attached_dev(muic_attached_dev_t cur_dev);
 extern void muic_notifier_logically_attach_attached_dev(muic_attached_dev_t new_dev);
 extern void muic_notifier_logically_detach_attached_dev(muic_attached_dev_t cur_dev);
+extern void keyboard_notifier_attach(void);
+extern void keyboard_notifier_detach(void);
 
 /* muic notifier register/unregister API
  * for used any where want to receive muic attached device attach/detach. */
 extern int muic_notifier_register(struct notifier_block *nb,
 		notifier_fn_t notifier, muic_notifier_device_t listener);
 extern int muic_notifier_unregister(struct notifier_block *nb);
+extern int keyboard_notifier_register(struct notifier_block *nb, notifier_fn_t notifier,
+			keyboard_notifier_device_t listener);
+extern int keyboard_notifier_unregister(struct notifier_block *nb);
 
 /* Choose a proper noti. interface for a test */
 extern void muic_notifier_set_new_noti(bool flag);

@@ -44,6 +44,11 @@
 #include "muic_apis.h"
 #include "muic_i2c.h"
 #include "muic_vps.h"
+#include "muic_regmap.h"
+/* SM5705_SWITCH_CONTROL is depend on MUIC_SUPPORT_CCIC */
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+#include "muic_ccic.h"
+#endif
 
 /* Device Type 1 register */
 #define DEV_TYPE1_USB_OTG		(0x1 << 7)
@@ -407,6 +412,9 @@ int vps_chgtyp_to_dev(int chgtyp)
 
 	switch (chgtyp) {
 	case CHGTYP_USB:
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+	case CHGTYPS_TIMEOUT_SDP:
+#endif
 		ret = ATTACHED_DEV_USB_MUIC;
 		break;
 	case CHGTYP_CDP:
@@ -427,6 +435,27 @@ int vps_chgtyp_to_dev(int chgtyp)
 
 	return ret;
 }
+
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+int keyboard_chgtyp_to_dev(int chgtyp, muic_attached_dev_t curr_dev, int vbvolt)
+{
+	int ret = ATTACHED_DEV_UNKNOWN_MUIC;
+	/* keep existing dev when attatch keyboard */
+	if (chgtyp && curr_dev != ATTACHED_DEV_UNKNOWN_MUIC &&
+		 curr_dev != ATTACHED_DEV_NONE_MUIC &&
+		curr_dev != ATTACHED_DEV_TIMEOUT_OPEN_MUIC)
+		return curr_dev;
+
+	if (vbvolt)
+		ret = vps_chgtyp_to_dev(chgtyp);
+	if (ret < 0) {
+		pr_info("%s UNKNOWN CHGTYPE\n",__func__);
+		ret = ATTACHED_DEV_UNKNOWN_MUIC;
+	}
+
+	return ret;
+}
+#endif
 
 int resolve_dev_based_on_adc_chgtype(muic_data_t *pmuic, vps_data_t *pmsr)
 {
@@ -681,6 +710,8 @@ static int resolve_dedicated_dev(muic_data_t *pmuic, muic_attached_dev_t *pdev, 
 	int intr = MUIC_INTR_DETACH;
 	int vbvolt = 0;
 	int val1, val2, val3, adc;
+	int chgtyp = pmuic->vps.s.chgtyp;
+	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
 
 	val1 = pmuic->vps.s.val1;
 	val2 = pmuic->vps.s.val2;
@@ -688,19 +719,59 @@ static int resolve_dedicated_dev(muic_data_t *pmuic, muic_attached_dev_t *pdev, 
 	adc = pmuic->vps.s.adc;
 	vbvolt = pmuic->vps.s.vbvolt;
 
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	pr_info("%s : new_dev: %d, val: %d, adc:0x%2x, chgtyp:%d, vbvolt:%d\n",
+		 __func__, new_dev, (val1 | val2 | val3), adc, chgtyp, vbvolt);
+
+	if (adc==ADC_KEYBOARDDOCK)
+		pmuic->keyboard_state = 1;
+	else
+		pmuic->keyboard_state = 0;
+
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	if (pmuic->switch_gpio_en && adc != ADC_UART_CABLE && adc != ADC_OPEN)
+		muic_otg_switch_control(pmuic, 0);
+#endif
+#if defined(CONFIG_SEC_FACTORY)
+	if (!pmuic->is_pba_array) {
+#endif
+	new_dev = keyboard_chgtyp_to_dev(chgtyp, pmuic->attached_dev, vbvolt);
+
+	/* POGO ID + VBUS case, device type doesn't appear so check charger type */
+	if (pmuic->opmode & OPMODE_CCIC && (val1 | val2 | val3) == 0 && vbvolt == 1 && new_dev == ATTACHED_DEV_UNKNOWN_MUIC &&
+		pvendor && pvendor->run_chgdet) {
+			pvendor->run_chgdet(pmuic->regmapdesc, 1);
+			return 0;
+	}
+
+	pr_info("%s : new_dev:%d, keyboard:%d\n", __func__, new_dev, pmuic->keyboard_state);
+	if (new_dev != ATTACHED_DEV_UNKNOWN_MUIC) {
+		intr = MUIC_INTR_ATTACH;
+		*pintr = intr;
+		*pdev = new_dev;
+		return 0;
+	}
+#if defined(CONFIG_SEC_FACTORY)
+	}
+#endif
+#endif
+
 	/* Attached */
 	switch (val1) {
 	case DEV_TYPE1_CDP:
+		if (!vbvolt) break;
 		intr = MUIC_INTR_ATTACH;
 		new_dev = ATTACHED_DEV_CDP_MUIC;
 		pr_info("%s : USB_CDP DETECTED\n", MUIC_DEV_NAME);
 		break;
 	case DEV_TYPE1_USB:
+		if (!vbvolt) break;
 		intr = MUIC_INTR_ATTACH;
 		new_dev = ATTACHED_DEV_USB_MUIC;
 		pr_info("%s : USB DETECTED\n", MUIC_DEV_NAME);
 		break;
 	case DEV_TYPE1_DEDICATED_CHG:
+		if (!vbvolt) break;
 		intr = MUIC_INTR_ATTACH;
 		new_dev = ATTACHED_DEV_TA_MUIC;
 		pr_info("%s : DEDICATED CHARGER DETECTED\n", MUIC_DEV_NAME);
@@ -754,7 +825,14 @@ static int resolve_dedicated_dev(muic_data_t *pmuic, muic_attached_dev_t *pdev, 
 		intr = MUIC_INTR_ATTACH;
 
 		if (val3 & DEV_TYPE3_NO_STD_CHG) {
+#if defined(CONFIG_MUIC_SUPPORT_CCIC)
+			if (pmuic->opmode & OPMODE_CCIC && chgtyp != 0)
+				new_dev = vps_chgtyp_to_dev(chgtyp);
+			else
+				new_dev = ATTACHED_DEV_USB_MUIC;
+#else
 			new_dev = ATTACHED_DEV_USB_MUIC;
+#endif
 			pr_info("%s : TYPE3 DCD_OUT_TIMEOUT DETECTED\n", MUIC_DEV_NAME);
 
 		} else {
@@ -777,6 +855,7 @@ static int resolve_dedicated_dev(muic_data_t *pmuic, muic_attached_dev_t *pdev, 
 		pr_info("%s : MHL DETECTED\n", MUIC_DEV_NAME);
 	}
 
+#if defined(CONFIG_SEC_FACTORY) || !defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
 	/* If there is no matching device found using device type registers
 		use ADC to find the attached device */
 	if(new_dev == ATTACHED_DEV_UNKNOWN_MUIC) {
@@ -784,12 +863,12 @@ static int resolve_dedicated_dev(muic_data_t *pmuic, muic_attached_dev_t *pdev, 
 		case ADC_CEA936ATYPE1_CHG : /*200k ohm */
 		{
 			/* For LG USB cable which has 219k ohm ID */
-			int rescanned_dev = do_BCD_rescan(pmuic);
-
-			if (rescanned_dev > 0) {
+			if (chgtyp == 0 && pvendor && pvendor->run_chgdet) {
+				pvendor->run_chgdet(pmuic->regmapdesc, 1);
+			} else {			
 				pr_info("%s : TYPE1 CHARGER DETECTED(USB)\n", MUIC_DEV_NAME);
 				intr = MUIC_INTR_ATTACH;
-				new_dev = rescanned_dev;
+				new_dev = vps_chgtyp_to_dev(chgtyp);
 			}
 			break;
 		}
@@ -881,6 +960,7 @@ static int resolve_dedicated_dev(muic_data_t *pmuic, muic_attached_dev_t *pdev, 
 			break;
 		}
 	}
+#endif
 
 	/* Check if the cable type is supported.
 	  */

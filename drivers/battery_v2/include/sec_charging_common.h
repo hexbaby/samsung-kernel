@@ -44,7 +44,19 @@ enum power_supply_ext_property {
 	POWER_SUPPLY_EXT_PROP_WIRELESS_TX_VAL,
 	POWER_SUPPLY_EXT_PROP_AICL_CURRENT,
 	POWER_SUPPLY_EXT_PROP_CHECK_MULTI_CHARGE,
+	POWER_SUPPLY_EXT_PROP_VBUS_LEVEL,
+	POWER_SUPPLY_EXT_PROP_DESIGNCAP_CORRUPT,
+	POWER_SUPPLY_EXT_PROP_SYSOVLO,
+	POWER_SUPPLY_EXT_PROP_FG_DUMP,
+	POWER_SUPPLY_EXT_PROP_BATTERY_TEMP,
 	POWER_SUPPLY_EXT_PROP_CHIP_ID,
+	POWER_SUPPLY_EXT_PROP_USB_CONFIGURE,
+};
+
+enum sec_battery_usb_conf {
+	USB_CURRENT_UNCONFIGURED = 100,
+	USB_CURRENT_HIGH_SPEED = 500,
+	USB_CURRENT_SUPER_SPEED = 900,
 };
 
 enum sec_battery_voltage_mode {
@@ -74,6 +86,8 @@ enum sec_battery_capacity_mode {
 	SEC_BATTERY_CAPACITY_AGEDCELL,
 	/* charge count */
 	SEC_BATTERY_CAPACITY_CYCLE,
+	/* full capacity rep */
+	SEC_BATTERY_CAPACITY_FULL,
 };
 
 enum sec_wireless_info_mode {
@@ -130,7 +144,7 @@ enum sec_wireless_control_mode {
 };
 
 enum sec_siop_event_mode {
-	SIOP_EVENT_IDLE = 0,
+	SIOP_EVENT_WPC_DETTACH = 0,
 	SIOP_EVENT_WPC_CALL_START,		/* 5V wireless charging + Call */
 	SIOP_EVENT_WPC_CALL_END,		/* 5V wireless charging + Call */
 	SIOP_EVENT_MAX,					/* end */
@@ -566,11 +580,11 @@ struct sec_battery_platform_data {
 	/* battery swelling */
 	int swelling_high_temp_block;
 	int swelling_high_temp_recov;
-	int swelling_low_temp_block;
-	int swelling_low_temp_recov;
-	int swelling_low_temp_additional;
+	int swelling_low_temp_block_1st;
+	int swelling_low_temp_recov_1st;
+	int swelling_low_temp_block_2nd;
+	int swelling_low_temp_recov_2nd;
 	unsigned int swelling_low_temp_current;
-	unsigned int swelling_low_temp_additional_current;
 	unsigned int swelling_low_temp_topoff;
 	unsigned int swelling_high_temp_current;
 	unsigned int swelling_high_temp_topoff;
@@ -578,6 +592,10 @@ struct sec_battery_platform_data {
 	unsigned int swelling_drop_float_voltage;
 	unsigned int swelling_high_rechg_voltage;
 	unsigned int swelling_low_rechg_voltage;
+	unsigned int swelling_low_1st_rechg_voltage;
+	unsigned int swelling_drop_voltage_condition;
+	unsigned int swelling_wc_low_temp_current;
+	unsigned int swelling_wc_high_temp_current;
 
 #if defined(CONFIG_CALC_TIME_TO_FULL)
 	unsigned int ttf_hv_12v_charge_current;
@@ -602,13 +620,6 @@ struct sec_battery_platform_data {
 	int force_discharging_recov;
 	int factory_discharging;
 	unsigned int self_discharging_type;
-#if defined(CONFIG_SW_SELF_DISCHARGING)
-	/* sw self discharging */
-	int self_discharging_temp_block;
-	int self_discharging_volt_block;
-	int self_discharging_temp_recov;
-	int self_discharging_temp_pollingtime;
-#endif
 
 	/* Monitor setting */
 	sec_battery_monitor_polling_t polling_type;
@@ -681,6 +692,12 @@ struct sec_battery_platform_data {
 	int temp_high_recovery_lpm;
 	int temp_low_threshold_lpm;
 	int temp_low_recovery_lpm;
+
+	int wpc_high_threshold_normal;
+	int wpc_high_recovery_normal;
+	int wpc_low_threshold_normal;
+	int wpc_low_recovery_normal;
+	
 	int chg_12v_high_temp;
 	int chg_high_temp;
 	int chg_high_temp_recovery;
@@ -695,14 +712,17 @@ struct sec_battery_platform_data {
 	unsigned int wpc_hv_lcd_on_input_limit_current;
 	unsigned int sleep_mode_limit_current;
 	unsigned int wc_full_input_limit_current;
-	unsigned int wc_heating_input_limit_current;
-	unsigned int wc_heating_time;
 	unsigned int wc_cv_current;
 	unsigned int wc_cv_pack_current;
 	unsigned int max_charging_current;
 	int mix_high_temp;
 	int mix_high_chg_temp;
 	int mix_high_temp_recovery;
+
+	int wpcbatt_wpc_temp_threshold;
+	int wpcbatt_batt_temp_threshold;
+	int wpcbatt_wpc_temp_recovery;
+	int wpcbatt_batt_temp_recovery;
 
 	/* If these is NOT full check type or NONE full check type,
 	 * it is skipped
@@ -733,6 +753,14 @@ struct sec_battery_platform_data {
 	unsigned long recharging_total_time;
 	/* reset charging for abnormal malfunction (0: not use) */
 	unsigned long charging_reset_time;
+
+	unsigned int hv_charging_total_time;
+	unsigned int normal_charging_total_time;
+	unsigned int usb_charging_total_time;
+
+	unsigned int expired_time;
+	unsigned int recharging_expired_time;
+	int standard_curr;
 
 	/* fuel gauge */
 	char *fuelgauge_name;
@@ -772,6 +800,7 @@ struct sec_battery_platform_data {
 #else
 	int chg_float_voltage;
 #endif
+	unsigned int chg_float_voltage_conv;
 #if defined(CONFIG_BATTERY_AGE_FORECAST)
 	int num_age_step;
 	int age_step;
@@ -793,6 +822,7 @@ struct sec_battery_platform_data {
 	int siop_wireless_charging_limit_current;
 	int siop_hv_wireless_input_limit_current;
 	int siop_hv_wireless_charging_limit_current;
+	int siop_browsing_power;
 	int max_input_voltage;
 	int max_input_current;
 	int pre_afc_work_delay;

@@ -22,10 +22,14 @@
 #include <linux/ccic/s2mm005.h>
 #include <linux/ccic/s2mm005_ext.h>
 #include <linux/ccic/ccic_alternate.h>
+#if defined(CONFIG_USB_HOST_NOTIFY)
+#include <linux/usb_notify.h>
+#endif
 /* switch device header */
 #if defined(CONFIG_SWITCH)
 #include <linux/switch.h>
 #endif /* CONFIG_SWITCH */
+#include <linux/usb_notify.h>
 ////////////////////////////////////////////////////////////////////////////////
 // s2mm005_cc.c called s2mm005_alternate.c
 ////////////////////////////////////////////////////////////////////////////////
@@ -91,10 +95,12 @@ void acc_detach_check(struct work_struct *wk)
 static int process_check_accessory(void * data)
 {
 	struct s2mm005_data *usbpd_data = data;
+	struct otg_notify *o_notify = get_otg_notify();
 
 	// detect Gear VR
 	if (usbpd_data->Vendor_ID == 0x04E8 && usbpd_data->Product_ID >= 0xA500 && usbpd_data->Product_ID <= 0xA505) {
 		pr_info("%s : Samsung Gear VR connected.\n", __func__);
+		o_notify->hw_param[USB_CCIC_VR_USE_COUNT]++;
 		if (usbpd_data->acc_type == CCIC_DOCK_DETACHED) {
 			ccic_send_dock_intent(CCIC_DOCK_HMT);
 			usbpd_data->acc_type = CCIC_DOCK_HMT;
@@ -137,6 +143,7 @@ static void process_discover_svids(void * data)
 	uint16_t REG_ADD = REG_RX_DIS_SVID;
 	uint8_t ReadMSG[32] = {0,};
 	int ret = 0;
+	struct otg_notify *o_notify = get_otg_notify();
 
 	// Message Type Definition
 	U_VDO1_Type 				  *DATA_MSG_VDO1 = (U_VDO1_Type *)&ReadMSG[8];
@@ -151,6 +158,8 @@ static void process_discover_svids(void * data)
 	usbpd_data->SVID_1 = DATA_MSG_VDO1->BITS.SVID_1;
 
 	dev_info(&i2c->dev, "%s SVID_0 : 0x%X, SVID_1 : 0x%X\n", __func__, usbpd_data->SVID_0, usbpd_data->SVID_1);
+	if (usbpd_data->SVID_0 == DISPLAY_PORT_SVID)
+		o_notify->hw_param[USB_CCIC_DP_USE_COUNT]++;
 }
 
 static void process_discover_modes(void * data)

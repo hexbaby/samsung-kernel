@@ -1418,6 +1418,7 @@ static irqreturn_t max77854_bypass_irq(int irq, void *data)
 		pr_info("%s: bypass overcurrent limit\n", __func__);
 #ifdef CONFIG_USB_HOST_NOTIFY
 		send_otg_notify(o_notify, NOTIFY_EVENT_OVERCURRENT, 0);
+		o_notify->hw_param[USB_CCIC_OVC_COUNT]++;
 #endif
 		/* disable the register values just related to OTG and
 		   keep the values about the charging */

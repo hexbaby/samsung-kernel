@@ -885,6 +885,11 @@
 };
 
 &i2c_9 {
+	pinctrl-names = "i2c_active", "i2c_sleep", "i2c_pwr_off";
+	pinctrl-0 = <&i2c_9_active>;
+	pinctrl-1 = <&i2c_9_sleep>;
+	pinctrl-2 = <&i2c_9_pwr_off>;
+
 	fts_i2c@49 {
 		compatible = "stm,fts_ts";
 		reg = <0x49>;
@@ -893,8 +898,8 @@
 		avdd-supply = <&max77838_l4>;
 		vddo-supply = <&max77838_l2>;
 		pinctrl-names = "tsp_active", "tsp_suspend";
-		pinctrl-0 = <&tsp_int_active &tsp_i2c_active>;
-		pinctrl-1 = <&tsp_int_suspend &tsp_i2c_sleep>;
+		pinctrl-0 = <&tsp_int_active>;
+		pinctrl-1 = <&tsp_int_suspend>;
 		stm,irq-gpio = <&tlmm 123 0x0>;
 		stm,tsp-coords = <1440 2560>;
 		stm,grip_area = <512>;
@@ -917,8 +922,8 @@
 		avdd-supply = <&max77838_l4>;
 		vddo-supply = <&max77838_l2>;
 		pinctrl-names = "tsp_active", "tsp_suspend";
-		pinctrl-0 = <&tsp_int_active &tsp_i2c_active>;
-		pinctrl-1 = <&tsp_int_suspend &tsp_i2c_sleep>;
+		pinctrl-0 = <&tsp_int_active>;
+		pinctrl-1 = <&tsp_int_suspend>;
 		sec,irq_gpio = <&tlmm 123 0x0>;
 		sec,max_coords = <4096 4096>;
 		sec,grip_area = <512>;
@@ -928,6 +933,7 @@
 		sec,i2c-burstmax = <256>;
 		sec,bringup = <0>;
 		sec,firmware_name = "tsp_sec/sec_hero.fw";
+		sec,poweroff-pinctrl = <1>;
 		clock-names = "iface_clk", "core_clk";
 		clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
 			<&clock_gcc clk_gcc_blsp2_qup3_i2c_apps_clk>;

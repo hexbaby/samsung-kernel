@@ -2,7 +2,7 @@
 /* -----------------------------------------------------------------------------------------------------------
 Software License for The Fraunhofer FDK AAC Codec Library for Android
 
-Copyright  1995 - 2015 Fraunhofer-Gesellschaft zur Fderung der angewandten Forschung e.V.
+© Copyright  1995 - 2015 Fraunhofer-Gesellschaft zur Förderung der angewandten Forschung e.V.
   All rights reserved.
 
  1.    INTRODUCTION
@@ -690,15 +690,7 @@ AAC_ENCODER_ERROR FDKaacEnc_Initialize(HANDLE_AAC_ENC      hAacEnc,
   if (ErrorStatus != AAC_ENC_OK)
     goto bail;
 
-
-  /* Map virtual aot's to intern aot used in bitstream writer. */
-  switch (hAacEnc->config->audioObjectType) {
-    case AOT_MP2_AAC_LC:
-      hAacEnc->aot = AOT_AAC_LC;
-      break;
-    default:
-      hAacEnc->aot = hAacEnc->config->audioObjectType;
-  }
+  hAacEnc->aot = hAacEnc->config->audioObjectType;
 
   /* common things */
 

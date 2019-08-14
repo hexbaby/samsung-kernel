@@ -41,6 +41,7 @@
 
 enum {
 	CHIP_ID = 0,
+	CHARGER_OP_MODE=1,
 };
 ssize_t sm5705_chg_show_attrs(struct device *dev,
 				struct device_attribute *attr, char *buf);
@@ -93,7 +94,7 @@ enum {
 #define STORE_MODE_INPUT_CURRENT		500
 
 /* for VZW support */
-#define SLOW_CHARGING_CURRENT_STANDARD		400
+#define SLOW_CHARGING_CURRENT_STANDARD		999
 
 /* SM5705 Charger - AICL reduce current configuration */
 #define REDUCE_CURRENT_STEP			100
@@ -121,6 +122,7 @@ struct sm5705_charger_data {
 	int irq_wpcin_pok;
 	int irq_topoff;
 	int irq_done;
+	int irq_otgfail;
 
 	/* for Workqueue & wake-lock, mutex process */
 	struct mutex charger_mutex;
@@ -129,6 +131,7 @@ struct sm5705_charger_data {
 	struct delayed_work wpc_work;
 	struct delayed_work wc_afc_work;
 	struct delayed_work afc_work;
+	struct delayed_work slow_chg_work;	
 	struct delayed_work aicl_work;
 	struct delayed_work topoff_work;
 	// temp for rev2 SW WA
@@ -149,6 +152,7 @@ struct sm5705_charger_data {
 	unsigned int charging_current;
 	int	irq_wpcin_state;
 	int	siop_level;
+	int aicl_on;
 	bool topoff_pending;
 	// temp for rev2 SW WA
 	bool is_rev2_wa_done;

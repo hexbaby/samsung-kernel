@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2012 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2009 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,7 +17,7 @@
 #include "dnsmasq.h"
 
 #ifdef __ANDROID__
-#  include <android/log.h>
+#include <android/log.h>
 #endif
 
 /* Implement logging to /dev/log asynchronously. If syslogd is 
@@ -34,8 +34,7 @@
 
 /* defaults in case we die() before we log_start() */
 static int log_fac = LOG_DAEMON;
-static int log_stderr = 0;
-static int echo_stderr = 0;
+static int log_stderr = 0; 
 static int log_fd = -1;
 static int log_to_file = 0;
 static int entries_alloced = 0;
@@ -59,12 +58,12 @@ int log_start(struct passwd *ent_pw, int errfd)
 {
   int ret = 0;
 
-  echo_stderr = option_bool(OPT_DEBUG);
+  log_stderr = !!(daemon->options & OPT_DEBUG);
 
   if (daemon->log_fac != -1)
     log_fac = daemon->log_fac;
 #ifdef LOG_LOCAL0
-  else if (option_bool(OPT_DEBUG))
+  else if (daemon->options & OPT_DEBUG)
     log_fac = LOG_LOCAL0;
 #endif
 
@@ -72,19 +71,13 @@ int log_start(struct passwd *ent_pw, int errfd)
     { 
       log_to_file = 1;
       daemon->max_logs = 0;
-      if (strcmp(daemon->log_file, "-") == 0)
-	{
-	  log_stderr = 1;
-	  echo_stderr = 0;
-	  log_fd = dup(STDERR_FILENO);
-	}
     }
   
   max_logs = daemon->max_logs;
 
   if (!log_reopen(daemon->log_file))
     {
-      send_event(errfd, EVENT_LOG_ERR, errno, daemon->log_file ? daemon->log_file : "");
+      send_event(errfd, EVENT_LOG_ERR, errno);
       _exit(0);
     }
 
@@ -101,7 +94,7 @@ int log_start(struct passwd *ent_pw, int errfd)
      change the ownership here so that the file is always owned by
      the dnsmasq user. Then logrotate can just copy the owner.
      Failure of the chown call is OK, (for instance when started as non-root) */
-  if (log_to_file && !log_stderr && ent_pw && ent_pw->pw_uid != 0 && 
+  if (log_to_file && ent_pw && ent_pw->pw_uid != 0 && 
       fchown(log_fd, ent_pw->pw_uid, -1) != 0)
     ret = errno;
 
@@ -110,35 +103,37 @@ int log_start(struct passwd *ent_pw, int errfd)
 
 int log_reopen(char *log_file)
 {
-  if (!log_stderr)
-    {      
-      if (log_fd != -1)
-	close(log_fd);
-      
-      /* NOTE: umask is set to 022 by the time this gets called */
-      
-      if (log_file)
-	log_fd = open(log_file, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP);      
-      else
-	{
-#if defined(HAVE_SOLARIS_NETWORK) || defined(__ANDROID__)
-	  /* Solaris logging is "different", /dev/log is not unix-domain socket.
-	     Just leave log_fd == -1 and use the vsyslog call for everything.... */
-#   undef _PATH_LOG
-#   define _PATH_LOG ""  /* dummy */
-	  return 1;
-#else
-	  int flags;
-	  log_fd = socket(AF_UNIX, connection_type, 0);
-	  
-	  /* if max_logs is zero, leave the socket blocking */
-	  if (log_fd != -1 && max_logs != 0 && (flags = fcntl(log_fd, F_GETFL)) != -1)
-	    fcntl(log_fd, F_SETFL, flags | O_NONBLOCK);
-#endif
-	}
+  if (log_fd != -1)
+    close(log_fd);
+
+  /* NOTE: umask is set to 022 by the time this gets called */
+     
+  if (log_file)
+    {
+      log_fd = open(log_file, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP);
+      return log_fd != -1;
     }
-  
-  return log_fd != -1;
+  else
+#if defined(HAVE_SOLARIS_NETWORK) || defined(__ANDROID__)
+    /* Solaris logging is "different", /dev/log is not unix-domain socket.
+       Just leave log_fd == -1 and use the vsyslog call for everything.... */
+#   define _PATH_LOG ""  /* dummy */
+    log_fd = -1;
+#else
+    {
+       int flags;
+       log_fd = socket(AF_UNIX, connection_type, 0);
+      
+      if (log_fd == -1)
+	return 0;
+      
+      /* if max_logs is zero, leave the socket blocking */
+      if (max_logs != 0 && (flags = fcntl(log_fd, F_GETFL)) != -1)
+	fcntl(log_fd, F_SETFL, flags | O_NONBLOCK);
+    }
+#endif
+
+  return 1;
 }
 
 static void free_entry(void)
@@ -155,19 +150,6 @@ static void log_write(void)
    
   while (entries)
     {
-      /* The data in the payoad is written with a terminating zero character 
-	 and the length reflects this. For a stream connection we need to 
-	 send the zero as a record terminator, but this isn't done for a 
-	 datagram connection, so treat the length as one less than reality 
-	 to elide the zero. If we're logging to a file, turn the zero into 
-	 a newline, and leave the length alone. */
-      int len_adjust = 0;
-
-      if (log_to_file)
-	entries->payload[entries->offset + entries->length - 1] = '\n';
-      else if (connection_type == SOCK_DGRAM)
-	len_adjust = 1;
-
       /* Avoid duplicates over a fork() */
       if (entries->pid != getpid())
 	{
@@ -177,11 +159,11 @@ static void log_write(void)
 
       connection_good = 1;
 
-      if ((rc = write(log_fd, entries->payload + entries->offset, entries->length - len_adjust)) != -1)
+      if ((rc = write(log_fd, entries->payload + entries->offset, entries->length)) != -1)
 	{
 	  entries->length -= rc;
 	  entries->offset += rc;
-	  if (entries->length == len_adjust)
+	  if (entries->length == 0)
 	    {
 	      free_entry();
 	      if (entries_lost != 0)
@@ -197,7 +179,7 @@ static void log_write(void)
       if (errno == EINTR)
 	continue;
 
-      if (errno == EAGAIN || errno == EWOULDBLOCK)
+      if (errno == EAGAIN)
 	return; /* syslogd busy, go again when select() or poll() says so */
       
       if (errno == ENOBUFS)
@@ -245,8 +227,7 @@ static void log_write(void)
 		  errno == ECONNREFUSED ||
 		  errno == EISCONN || 
 		  errno == EINTR ||
-		  errno == EAGAIN || 
-		  errno == EWOULDBLOCK)
+		  errno == EAGAIN)
 		{
 		  /* try again on next syslog() call */
 		  connection_good = 0;
@@ -284,20 +265,18 @@ void my_syslog(int priority, const char *format, ...)
   size_t len;
   pid_t pid = getpid();
   char *func = "";
+#ifdef __ANDROID__
+  int alog_lvl;
+#endif
 
   if ((LOG_FACMASK & priority) == MS_TFTP)
     func = "-tftp";
   else if ((LOG_FACMASK & priority) == MS_DHCP)
     func = "-dhcp";
       
-#ifdef LOG_PRI
   priority = LOG_PRI(priority);
-#else
-  /* Solaris doesn't have LOG_PRI */
-  priority &= LOG_PRIMASK;
-#endif
-
-  if (echo_stderr) 
+  
+  if (log_stderr) 
     {
       fprintf(stderr, "dnsmasq%s: ", func);
       va_start(ap, format);
@@ -306,30 +285,24 @@ void my_syslog(int priority, const char *format, ...)
       fputc('\n', stderr);
     }
 
+#ifdef __ANDROID__
+    if (priority <= LOG_ERR)
+      alog_lvl = ANDROID_LOG_ERROR;
+    else if (priority == LOG_WARNING)
+      alog_lvl = ANDROID_LOG_WARN;
+    else if (priority <= LOG_INFO)
+      alog_lvl = ANDROID_LOG_INFO;
+    else
+      alog_lvl = ANDROID_LOG_DEBUG;
+    va_start(ap, format);
+    __android_log_vprint(alog_lvl, "dnsmasq", format, ap);
+    va_end(ap);
+#else
+
   if (log_fd == -1)
     {
-#ifdef __ANDROID__
-      /* do android-specific logging. 
-	 log_fd is always -1 on Android except when logging to a file. */
-      int alog_lvl;
-      
-      if (priority <= LOG_ERR)
-	alog_lvl = ANDROID_LOG_ERROR;
-      else if (priority == LOG_WARNING)
-	alog_lvl = ANDROID_LOG_WARN;
-      else if (priority <= LOG_INFO)
-	alog_lvl = ANDROID_LOG_INFO;
-      else
-	alog_lvl = ANDROID_LOG_DEBUG;
-
-      va_start(ap, format);
-      __android_log_vprint(alog_lvl, "dnsmasq", format, ap);
-      va_end(ap);
-#else
-      /* fall-back to syslog if we die during startup or 
-	 fail during running (always on Solaris). */
+      /* fall-back to syslog if we die during startup or fail during running. */
       static int isopen = 0;
-
       if (!isopen)
 	{
 	  openlog("dnsmasq", LOG_PID, log_fac);
@@ -338,8 +311,6 @@ void my_syslog(int priority, const char *format, ...)
       va_start(ap, format);  
       vsyslog(priority, format, ap);
       va_end(ap);
-#endif
-
       return;
     }
   
@@ -368,11 +339,7 @@ void my_syslog(int priority, const char *format, ...)
       if (!log_to_file)
 	p += sprintf(p, "<%d>", priority | log_fac);
 
-      /* Omit timestamp for default daemontools situation */
-      if (!log_stderr || !option_bool(OPT_NO_FORK)) 
-	p += sprintf(p, "%.15s ", ctime(&time_now) + 4);
-      
-      p += sprintf(p, "dnsmasq%s[%d]: ", func, (int)pid);
+      p += sprintf(p, "%.15s dnsmasq%s[%d]: ", ctime(&time_now) + 4, func, (int)pid);
         
       len = p - entry->payload;
       va_start(ap, format);  
@@ -381,6 +348,10 @@ void my_syslog(int priority, const char *format, ...)
       entry->length = len > MAX_MESSAGE ? MAX_MESSAGE : len;
       entry->offset = 0;
       entry->pid = pid;
+
+      /* replace terminator with \n */
+      if (log_to_file)
+	entry->payload[entry->length - 1] = '\n';
     }
   
   /* almost always, logging won't block, so try and write this now,
@@ -419,7 +390,8 @@ void my_syslog(int priority, const char *format, ...)
 	  /* Have another go now */
 	  log_write();
 	}
-    } 
+    }
+#endif
 }
 
 void set_log_writer(fd_set *set, int *maxfdp)
@@ -439,20 +411,14 @@ void check_log_writer(fd_set *set)
 
 void flush_log(void)
 {
-  /* write until queue empty, but don't loop forever if there's
-   no connection to the syslog in existance */
-  while (log_fd != -1)
+  /* block until queue empty */
+  if (log_fd != -1)
     {
-      struct timespec waiter;
+      int flags;
+      if ((flags = fcntl(log_fd, F_GETFL)) != -1)
+	fcntl(log_fd, F_SETFL, flags & ~O_NONBLOCK);
       log_write();
-      if (!entries || !connection_good)
-	{
-	  close(log_fd);	
-	  break;
-	}
-      waiter.tv_sec = 0;
-      waiter.tv_nsec = 1000000; /* 1 ms */
-      nanosleep(&waiter, NULL);
+      close(log_fd);
     }
 }
 
@@ -463,13 +429,11 @@ void die(char *message, char *arg1, int exit_code)
   if (!arg1)
     arg1 = errmess;
 
-  if (!log_stderr)
-    {
-      echo_stderr = 1; /* print as well as log when we die.... */
-      fputc('\n', stderr); /* prettyfy  startup-script message */
-    }
+  log_stderr = 1; /* print as well as log when we die.... */
+  fputc('\n', stderr); /* prettyfy  startup-script message */
   my_syslog(LOG_CRIT, message, arg1, errmess);
-  echo_stderr = 0;
+  
+  log_stderr = 0;
   my_syslog(LOG_CRIT, _("FAILED to start up"));
   flush_log();
   

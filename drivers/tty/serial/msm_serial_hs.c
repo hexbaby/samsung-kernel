@@ -3,7 +3,7 @@
  * MSM 7k High speed uart driver
  *
  * Copyright (c) 2008 Google Inc.
- * Copyright (c) 2007-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2007-2017, The Linux Foundation. All rights reserved.
  * Modified: Nick Pelly <npelly@google.com>
  *
  * All source code in this file is licensed under the following license
@@ -44,6 +44,7 @@
 #include <linux/kernel.h>
 #include <linux/timer.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/dma-mapping.h>
@@ -544,6 +545,28 @@ static ssize_t set_debug_mask(struct device *dev,
 static DEVICE_ATTR(debug_mask, S_IWUSR | S_IRUGO, show_debug_mask,
 							set_debug_mask);
 
+static ssize_t show_uart_error_cnt(struct device *dev, struct device_attribute *attr, char *buf) 
+{ 
+ ssize_t ret = 0; 
+ struct platform_device *pdev = container_of(dev, struct platform_device, dev); 
+ struct msm_hs_port *msm_uport = get_matching_hs_port(pdev); 
+ struct uart_port *uport; 
+ sprintf(buf, "000 000 000 000\n");//init buf : overrun parity frame break count
+ 
+ uport = &msm_uport->uport; 
+ 
+ /* This check should not fail */ 
+ if (uport) 
+ {
+ 	ret = sprintf(buf,"%03x %03x %03x %03x\n", uport->icount.buf_overrun, uport->icount.parity, 0, uport->icount.brk); 
+ }
+
+ return ret; 
+} 
+ 
+static DEVICE_ATTR(error_cnt, S_IRUGO, show_uart_error_cnt, NULL); 
+
+
 static inline bool is_use_low_power_wakeup(struct msm_hs_port *msm_uport)
 {
 	return msm_uport->wakeup.irq > 0;
@@ -737,6 +760,7 @@ static int msm_hs_remove(struct platform_device *pdev)
 	dev = msm_uport->uport.dev;
 	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_clock.attr);
 	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_debug_mask.attr);
+	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_error_cnt.attr);
 	debugfs_remove(msm_uport->loopback_dir);
 
 	dma_free_coherent(msm_uport->uport.dev,
@@ -1254,16 +1278,27 @@ static void msm_hs_set_termios(struct uart_port *uport,
 unsigned int msm_hs_tx_empty(struct uart_port *uport)
 {
 	unsigned int data;
+	unsigned int isr;
 	unsigned int ret = 0;
 	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
 
 	msm_hs_resource_vote(msm_uport);
 	data = msm_hs_read(uport, UART_DM_SR);
+	isr = msm_hs_read(uport, UART_DM_ISR);
 	msm_hs_resource_unvote(msm_uport);
-	MSM_HS_DBG("%s(): SR Reg Read 0x%x", __func__, data);
+	MSM_HS_INFO("%s(): SR:0x%x ISR:0x%x ", __func__, data, isr);
 
-	if (data & UARTDM_SR_TXEMT_BMSK)
+	if (data & UARTDM_SR_TXEMT_BMSK) {
 		ret = TIOCSER_TEMT;
+	} else
+		/*
+		 * Add an extra sleep here because sometimes the framework's
+		 * delay (based on baud rate) isn't good enough.
+		 * Note that this won't happen during every port close, only
+		 * on select occassions when the userspace does back to back
+		 * write() and close().
+		 */
+		usleep_range(5000, 7000);
 
 	return ret;
 }
@@ -1451,13 +1486,13 @@ static void msm_hs_submit_tx_locked(struct uart_port *uport)
 	hex_dump_ipc(msm_uport, tx->ipc_tx_ctxt, "Tx",
 			&tx_buf->buf[tx_buf->tail], (u64)src_addr, tx_count);
 	sps_pipe_handle = tx->cons.pipe_handle;
-	/* Queue transfer request to SPS */
-	ret = sps_transfer_one(sps_pipe_handle, src_addr, tx_count,
-				msm_uport, flags);
 
 	/* Set 1 second timeout */
 	mod_timer(&tx->tx_timeout_timer,
 		jiffies + msecs_to_jiffies(MSEC_PER_SEC));
+	/* Queue transfer request to SPS */
+	ret = sps_transfer_one(sps_pipe_handle, src_addr, tx_count,
+				msm_uport, flags);
 
 	MSM_HS_DBG("%s:Enqueue Tx Cmd, ret %d\n", __func__, ret);
 }
@@ -1721,7 +1756,7 @@ static void msm_serial_hs_rx_work(struct kthread_work *work)
 			     (uport->read_status_mask & CREAD))) {
 			retval = tty_insert_flip_char(tty->port,
 							0, TTY_OVERRUN);
-			MSM_HS_WARN("%s(): RX Buffer Overrun Detected\n",
+			printk("%s(): RX Buffer Overrun Detected\n",
 				__func__);
 			if (!retval)
 				msm_uport->rx.buffer_pending |= TTY_OVERRUN;
@@ -1734,7 +1769,7 @@ static void msm_serial_hs_rx_work(struct kthread_work *work)
 
 		if (unlikely(status & UARTDM_SR_PAR_FRAME_BMSK)) {
 			/* Can not tell diff between parity & frame error */
-			MSM_HS_WARN("msm_serial_hs: parity error\n");
+			printk("msm_serial_hs: parity error\n");
 			uport->icount.parity++;
 			error_f = 1;
 			if (!(uport->ignore_status_mask & IGNPAR)) {
@@ -1747,7 +1782,7 @@ static void msm_serial_hs_rx_work(struct kthread_work *work)
 		}
 
 		if (unlikely(status & UARTDM_SR_RX_BREAK_BMSK)) {
-			MSM_HS_DBG("msm_serial_hs: Rx break\n");
+			printk("msm_serial_hs: Rx break\n");
 			uport->icount.brk++;
 			error_f = 1;
 			if (!(uport->ignore_status_mask & IGNBRK)) {
@@ -1778,8 +1813,7 @@ static void msm_serial_hs_rx_work(struct kthread_work *work)
 			msm_uport->rx.iovec[msm_uport->rx.rx_inx].addr,
 			rx_count);
 
-
-        //pr_err("[BT] insicks rx (%d)\n", rx_count); 
+		//printk("[BT] rx %02x %02x %02x %02x\n", msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE], msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE+1],  msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE+2],  msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE+3]);
 
 		 /*
 		  * We are in a spin locked context, spin lock taken at
@@ -2274,7 +2308,7 @@ void disable_wakeup_interrupt(struct msm_hs_port *msm_uport)
 		return;
 
 	if (msm_uport->wakeup.enabled) {
-		disable_irq_nosync(msm_uport->wakeup.irq);
+		disable_irq(msm_uport->wakeup.irq);
 		enable_irq(uport->irq);
 		spin_lock_irqsave(&uport->lock, flags);
 		msm_uport->wakeup.enabled = false;
@@ -2659,8 +2693,7 @@ static int msm_hs_startup(struct uart_port *uport)
 	msm_hs_resource_vote(msm_uport);
 
 	if (is_use_low_power_wakeup(msm_uport)) {
-		ret = request_threaded_irq(msm_uport->wakeup.irq, NULL,
-					msm_hs_wakeup_isr,
+		ret = request_irq(msm_uport->wakeup.irq, msm_hs_wakeup_isr,
 					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					"msm_hs_wakeup", msm_uport);
 		if (unlikely(ret)) {
@@ -3200,6 +3233,11 @@ static void msm_hs_pm_suspend(struct device *dev)
 	mutex_lock(&msm_uport->mtx);
 
 	client_count = atomic_read(&msm_uport->client_count);
+	msm_uport->pm_state = MSM_HS_PM_SUSPENDED;
+	msm_hs_resource_off(msm_uport);
+	obs_manage_irq(msm_uport, false);
+	msm_hs_clk_bus_unvote(msm_uport);
+
 	/* For OBS, don't use wakeup interrupt, set gpio to suspended state */
 	if (msm_uport->obs) {
 		ret = pinctrl_select_state(msm_uport->pinctrl,
@@ -3209,10 +3247,6 @@ static void msm_hs_pm_suspend(struct device *dev)
 				__func__);
 	}
 
-	msm_uport->pm_state = MSM_HS_PM_SUSPENDED;
-	msm_hs_resource_off(msm_uport);
-	obs_manage_irq(msm_uport, false);
-	msm_hs_clk_bus_unvote(msm_uport);
 	if (!atomic_read(&msm_uport->client_req_state))
 		enable_wakeup_interrupt(msm_uport);
 	LOG_USR_MSG(msm_uport->ipc_msm_hs_pwr_ctxt,
@@ -3243,6 +3277,16 @@ static int msm_hs_pm_resume(struct device *dev)
 		goto exit_pm_resume;
 	if (!atomic_read(&msm_uport->client_req_state))
 		disable_wakeup_interrupt(msm_uport);
+
+	/* For OBS, don't use wakeup interrupt, set gpio to active state */
+	if (msm_uport->obs) {
+		ret = pinctrl_select_state(msm_uport->pinctrl,
+				msm_uport->gpio_state_active);
+		if (ret)
+			MSM_HS_ERR("%s():Error selecting active state",
+				 __func__);
+	}
+
 	ret = msm_hs_clk_bus_vote(msm_uport);
 	if (ret) {
 		MSM_HS_ERR("%s:Failed clock vote %d\n", __func__, ret);
@@ -3252,15 +3296,6 @@ static int msm_hs_pm_resume(struct device *dev)
 	obs_manage_irq(msm_uport, true);
 	msm_uport->pm_state = MSM_HS_PM_ACTIVE;
 	msm_hs_resource_on(msm_uport);
-
-	/* For OBS, don't use wakeup interrupt, set gpio to active state */
-	if (msm_uport->obs) {
-		ret = pinctrl_select_state(msm_uport->pinctrl,
-			msm_uport->gpio_state_active);
-		if (ret)
-			MSM_HS_ERR("%s():Error selecting active state",
-				__func__);
-	}
 
 	LOG_USR_MSG(msm_uport->ipc_msm_hs_pwr_ctxt,
 		"%s:PM State:Active client_count %d\n", __func__, client_count);
@@ -3335,7 +3370,7 @@ static void  msm_serial_hs_rt_init(struct uart_port *uport)
 
 	MSM_HS_INFO("%s(): Enabling runtime pm", __func__);
 	pm_runtime_set_suspended(uport->dev);
-	pm_runtime_set_autosuspend_delay(uport->dev, 1000);
+	pm_runtime_set_autosuspend_delay(uport->dev, 1000);//For BT Chipset Init
 	pm_runtime_use_autosuspend(uport->dev);
 	mutex_lock(&msm_uport->mtx);
 	msm_uport->pm_state = MSM_HS_PM_SUSPENDED;
@@ -3469,7 +3504,9 @@ static int msm_hs_probe(struct platform_device *pdev)
 
 	memset(name, 0, sizeof(name));
 	//scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),"_state");
-	scnprintf(name, sizeof(name), "msm_serial_hs");
+	//scnprintf(name, sizeof(name), "msm_serial_hs");
+	snprintf(name, sizeof(name), "msm_serial_hs%d_state", pdev->id);
+
 	msm_uport->ipc_msm_hs_log_ctxt =
 			ipc_log_context_create(IPC_MSM_HS_LOG_STATE_PAGES,
 								name, 0);
@@ -3558,8 +3595,9 @@ static int msm_hs_probe(struct platform_device *pdev)
 	msm_uport->rx.flush = FLUSH_SHUTDOWN;
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_tx");
+//	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),"_tx");
+	snprintf(name, sizeof(name), "msm_serial_hs%d_tx", pdev->id);
+
 	msm_uport->tx.ipc_tx_ctxt =
 		ipc_log_context_create(IPC_MSM_HS_LOG_DATA_PAGES, name, 0);
 	if (!msm_uport->tx.ipc_tx_ctxt)
@@ -3567,8 +3605,9 @@ static int msm_hs_probe(struct platform_device *pdev)
 								__func__);
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_rx");
+//	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),"_rx");
+	snprintf(name, sizeof(name), "msm_serial_hs%d_rx", pdev->id);
+
 	msm_uport->rx.ipc_rx_ctxt = ipc_log_context_create(
 					IPC_MSM_HS_LOG_DATA_PAGES, name, 0);
 	if (!msm_uport->rx.ipc_rx_ctxt)
@@ -3576,8 +3615,9 @@ static int msm_hs_probe(struct platform_device *pdev)
 								__func__);
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_pwr");
+//	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),"_pwr");
+	snprintf(name, sizeof(name), "msm_serial_hs%d_pwr", pdev->id);
+
 	msm_uport->ipc_msm_hs_pwr_ctxt = ipc_log_context_create(
 					IPC_MSM_HS_LOG_USER_PAGES, name, 0);
 	if (!msm_uport->ipc_msm_hs_pwr_ctxt)
@@ -3621,7 +3661,14 @@ static int msm_hs_probe(struct platform_device *pdev)
 		goto err_clock;
 	}
 
+	ret = sysfs_create_file(&pdev->dev.kobj, &dev_attr_error_cnt.attr); 
+	if (unlikely(ret)) {
+		MSM_HS_ERR("%s: Failed to create dev. attr for error_cnt", __func__); 
+		goto err_clock;
+	}
+
 	msm_serial_debugfs_init(msm_uport, pdev->id);
+	msm_hs_unconfig_uart_gpios(uport);
 
 	uport->line = pdev->id;
 	if (pdata->userid && pdata->userid <= UARTDM_NR)

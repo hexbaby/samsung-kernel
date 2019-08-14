@@ -35,9 +35,6 @@
 #include <math.h>
 #include <sys/socket.h>
 #include <sys/poll.h>
-#ifndef ANDROID
-#include <sys/shm.h>
-#endif
 #include <pthread.h>
 #include "pcm_local.h"
 
@@ -130,6 +127,8 @@ static snd_pcm_uframes_t snd_pcm_share_slave_avail(snd_pcm_share_slave_t *slave)
 		avail += pcm->buffer_size;
 	if (avail < 0)
 		avail += pcm->boundary;
+	else if ((snd_pcm_uframes_t) avail >= pcm->boundary)
+		avail -= pcm->boundary;
 	return avail;
 }
 
@@ -138,18 +137,15 @@ static snd_pcm_uframes_t snd_pcm_share_slave_avail(snd_pcm_share_slave_t *slave)
 static snd_pcm_uframes_t _snd_pcm_share_slave_forward(snd_pcm_share_slave_t *slave)
 {
 	struct list_head *i;
-	snd_pcm_uframes_t buffer_size, boundary;
-	snd_pcm_uframes_t slave_appl_ptr;
+	snd_pcm_uframes_t buffer_size;
 	snd_pcm_sframes_t frames, safety_frames;
 	snd_pcm_sframes_t min_frames, max_frames;
 	snd_pcm_uframes_t avail, slave_avail;
 	snd_pcm_uframes_t slave_hw_avail;
 	slave_avail = snd_pcm_share_slave_avail(slave);
-	boundary = slave->pcm->boundary;
 	buffer_size = slave->pcm->buffer_size;
 	min_frames = slave_avail;
 	max_frames = 0;
-	slave_appl_ptr = *slave->pcm->appl.ptr;
 	list_for_each(i, &slave->clients) {
 		snd_pcm_share_t *share = list_entry(i, snd_pcm_share_t, list);
 		snd_pcm_t *pcm = share->pcm;
@@ -244,9 +240,8 @@ static snd_pcm_uframes_t _snd_pcm_share_missing(snd_pcm_t *pcm)
 				SYSMSG("snd_pcm_mmap_commit error");
 				return INT_MAX;
 			}
-			if (err != frames) {
+			if (err != frames)
 				SYSMSG("commit returns %ld for size %ld", err, frames);
-			}
 			slave_avail -= err;
 		} else {
 			if (safety_missing == 0)
@@ -373,6 +368,7 @@ static void *snd_pcm_share_thread(void *data)
 	err = pipe(slave->poll);
 	if (err < 0) {
 		SYSERR("can't create a pipe");
+		Pthread_mutex_unlock(&slave->mutex);
 		return NULL;
 	}
 	while (slave->open_count > 0) {
@@ -399,6 +395,7 @@ static void *snd_pcm_share_thread(void *data)
 				err = snd_pcm_sw_params(spcm, &slave->sw_params);
 				if (err < 0) {
 					SYSERR("snd_pcm_sw_params error");
+					Pthread_mutex_unlock(&slave->mutex);
 					return NULL;
 				}
 			}
@@ -601,7 +598,7 @@ static int snd_pcm_share_hw_refine_slave(snd_pcm_t *pcm, snd_pcm_hw_params_t *pa
 static int snd_pcm_share_hw_params_slave(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
 {
 	snd_pcm_share_t *share = pcm->private_data;
-	return _snd_pcm_hw_params(share->slave->pcm, params);
+	return _snd_pcm_hw_params_internal(share->slave->pcm, params);
 }
 
 static int snd_pcm_share_hw_refine(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
@@ -977,7 +974,7 @@ static int snd_pcm_share_start(snd_pcm_t *pcm)
 	}
 	slave->running_count++;
 	_snd_pcm_share_update(pcm);
-	gettimestamp(&share->trigger_tstamp, pcm->monotonic);
+	gettimestamp(&share->trigger_tstamp, pcm->tstamp_type);
  _end:
 	Pthread_mutex_unlock(&slave->mutex);
 	return err;
@@ -1132,7 +1129,7 @@ static void _snd_pcm_share_stop(snd_pcm_t *pcm, snd_pcm_state_t state)
 		return;
 	}
 #endif
-	gettimestamp(&share->trigger_tstamp, pcm->monotonic);
+	gettimestamp(&share->trigger_tstamp, pcm->tstamp_type);
 	if (pcm->stream == SND_PCM_STREAM_CAPTURE) {
 		snd_pcm_areas_copy(pcm->stopped_areas, 0,
 				   pcm->running_areas, 0,
@@ -1532,7 +1529,7 @@ int snd_pcm_share_open(snd_pcm_t **pcmp, const char *name, const char *sname,
 	pcm->private_data = share;
 	pcm->poll_fd = share->client_socket;
 	pcm->poll_events = stream == SND_PCM_STREAM_PLAYBACK ? POLLOUT : POLLIN;
-	pcm->monotonic = slave->pcm->monotonic;
+	pcm->tstamp_type = slave->pcm->tstamp_type;
 	snd_pcm_set_hw_ptr(pcm, &share->hw_ptr, -1, 0);
 	snd_pcm_set_appl_ptr(pcm, &share->appl_ptr, -1, 0);
 

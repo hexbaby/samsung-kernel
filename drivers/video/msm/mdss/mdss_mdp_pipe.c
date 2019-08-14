@@ -1145,6 +1145,7 @@ static int mdss_mdp_pipe_init_config(struct mdss_mdp_pipe *pipe,
 	if (pipe) {
 		pr_debug("type=%x   pnum=%d  rect=%d\n",
 				pipe->type, pipe->num, pipe->multirect.num);
+		MDSS_XLOG(pipe->type, pipe->num, pipe->multirect.num);
 		mdss_mdp_init_pipe_params(pipe);
 	} else if (pipe_share) {
 		/*
@@ -1308,6 +1309,7 @@ struct mdss_mdp_pipe *mdss_mdp_pipe_assign(struct mdss_data_type *mdata,
 				!atomic_read(&pipe->kref.refcount),
 				usecs_to_jiffies(PIPE_CLEANUP_TIMEOUT_US));
 			if (rc == 0 || retry_count == 5) {
+				MDSS_XLOG(pipe->type, pipe->num, 0x9999);
 				pr_err("pipe ndx:%d free wait failed, mfd ndx:%d rc=%d\n",
 					pipe->ndx,
 					pipe->mfd ? pipe->mfd->index : -1, rc);
@@ -1477,6 +1479,7 @@ static void mdss_mdp_pipe_free(struct kref *kref)
 	pr_debug("ndx=%x pnum=%d rect=%d\n",
 			pipe->ndx, pipe->num, pipe->multirect.num);
 
+	MDSS_XLOG(pipe->type, pipe->num, pipe->ndx, pipe->multirect.num);
 	next_pipe = (struct mdss_mdp_pipe *) pipe->multirect.next;
 	if (!next_pipe || (atomic_read(&next_pipe->kref.refcount) == 0)) {
 		mdss_mdp_pipe_hw_cleanup(pipe);
@@ -1715,6 +1718,7 @@ int mdss_mdp_pipe_destroy(struct mdss_mdp_pipe *pipe)
 		return -EBUSY;
 	}
 
+	MDSS_XLOG(pipe->type, pipe->num);
 	wake_up_all(&pipe->free_waitq);
 	mutex_unlock(&mdss_mdp_sspp_lock);
 
@@ -2617,6 +2621,7 @@ int mdss_mdp_pipe_queue_data(struct mdss_mdp_pipe *pipe,
 	pr_debug("pnum=%x mixer=%d play_cnt=%u\n", pipe->num,
 		 pipe->mixer_left->num, pipe->play_cnt);
 
+	MDSS_XLOG(pipe->type, pipe->num, pipe->mixer_left->num, pipe->play_cnt);
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON);
 	ctl = pipe->mixer_left->ctl;
 	roi_changed = pipe->mixer_left->roi_changed;
@@ -2666,20 +2671,22 @@ int mdss_mdp_pipe_queue_data(struct mdss_mdp_pipe *pipe,
 		pipe->params_changed = 0;
 		mdss_mdp_pipe_solidfill_setup(pipe);
 
-		MDSS_XLOG(pipe->num, pipe->mixer_left->num, pipe->play_cnt,
-			0x111);
+		MDSS_XLOG(pipe->num, pipe->multirect.num,
+			pipe->mixer_left->num, pipe->play_cnt, 0x111);
 
 		goto update_nobuf;
 	}
 
-	MDSS_XLOG(pipe->num, pipe->mixer_left->num, pipe->play_cnt, 0x222);
+	MDSS_XLOG(pipe->num, pipe->multirect.num, pipe->mixer_left->num,
+						pipe->play_cnt, 0x222);
 
 	if (params_changed) {
 		pipe->params_changed = 0;
 
 		ret = mdss_mdp_pipe_pp_setup(pipe, &opmode);
 		if (ret) {
-			pr_err("pipe pp setup error for pnum=%d\n", pipe->num);
+			pr_err("pipe pp setup error for pnum=%d rect=%d\n",
+					pipe->num, pipe->multirect.num);
 			goto done;
 		}
 

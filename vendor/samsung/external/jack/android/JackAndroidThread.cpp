@@ -281,8 +281,38 @@ int JackAndroidThread::AcquireRealTimeImp(jack_native_thread_t thread, int prior
 //		    getpid(), thread_->tid, res);
 //        return -1;
 //    }
+	
 	RequestPriority(getpid(), thread_->tid, priority);
+
+#ifdef ENABLE_CPU_AFFINITY_TO_BIG_CORE
+	if( priority == 10 ){
+
+		int cpuset = 0;
+	    int syscallres;
+
+		cpuset |= (1 << 5);
+		cpuset |= (1 << 6);
+		cpuset |= (1 << 7);
+
+	    syscallres = syscall(__NR_sched_setaffinity, thread_->tid, sizeof(cpuset), &cpuset);
+	    if(syscallres){
+	        jack_error("JackAudioServer : sched_setaffinity failed");
+	    }else{
+	        jack_error("JackAudioServer : sched_setaffinity success");
+	    }
+	}else
 #endif
+	{
+		int cpuset = 0x00fe;
+		int syscallres = syscall(__NR_sched_setaffinity, thread_->tid, sizeof(cpuset), &cpuset);
+		
+		if(syscallres){
+			jack_error("JackThread : sched_setaffinity failed tid[%d]", thread_->tid);
+		}
+	}
+
+#endif
+
     return 0;
 }
 

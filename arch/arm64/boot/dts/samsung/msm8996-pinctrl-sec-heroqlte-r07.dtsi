@@ -273,6 +273,14 @@
 					bias-disable;
 				};
 			};
+			i2c_9_pwr_off: i2c_9_pwr_off {
+				i2c_9 {
+					pins = "gpio51", "gpio52";
+					function = "gpio";
+					drive-strength = <2>;
+					bias-pull-down;
+				};
+			};
 		};
 
 		tsp_i2c {

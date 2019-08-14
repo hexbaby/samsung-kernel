@@ -10,5 +10,8 @@ extern void muic_ccic_pseudo_noti(int mid, int rid);
 extern int mdev_continue_for_TA_USB(muic_data_t *pmuic, int mdev);
 extern int muic_get_current_legacy_dev(muic_data_t *pmuic);
 extern void muic_set_hv_legacy_dev(muic_data_t *pmuic, int mdev);
-
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+extern void muic_switch_off(struct work_struct *work);
+extern void muic_otg_switch_control(muic_data_t *pmuic, int enable);
+#endif
 #endif

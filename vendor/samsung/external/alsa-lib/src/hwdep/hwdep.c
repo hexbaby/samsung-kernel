@@ -78,6 +78,7 @@ static int snd_hwdep_open_conf(snd_hwdep_t **hwdep,
 	if (err >= 0) {
 		if (snd_config_get_type(type_conf) != SND_CONFIG_TYPE_COMPOUND) {
 			SNDERR("Invalid type for HWDEP type %s definition", str);
+			err = -EINVAL;
 			goto _err;
 		}
 		snd_config_for_each(i, next, type_conf) {
@@ -167,12 +168,16 @@ static int snd_hwdep_open_noupdate(snd_hwdep_t **hwdep, snd_config_t *root, cons
  */
 int snd_hwdep_open(snd_hwdep_t **hwdep, const char *name, int mode)
 {
+	snd_config_t *top;
 	int err;
+
 	assert(hwdep && name);
-	err = snd_config_update();
+	err = snd_config_update_ref(&top);
 	if (err < 0)
 		return err;
-	return snd_hwdep_open_noupdate(hwdep, snd_config, name, mode);
+	err = snd_hwdep_open_noupdate(hwdep, top, name, mode);
+	snd_config_unref(top);
+	return err;
 }
 
 /**

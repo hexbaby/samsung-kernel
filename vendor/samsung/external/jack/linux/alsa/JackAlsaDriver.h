@@ -97,6 +97,7 @@ class JackAlsaDriver : public JackAudioDriver
         void WriteOutputAux(jack_nframes_t orig_nframes, snd_pcm_sframes_t contiguous, snd_pcm_sframes_t nwritten);
 #ifdef __ANDROID__
 		void WriteOutputAux_2nd(jack_nframes_t orig_nframes, snd_pcm_sframes_t contiguous, snd_pcm_sframes_t nwritten);
+		void WriteOutputAux_4ch(jack_nframes_t orig_nframes, snd_pcm_sframes_t contiguous, snd_pcm_sframes_t nwritten);
 #endif
         void SetTimetAux(jack_time_t time);
 

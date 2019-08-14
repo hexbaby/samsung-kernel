@@ -42,8 +42,8 @@
 #define SEMAPHORE_NULL_CHAR '\0'
 
 // remove ALOGI log
-#undef  ALOGI
-#define ALOGI 
+//#undef  ALOGI
+//#define ALOGI
 
 namespace android {
 
@@ -150,6 +150,7 @@ namespace android {
 					ALOGE("fail to alloc, try one more...");
 					continue; // try one more.
                 }
+                ALOGI("MemAlloc success, index %d size %d", i, size);
                 return i;
             }
         }
@@ -193,7 +194,7 @@ namespace android {
     	ALOGI("try to alloc shared memory size[%d]", size);
 		const int allocatedIndex = MemAlloc(size);
 		setCallingPid(allocatedIndex);
-		//ALOGW("AndroidShm allocated index = %d", allocatedIndex);
+		ALOGI("AndroidShm allocated index = %d", allocatedIndex);
 		return allocatedIndex;
     }
     

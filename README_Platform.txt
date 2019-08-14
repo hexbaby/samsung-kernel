@@ -1,10 +1,10 @@
-How to build Mobule for Platform
+How to build Module for Platform
 - It is only for modules are needed to using Android build system.
 - Please check its own install information under its folder for other module.
 
 [Step to build]
 1. Get android open source.
-    : version info - Android 7.0
+    : version info - Android 8.0
     ( Download site : http://source.android.com )
 
 2. Copy module that you want to build - to original android open source
@@ -19,7 +19,7 @@ How to build Mobule for Platform
 	case 2) e2fsprog : should add 'e2fsck','resize2fs' to PRODUCT_PACKAGES
 	case 3) libexifa : should add 'libexifa' to PRODUCT_PACKAGES
 	case 4) libjpega : should add 'libjpega' to PRODUCT_PACKAGES
-	case 5) KeyUtils : should add 'libkeyutils' to PRODUCT_PACKAGES
+	case 5) libknox_keyutils : should add 'libknox_keyutils' to PRODUCT_PACKAGES
 	
 
 ex.) [build\target\product\core.mk] - add all module name for case 1 ~ 5 at once
@@ -62,22 +62,22 @@ PRODUCT_PACKAGES += \
     
 # KeyUtils
 PRODUCT_PACKAGES += \
-    libkeyutils
+    libknox_keyutils
    
 4. excute build command
    ./build_64bit.sh
 
 5. Note : 
-To download the source code of S/W listed below, please visit http://opensource.samsung.com and find ¢®¡ÆMobile -> Mobile Application¢®¡¾ menu, and then, 
-you will be able to download what you want. You might save time in finding the right one by making use of the search keyword below.
-   - Messaging_Common.apk : "Messaging"
-   - SAirMessage_N.apk : "Messaging"
-   - SAirMessageProxy_N.apk : "Messaging"
-   - MsgCommService.apk : "Messaging"
+   To download the source code of S/W listed below, please visit http://opensource.samsung.com and find ¡°Mobile -> Mobile Application¡± menu, 
+   and then, you will be able to download what you want. 
+   You might save time in finding the right one by making use of the search keyword below. 
+
+   - SmartSwitch.apk : "Smart Switch" (Version : 3.3)
+   - VoiceNote_5.0_Task.apk : "Voice Recorder"
+   - SecEmail_O.apk : "Email"
+   - SamsungConnect.apk : "SamsungConnect"
+   - SBrowser_7.0.apk : "SBrowser" (version : SBrowser v7)
    - Fmm.apk : "FMM"
-   - SBrowser_5.0.apk : "SBrowser" (version : SBrowser v5)
-   - DictDiotek.apk : "DioDict"   
-   - SecEmail_N.apk : "Email"
-   - SmartSwitch : "Smart Switch" (version : 3.3)
-   - SAssistant_downloadable : "S Assistant"
-   - VoiceNote_5.0 : "Voice Recorder"
+   - Messaging_SEP81.apk : "Messaging"
+   - MsgCommService.apk : "Messaging"
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 

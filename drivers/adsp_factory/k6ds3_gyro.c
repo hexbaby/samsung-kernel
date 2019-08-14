@@ -134,34 +134,41 @@ static ssize_t gyro_selftest_show(struct device *dev,
 	if (data->gyro_st_result.result1 == 0) {
 		fifo_ret = 1;
 		cal_ret = 1;
-	} else
+
+		pr_info("[FACTORY]: %s - "
+			"%d,%d,%d,"
+			"%d,%d,%d,"
+			"%d,%d,%d,"
+			"%d,%d,%d,%d,%d\n", __func__,
+			gyro_fifo_avg[0], gyro_fifo_avg[1], gyro_fifo_avg[2],
+			gyro_self_zro[0], gyro_self_zro[1], gyro_self_zro[2],
+			gyro_self_bias[0], gyro_self_bias[1], gyro_self_bias[2],
+			gyro_self_diff[0], gyro_self_diff[1], gyro_self_diff[2],
+			fifo_ret,
+			cal_ret);
+
+		return sprintf(buf,
+			"%d,%d,%d,"
+			"%d,%d,%d,"
+			"%d,%d,%d,"
+			"%d,%d,%d,%d,%d\n",
+			gyro_fifo_avg[0], gyro_fifo_avg[1], gyro_fifo_avg[2],
+			gyro_self_zro[0], gyro_self_zro[1], gyro_self_zro[2],
+			gyro_self_bias[0], gyro_self_bias[1], gyro_self_bias[2],
+			gyro_self_diff[0], gyro_self_diff[1], gyro_self_diff[2],
+			fifo_ret,
+			cal_ret);
+	} else {
 		pr_info("[FACTORY] %s - failed(%d, %d)\n", __func__,
 			data->gyro_st_result.result1,
 			data->gyro_st_result.result2);
 
-	pr_info("[FACTORY]: %s - "
-		"%d,%d,%d,"
-		"%d,%d,%d,"
-		"%d,%d,%d,"
-		"%d,%d,%d,%d,%d\n", __func__,
-		gyro_fifo_avg[0], gyro_fifo_avg[1], gyro_fifo_avg[2],
-		gyro_self_zro[0], gyro_self_zro[1], gyro_self_zro[2],
-		gyro_self_bias[0], gyro_self_bias[1], gyro_self_bias[2],
-		gyro_self_diff[0], gyro_self_diff[1], gyro_self_diff[2],
-		fifo_ret,
-		cal_ret);
+		pr_info("[FACTORY]: %s - %d,%d,%d\n", __func__,
+			gyro_fifo_avg[0], gyro_fifo_avg[1], gyro_fifo_avg[2]);
 
-	return sprintf(buf,
-		"%d,%d,%d,"
-		"%d,%d,%d,"
-		"%d,%d,%d,"
-		"%d,%d,%d,%d,%d\n",
-		gyro_fifo_avg[0], gyro_fifo_avg[1], gyro_fifo_avg[2],
-		gyro_self_zro[0], gyro_self_zro[1], gyro_self_zro[2],
-		gyro_self_bias[0], gyro_self_bias[1], gyro_self_bias[2],
-		gyro_self_diff[0], gyro_self_diff[1], gyro_self_diff[2],
-		fifo_ret,
-		cal_ret);
+		return sprintf(buf, "%d,%d,%d\n",
+			gyro_fifo_avg[0], gyro_fifo_avg[1], gyro_fifo_avg[2]);
+	}
 }
 
 static DEVICE_ATTR(name, S_IRUGO, gyro_name_show, NULL);

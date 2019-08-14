@@ -64,6 +64,7 @@ Copyright (C) 2012, Samsung Electronics. All rights reserved.
 #include "../../mdss/mdss_panel.h"
 #include "../../mdss/mdss_dsi.h"
 #include "../../mdss/mdss_debug.h"
+#include "ss_dpui_common.h"
 
 #if defined(CONFIG_SEC_DEBUG)
 #include <linux/qcom/sec_debug.h>
@@ -784,6 +785,7 @@ struct samsung_display_driver_data {
 	int mdnie_tune_size4;
 	int mdnie_tune_size5;
 	int mdnie_tune_size6;
+	int mdnie_lcd_on_notifiy;
 	int mdnie_disable_trans_dimming;
 	u32 samsung_hw_config;
 
@@ -920,7 +922,9 @@ struct samsung_display_driver_data {
 	char lpm_power_control_supply_name[32];
 	int lpm_power_control_supply_min_voltage;
 	int lpm_power_control_supply_max_voltage;
-
+#ifdef CONFIG_DISPLAY_USE_INFO
+	struct notifier_block dpui_notif;
+#endif
 };
 
 /*SPI INTERFACE*/
@@ -958,6 +962,7 @@ void mdss_tft_autobrightness_cabc_update(struct mdss_dsi_ctrl_pdata *ctrl);
 void mdss_samsung_panel_data_read(struct mdss_dsi_ctrl_pdata *ctrl, struct dsi_panel_cmds *cmds, char *buffer, int level_key);
 void mdss_samsung_cabc_update(void);
 void mdss_samsung_panel_low_power_config(struct mdss_panel_data *pdata, int enable);
+void mdss_samsung_update_current_resolution(struct mdss_panel_timing *timing);
 
 /*
  * Check lcd attached status for DISPLAY_1 or DISPLAY_2

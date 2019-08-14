@@ -28,6 +28,9 @@
 #include "muic-internal.h"
 #include "muic_regmap.h"
 #include "muic_i2c.h"
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+#include "muic_vps.h"
+#endif
 #if defined(CONFIG_MUIC_NOTIFIER)
 #include <linux/muic/muic_notifier.h>
 #endif /* CONFIG_MUIC_NOTIFIER */
@@ -37,26 +40,40 @@
 #define	REG_RSVDID2	0x16
 
 #define	REG_AFCTXD	0x19
+#define	REG_AFCSTAT	0x1a
 #define	REG_VBUSSTAT	0x1b
 #define	REG_DEVT1	0x0a
 
+enum afc_return {
+	AFC_WORK_FAIL = 0,
+	AFC_WORK_SUCCESS = 1,
+	AFC_WORK_NO_CHANGE = 1,
+};
+
 muic_data_t *gpmuic;
-static int afc_work_state;
 
 static int muic_is_afc_voltage(void);
 static int muic_dpreset_afc(void);
-static int muic_restart_afc(void);
 
 /* To make AFC work properly on boot */
 static int is_charger_ready;
 static struct work_struct muic_afc_init_work;
 
-int muic_check_afc_state(int state)
+void muic_afc_delay_check_state(int state);
+
+static int muic_drop_afc_voltage(int state)
 {
 	struct afc_ops *afcops = gpmuic->regmapdesc->afcops;
-	int ret, retry;
+	int ret = AFC_WORK_FAIL;
+	int retry = 0;
 
-	pr_info("%s state = %d\n", __func__, state);
+	pr_info("%s start. state = %d\n", __func__, state);
+
+	if (gpmuic->is_afc_5v == state) {
+		pr_info("%s AFC state is already %d, skip\n", __func__, state);
+		ret = AFC_WORK_NO_CHANGE;
+		return ret;
+	}
 
 	if (state) {
 		/* Flash on state */
@@ -75,87 +92,85 @@ int muic_check_afc_state(int state)
 				if (!ret) {
 					pr_info("%s:AFC Reset Success(%d)\n",
 							__func__, ret);
-					gpmuic->is_flash_on = 1;
-					return 1;
+					gpmuic->is_afc_5v = 1;
+					ret = AFC_WORK_SUCCESS;
+					return ret;
 				} else {
 					pr_info("%s:AFC Reset Failed(%d)\n",
 							__func__, ret);
-					gpmuic->is_flash_on = -1;
+					gpmuic->is_afc_5v = -1;
 				}
 			}
 		} else {
 			pr_info("%s:Not connected AFC\n",__func__);
-			gpmuic->is_flash_on = 1;
-			return 1;
+			gpmuic->is_afc_5v = 1;
 		}
 	} else {
 		/* Flash off state */
 		if ((gpmuic->attached_dev == ATTACHED_DEV_AFC_CHARGER_5V_MUIC) ||
-				((gpmuic->is_afc_device) && (gpmuic->attached_dev != ATTACHED_DEV_AFC_CHARGER_9V_MUIC)))
+				((gpmuic->is_afc_device) &&
+				(gpmuic->attached_dev != ATTACHED_DEV_AFC_CHARGER_9V_MUIC) &&
+				(gpmuic->attached_dev != ATTACHED_DEV_QC_CHARGER_9V_MUIC)))
 			muic_restart_afc();
-		gpmuic->is_flash_on = 0;
-		return 1;
+		gpmuic->is_afc_5v = 0;
+		ret = AFC_WORK_SUCCESS;
 	}
 
-	return 0;
+	pr_info("%s end.\n", __func__);
+
+	return ret;
+
 }
+
+/*
+ * muic_check_afc_state - check afc state for camera and charger
+ * @state
+ *   1: afc off for camera
+ *   0: afc on for camera
+ *   5: afc off for charger
+ *   9: afc on for charger
+ */
+int muic_check_afc_state(int state)
+{
+	int ret = AFC_WORK_FAIL;
+
+	mutex_lock(&gpmuic->lock);
+	pr_info("%s: state(%d) lcd(%d) camera(%d)\n", __func__, state, 
+			gpmuic->check_charger_lcd_on, gpmuic->is_camera_on);
+
+	switch (state) {
+		/* for camera */
+		case 0:
+		case 1:
+			if (gpmuic->check_charger_lcd_on)
+				ret = AFC_WORK_NO_CHANGE;
+			else
+				ret = muic_drop_afc_voltage(state);
+			
+			gpmuic->is_camera_on = state;
+			break;
+		/* for charger */
+		case 5:
+			gpmuic->check_charger_lcd_on = true;
+			ret = muic_drop_afc_voltage(1);
+			break;
+		case 9:
+			gpmuic->check_charger_lcd_on = false;
+			ret = muic_drop_afc_voltage(0);
+			break;
+		default:
+			break;
+	}
+	mutex_unlock(&gpmuic->lock);
+
+	return ret;
+}
+
 EXPORT_SYMBOL(muic_check_afc_state);
 
 int muic_torch_prepare(int state)
 {
-	struct afc_ops *afcops = gpmuic->regmapdesc->afcops;
-	int ret, retry;
-
-	pr_info("%s state = %d\n", __func__, state);
-
-	if (afc_work_state == 1) {
-		pr_info("%s:%s cancel_delayed_work  afc_work_state=%d\n",MUIC_DEV_NAME, __func__, afc_work_state);
-		cancel_delayed_work(&gpmuic->afc_restart_work);
-		afc_work_state = 0;
-	}
-
-	if (state) {
-		/* Torch on state */
-		if (muic_is_afc_voltage() && gpmuic->is_afc_device) {
-			ret = muic_dpreset_afc();
-			msleep(60); // 60ms delay
-			if (ret < 0) {
-				pr_err("%s:failed to AFC reset(%d)\n",
-						__func__, ret);
-			}
-			afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_VBUS_READ, 1);
-			afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_VBUS_READ, 0);
-			for (retry = 0; retry <20; retry++) {
-				mdelay(20);
-				ret = muic_is_afc_voltage();
-				if (!ret) {
-					pr_info("%s:AFC Reset Success(%d)\n",
-							__func__, ret);
-					gpmuic->is_flash_on = 1;
-					return 1;
-				} else {
-					pr_info("%s:AFC Reset Failed(%d)\n",
-							__func__, ret);
-					gpmuic->is_flash_on = -1;
-				}
-			}
-		} else {
-			pr_info("%s:Not connected AFC\n",__func__);
-			gpmuic->is_flash_on = 1;
-			return 1;
-		}
-	} else {
-		/* Torch off state */
-		gpmuic->is_flash_on = 0;
-		if ((gpmuic->attached_dev == ATTACHED_DEV_AFC_CHARGER_5V_MUIC) ||
-				((gpmuic->is_afc_device) && (gpmuic->attached_dev != ATTACHED_DEV_AFC_CHARGER_9V_MUIC))) {
-			schedule_delayed_work(&gpmuic->afc_restart_work, msecs_to_jiffies(5000)); // 20sec
-			pr_info("%s:%s AFC_torch_work start \n",MUIC_DEV_NAME, __func__ );
-			afc_work_state = 1;
-		}
-		return 1;
-	}
-	return 0;
+	return AFC_WORK_NO_CHANGE;
 }
 EXPORT_SYMBOL(muic_torch_prepare);
 
@@ -185,10 +200,16 @@ static int muic_dpreset_afc(void)
 	pr_info("%s: gpmuic->attached_dev = %d\n", __func__, gpmuic->attached_dev);
 	if ((gpmuic->attached_dev == ATTACHED_DEV_AFC_CHARGER_9V_MUIC) ||
 		(gpmuic->attached_dev == ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC) ||
+		(gpmuic->attached_dev == ATTACHED_DEV_QC_CHARGER_9V_MUIC) ||
+		(gpmuic->attached_dev == ATTACHED_DEV_QC_CHARGER_PREPARE_MUIC) ||
 		(muic_is_afc_voltage()) ) {
 		// ENAFC set '0'
 		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_ENAFC, 0);
 		msleep(50); // 50ms delay
+
+		muic_afc_delay_check_state(0);
+
+		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_ENQC20, 0);	
 
 		// DP_RESET
 		pr_info("%s:AFC Disable \n", __func__);
@@ -196,14 +217,18 @@ static int muic_dpreset_afc(void)
 		msleep(60);
 		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_DIS_AFC, 0);
 
-		gpmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
-		muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
+		if (gpmuic->attached_dev != ATTACHED_DEV_NONE_MUIC) {
+			gpmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
+			muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_5V_MUIC);
+		} else {
+			pr_info("%s:Seems TA is removed.\n", __func__);
+		}
 	}
 
 	return 0;
 }
 
-static int muic_restart_afc(void)
+int muic_restart_afc(void)
 {
 	struct i2c_client *i2c = gpmuic->i2c;
 	int ret, value;
@@ -233,35 +258,6 @@ static int muic_restart_afc(void)
 	return 0;
 }
 
-static void muic_afc_restart_work(struct work_struct *work)
-{
-	struct i2c_client *i2c = gpmuic->i2c;
-	int ret, value;
-	struct afc_ops *afcops = gpmuic->regmapdesc->afcops;
-
-	pr_info("%s:AFC Restart\n", __func__);
-	msleep(120); // 120ms delay
-	if (gpmuic->attached_dev == ATTACHED_DEV_NONE_MUIC) {
-		pr_info("%s:%s Device type is None\n",MUIC_DEV_NAME, __func__);
-		return;
-	}
-	gpmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC;
-	muic_notifier_attach_attached_dev(ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC);
-	cancel_delayed_work(&gpmuic->afc_retry_work);
-	schedule_delayed_work(&gpmuic->afc_retry_work, msecs_to_jiffies(5000)); // 5sec
-
-	// voltage(9.0V) + current(1.65A) setting : 0x
-	value = 0x46;
-	ret = muic_i2c_write_byte(i2c, REG_AFCTXD, value);
-	if (ret < 0)
-		printk(KERN_ERR "[muic] %s: err write AFC_TXD(%d)\n", __func__, ret);
-	pr_info("%s:AFC_TXD [0x%02x]\n", __func__, value);
-
-	// ENAFC set '1'
-	afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_ENAFC, 1);
-	afc_work_state = 0;
-}
-
 static void muic_afc_retry_work(struct work_struct *work)
 {
 	struct afc_ops *afcops = gpmuic->regmapdesc->afcops;
@@ -271,6 +267,10 @@ static void muic_afc_retry_work(struct work_struct *work)
 	//Reason of AFC fail
 	ret = muic_i2c_read_byte(i2c, 0x3C);
 	pr_info("%s : Read 0x3C = [0x%02x]\n", __func__, ret);
+
+	// read AFC_STATUS
+	ret = muic_i2c_read_byte(i2c, REG_AFCSTAT);
+	pr_info("%s: AFC_STATUS [0x%02x]\n", __func__, ret);
 	
 	pr_info("%s:AFC retry work\n", __func__);
 	if (gpmuic->attached_dev == ATTACHED_DEV_AFC_CHARGER_PREPARE_MUIC) {
@@ -282,6 +282,12 @@ static void muic_afc_retry_work(struct work_struct *work)
 			return;
 		}
 
+		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_ENAFC, 0);
+
+		muic_afc_delay_check_state(0);
+
+		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_ENQC20, 0);	
+
 		pr_info("%s: [MUIC] devtype is afc prepare - Disable AFC\n", __func__);
 		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_DIS_AFC, 1);
 		msleep(20);
@@ -292,17 +298,22 @@ static void muic_afc_retry_work(struct work_struct *work)
 void muic_afc_delay_check_state(int state)
 {
 	struct i2c_client *i2c = gpmuic->i2c;
+	int rsvdid2;
 
 	pr_info("%s : state = %d \n", __func__, state);
 
 	if ( state == 1 ) {
-		muic_i2c_write_byte(i2c, REG_RSVDID2, 0x2C); // VDP_SRC_EN '1'
+		rsvdid2 = muic_i2c_read_byte(i2c, REG_RSVDID2);
+		rsvdid2 = rsvdid2 | 0x08;
+		muic_i2c_write_byte(i2c, REG_RSVDID2, rsvdid2); // VDP_SRC_EN '1'
 		gpmuic->delay_check_count = 0;
 		cancel_delayed_work(&gpmuic->afc_delay_check_work);
 		schedule_delayed_work(&gpmuic->afc_delay_check_work, msecs_to_jiffies(1700)); // 1.7 sec
 		pr_info("%s: afc_delay_check_work start\n", __func__);        
 	} else {
-		muic_i2c_write_byte(i2c, REG_RSVDID2, 0x24); // VDP_SRC_EN '0'
+		rsvdid2 = muic_i2c_read_byte(i2c, REG_RSVDID2);
+		rsvdid2 = rsvdid2 & 0xF7;
+		muic_i2c_write_byte(i2c, REG_RSVDID2, rsvdid2); // VDP_SRC_EN '0'
 		cancel_delayed_work(&gpmuic->afc_delay_check_work);        
 		pr_info("%s: afc_delay_check_work cancel (%d)\n", __func__ ,gpmuic->delay_check_count);
 		gpmuic->delay_check_count = 0;
@@ -317,20 +328,26 @@ static void muic_afc_delay_check_work(struct work_struct *work)
 
 	pr_info("%s: attached_dev = %d\n", __func__, gpmuic->attached_dev);
 
-	pr_info("%s: delay_check_count = %d , is_flash_on=%d\n", __func__, gpmuic->delay_check_count, gpmuic->is_flash_on);
-	if (gpmuic->delay_check_count > 5) {
+	pr_info("%s: delay_check_count = %d , is_afc_5v=%d\n", __func__, gpmuic->delay_check_count, gpmuic->is_afc_5v);
+	if (gpmuic->delay_check_count > 20) {
 		muic_afc_delay_check_state(0);
 		return;
 	}
 
-	if (gpmuic->is_flash_on == 1) {
+	if (gpmuic->is_afc_5v == 1) {
+		muic_afc_delay_check_state(0);
 		pr_info("%s: skip\n", __func__);
 		return;
 	}
 
 	val1 = muic_i2c_read_byte(i2c, REG_DEVT1);
 	pr_info("%s:val1 = 0x%x \n", __func__, val1);
-	if ( (gpmuic->attached_dev == ATTACHED_DEV_TA_MUIC) && (val1 == 0x40) ){
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	if ((gpmuic->attached_dev == ATTACHED_DEV_TA_MUIC) && (val1 == 0x40
+		|| gpmuic->vps.s.chgtyp == CHGTYP_DEDICATED_CHARGER)) {
+#else
+	if ((gpmuic->attached_dev == ATTACHED_DEV_TA_MUIC) && (val1 == 0x40)) {
+#endif
 		pr_info("%s: DP_RESET\n", __func__);
 		afcops->afc_ctrl_reg(gpmuic->regmapdesc, AFCCTRL_DIS_AFC, 1);
 		msleep(60);
@@ -380,7 +397,7 @@ static ssize_t afc_off_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	muic_data_t *pmuic = dev_get_drvdata(dev);
-	return snprintf(buf, 4, "%d\n", pmuic->is_flash_on);
+	return snprintf(buf, 4, "%d\n", pmuic->is_afc_5v);
 }
 
 static ssize_t afc_off_store(struct device *dev,
@@ -404,12 +421,15 @@ void muic_init_afc_state(muic_data_t *pmuic)
 {
 	int ret;
 	gpmuic = pmuic;
-	gpmuic->is_flash_on = 0;
+	gpmuic->is_afc_5v = 0;
+	gpmuic->check_charger_lcd_on = false;
+	gpmuic->is_camera_on = false;
 
+	mutex_init(&gpmuic->lock);
+	
 	/* To make AFC work properly on boot */
 	INIT_WORK(&muic_afc_init_work, muic_focrced_detection_by_charger);
 	gpmuic->is_afc_device = 0;
-	INIT_DELAYED_WORK(&gpmuic->afc_restart_work, muic_afc_restart_work);
 	INIT_DELAYED_WORK(&gpmuic->afc_retry_work, muic_afc_retry_work);
 
 	INIT_DELAYED_WORK(&gpmuic->afc_delay_check_work, muic_afc_delay_check_work);

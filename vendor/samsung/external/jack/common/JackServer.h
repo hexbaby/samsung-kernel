@@ -29,6 +29,7 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "JackGlobals.h"
 #include "JackPlatformPlug.h"
 #include "jslist.h"
+#include "JackMutex.h"
 
 namespace Jack
 {
@@ -43,7 +44,7 @@ class JackLoadableInternalClient;
 \brief The Jack server.
 */
 
-class SERVER_EXPORT JackServer
+class SERVER_EXPORT JackServer : public JackLockAble
 {
 
     private:
@@ -59,6 +60,9 @@ class SERVER_EXPORT JackServer
         JackConnectionManager fConnectionState;
         JackSynchro fSynchroTable[CLIENT_NUM];
         bool fFreewheel;
+#ifdef __ANDROID__
+		char fAudioDriverName[JACK_DRIVER_NAME_MAX + 1];
+#endif
 
         int InternalClientLoadAux(JackLoadableInternalClient* client, const char* so_name, const char* client_name, int options, int* int_ref, int uuid, int* status);
 
@@ -96,6 +100,8 @@ class SERVER_EXPORT JackServer
         JackDriverInfo* AddSlave(jack_driver_desc_t* driver_desc, JSList* driver_params);
         void RemoveSlave(JackDriverInfo* info);
         int SwitchMaster(jack_driver_desc_t* driver_desc, JSList* driver_params);
+
+        void RestartAudioDriver();
 
         // Object access
         JackLockedEngine* GetEngine();

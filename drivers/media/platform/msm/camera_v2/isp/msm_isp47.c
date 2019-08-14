@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -191,7 +191,7 @@ static int32_t msm_vfe47_init_dt_parms(struct vfe_device *vfe_dev,
 	struct msm_vfe_hw_init_parms *dt_parms, void __iomem *dev_mem_base)
 {
 	struct device_node *of_node;
-	int32_t i = 0 , rc = 0;
+	int32_t i = 0, rc = 0;
 	uint32_t *dt_settings = NULL, *dt_regs = NULL, num_dt_entries = 0;
 
 	of_node = vfe_dev->pdev->dev.of_node;
@@ -975,9 +975,10 @@ int msm_vfe47_start_fetch_engine(struct vfe_device *vfe_dev,
 			vfe_dev->buf_mgr, fe_cfg->session_id,
 			fe_cfg->stream_id);
 		vfe_dev->fetch_engine_info.bufq_handle = bufq_handle;
-
+		mutex_lock(&vfe_dev->buf_mgr->lock);
 		rc = vfe_dev->buf_mgr->ops->get_buf_by_index(
 			vfe_dev->buf_mgr, bufq_handle, fe_cfg->buf_idx, &buf);
+		mutex_unlock(&vfe_dev->buf_mgr->lock);
 		if (rc < 0 || !buf) {
 			pr_err("%s: No fetch buffer rc= %d buf= %pK\n",
 				__func__, rc, buf);

@@ -49,16 +49,13 @@ static struct file *file_open(const char *path, int flags, int rights)
 {
 	struct file *filp = NULL;
 	mm_segment_t oldfs;
-	int err = 0;
 
 	oldfs = get_fs();
 	set_fs(get_ds());
 	filp = filp_open(path, flags, rights);
 	set_fs(oldfs);
-	if (IS_ERR(filp)) {
-		err = PTR_ERR(filp);
+	if (IS_ERR(filp))
 		return NULL;
-	}
 	return filp;
 }
 
@@ -199,9 +196,18 @@ static int rt5508_calib_choosen_db(struct rt5508_chip *chip, int choose)
 {
 	struct snd_soc_codec *codec = chip->codec;
 	u32 data = 0;
-	int ret = 0;
+	uint8_t mode_store;
+	int i = 0, ret = 0;
 
 	dev_info(chip->dev, "%s\n", __func__);
+	ret = snd_soc_read(codec, RT5508_REG_BST_MODE);
+	if (ret < 0)
+		return ret;
+	mode_store = ret;
+	ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
+		0x03, 0x02);
+	if (ret < 0)
+		return ret;
 	data = 0x0080;
 	ret = snd_soc_write(codec, RT5508_REG_CALIB_REQ, data);
 	if (ret < 0)
@@ -234,10 +240,26 @@ static int rt5508_calib_choosen_db(struct rt5508_chip *chip, int choose)
 	if (ret < 0)
 		return ret;
 	msleep(120);
+	while (i++ < 3) {
+		ret = snd_soc_read(codec, RT5508_REG_CALIB_CTRL);
+		if (ret < 0)
+			return ret;
+		if (ret & 0x01)
+			break;
+		msleep(20);
+	}
 	data &= ~(0x80);
 	ret = snd_soc_write(codec, RT5508_REG_CALIB_CTRL, data);
 	if (ret < 0)
 		return ret;
+	ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
+		0x03, mode_store);
+	if (ret < 0)
+		return ret;
+	if (i > 3) {
+		dev_err(chip->dev, "over ready count\n");
+		return -EINVAL;
+	}
 	return snd_soc_read(codec, RT5508_REG_CALIB_OUT0);
 }
 
@@ -820,7 +842,7 @@ static ssize_t rt_calib_class_attr_store(struct class *cls,
 
 	switch (offset) {
 	case RT5508_CALIB_CLASS_TRIGGER:
-		if (sscanf(buf, "%d", &parse_val) != 1)
+		if (sscanf(buf, "%12d", &parse_val) != 1)
 			return -EINVAL;
 		parse_val -= RT5508_CALIB_MAGIC;
 		ret = rt_calib_trigger_sequence(cls, parse_val);
@@ -876,4 +898,3 @@ module_exit(rt5508_cal_exit);
 MODULE_AUTHOR("CY_Huang <cy_huang@richtek.com>");
 MODULE_DESCRIPTION("RT5508 SPKAMP calibration");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.0.0");

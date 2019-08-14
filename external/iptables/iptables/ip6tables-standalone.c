@@ -58,7 +58,10 @@ ip6tables_main(int argc, char *argv[])
 	init_extensions6();
 #endif
 
+	iptables_log(argc, argv);
 	ret = do_command6(argc, argv, &table, &handle, false);
+	iptables_log(0, log_done);
+
 	if (ret) {
 		ret = ip6tc_commit(handle);
 		ip6tc_free(handle);
@@ -73,6 +76,8 @@ ip6tables_main(int argc, char *argv[])
 			fprintf(stderr, "ip6tables: %s.\n",
 				ip6tc_strerror(errno));
 		}
+		if (errno == EAGAIN)
+			exit(RESOURCE_PROBLEM);
 	}
 
 	exit(!ret);

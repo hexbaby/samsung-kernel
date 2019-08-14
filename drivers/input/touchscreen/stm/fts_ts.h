@@ -9,7 +9,7 @@
 #endif
 #include <linux/clk.h>
 #include <linux/pinctrl/consumer.h>
-
+#include <linux/i2c.h>
 #ifdef CONFIG_SEC_DEBUG_TSP_LOG
 #define tsp_debug_dbg(mode, dev, fmt, ...)	\
 ({								\
@@ -61,7 +61,7 @@
 #undef FTS_SUPPORT_NOISE_PARAM		/* save & resrote noise parameter */
 #define FTS_SUPPORT_ESD_CHECK		/* support ESD interrupt, handle reset */.
 #define SEC_TSP_FACTORY_TEST
-
+#define FTS_SUPPORT_STRINGLIB
 #define FTS_SUPPORT_TOUCH_KEY
 
 #undef FTS_SUPPORT_TA_MODE
@@ -259,15 +259,9 @@
 #define FTS_RETRY_COUNT					10
 
 /* SCRUB, SPAY */
-#define FTS_STRING_EVENT_AOD_TRIGGER			(1 << 0)
-#define FTS_STRING_EVENT_WATCH_STATUS			(1 << 2)
-#define FTS_STRING_EVENT_FAST_ACCESS			(1 << 3)
-#define FTS_STRING_EVENT_DIRECT_INDICATOR		(1 << 3) | (1 << 2)
-#define FTS_STRING_EVENT_SPAY				(1 << 4)
-#define FTS_STRING_EVENT_SPAY1				(1 << 5)
-#define FTS_STRING_EVENT_SPAY2				(1 << 4) | (1 << 5)
-#define FTS_STRING_EVENT_EDGE_SWIPE_RIGHT		(1 << 6)
-#define FTS_STRING_EVENT_EDGE_SWIPE_LEFT		(1 << 7)
+
+#define FTS_STRING_EVENT_SPAY				(1 << 1)
+#define FTS_STRING_EVENT_AOD_TRIGGER			(1 << 2)
 
 #define FTS_SIDEGESTURE_EVENT_SINGLE_STROKE		0xE0
 #define FTS_SIDEGESTURE_EVENT_DOUBLE_STROKE		0xE1
@@ -369,6 +363,14 @@ struct fts_noise_param {
 };
 #endif
 
+enum {
+	SPECIAL_EVENT_TYPE_SPAY			= 0x04,
+	SPECIAL_EVENT_TYPE_AOD			= 0x08,
+	SPECIAL_EVENT_TYPE_AOD_PRESS		= 0x09,
+	SPECIAL_EVENT_TYPE_AOD_LONGPRESS	= 0x0A,
+	SPECIAL_EVENT_TYPE_AOD_DOUBLETAB	= 0x0B,
+};
+
 #ifdef SEC_TSP_FACTORY_TEST
 #include "linux/input/sec_cmd.h"
 extern struct class *sec_class;
@@ -434,6 +436,7 @@ struct fts_device_tree_data {
 	int bringup;
 	int tsp_id;
 	int tsp_id2;
+	int poweroff_pinctrl;
 };
 
 #define RAW_MAX	3750
@@ -670,6 +673,7 @@ extern bool tsp_init_done;
 extern int poweroff_charging;
 #endif
 
+extern void i2c_msm_pinctrl_set_slave_power_off(struct i2c_adapter *adap);
 /*
  * If in DeviceTree structure, using below tree.
  * below tree is connected fts_parse_dt() in fts_ts.c file.

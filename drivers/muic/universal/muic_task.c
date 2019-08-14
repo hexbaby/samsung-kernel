@@ -74,6 +74,7 @@
 
 #if defined(CONFIG_MUIC_SUPPORT_CCIC)
 #include "muic_ccic.h"
+#include <linux/ccic/s2mm005.h>
 #endif
 
 #if defined(CONFIG_USB_EXTERNAL_NOTIFY)
@@ -126,7 +127,7 @@ static int sm5705_muic_irq_handler(muic_data_t *pmuic, int irq)
 	struct i2c_client *i2c = pmuic->i2c;
 	struct afc_ops *afcops = pmuic->regmapdesc->afcops;
 	struct muic_platform_data *pdata = pmuic->pdata;
-	int local_irq, ret;
+	int local_irq = 0, ret = 0;
 
 	pr_info("%s:%s irq(%d)\n", pmuic->chip_name, __func__, irq);
 
@@ -140,7 +141,6 @@ static int sm5705_muic_irq_handler(muic_data_t *pmuic, int irq)
 
 	if (local_irq == SM5705_MUIC_IRQ_INT1_DETACH) { 
 		cancel_delayed_work(&pmuic->afc_retry_work);
-		cancel_delayed_work(&pmuic->afc_restart_work);
 		muic_afc_delay_check_state(0);
 	}
 
@@ -198,12 +198,34 @@ static int sm5705_muic_irq_handler(muic_data_t *pmuic, int irq)
 		}
 
 		if ( local_irq == SM5705_MUIC_IRQ_INT3_AFC_TA_ATTACHED ) {  /*AFC_TA_ATTACHED*/
-			ret = afcops->afc_ta_attach(pmuic->regmapdesc);
+#if !defined(CONFIG_SEC_FACTORY) && defined(CONFIG_MUIC_SUPPORT_CCIC)
+			/* To prevent damage by RP0 Cable, AFC should be progress after ccic_attach */
+			if (pmuic->is_ccic_attach) {
+				if (pmuic->ccic_rp == Rp_56K)
+					afcops->afc_ta_attach(pmuic->regmapdesc);
+				else {
+					pmuic->retry_afc = true;
+					pr_info("%s: Rp isn't 56K, but is (%d)K\n", __func__, pmuic->ccic_rp);
+					pmuic->attached_dev = ATTACHED_DEV_AFC_CHARGER_5V_MUIC;
+					muic_notifier_attach_attached_dev(pmuic->attached_dev);
+				}
+			} else {
+				pmuic->retry_afc = true;
+				pr_info("%s: Need to restart AFC for late ccic_attach\n", __func__);
+			}
+#else
+			afcops->afc_ta_attach(pmuic->regmapdesc);
+#endif
 			return ret;
 		}
 	}
 	else
-		pr_err("%s: Ignore AFC_INTS, AFC is disabled \n", __func__);
+		pr_err("%s: Ignore AFC_INTS, AFC is disabled by setting\n", __func__);
+
+	if ( local_irq == SM5705_MUIC_IRQ_RESET ) {  /*RESET*/
+		MUIC_INFO_K("%s: SM5705_MUIC_IRQ_RESET\n", __func__);
+		muic_reg_init(pmuic);
+	}
 
 	return INT_REQ_DONE;
 }
@@ -646,6 +668,7 @@ static int muic_irq_init(muic_data_t *pmuic)
 		int irq_int2_adc_chg, irq_int2_rev_acce, irq_int2_vbus_off;
 		int irq_int3_qc20_accepted, irq_int3_afc_error, irq_int3_afc_sta_chg, irq_int3_multi_byte;
 		int irq_int3_vbus_update, irq_int3_afc_accepted, irq_int3_afc_ta_attached;
+		int irq_reset;
 
 		/* SM5703 MUIC INT1 */
 		irq_int1_attach = pdata->irq_gpio + SM5705_MUIC_IRQ_INT1_ATTACH;
@@ -748,6 +771,11 @@ static int muic_irq_init(muic_data_t *pmuic)
 				muic_irq_thread, (IRQF_TRIGGER_FALLING | IRQF_ONESHOT),
 				"muic-irq", pmuic);
 
+		irq_reset = pdata->irq_gpio + SM5705_MUIC_IRQ_RESET;
+		printk(" %s requesting irq no(irq_reset) = %d\n",__func__,irq_reset);
+		ret = request_threaded_irq(irq_reset, NULL,
+				muic_irq_thread, (IRQF_TRIGGER_FALLING | IRQF_ONESHOT),
+				"muic-irq", pmuic);
 
 		pmuic->irqs.irq_int1_attach	= irq_int1_attach;
 		pmuic->irqs.irq_int1_detach	= irq_int1_detach;
@@ -920,6 +948,7 @@ static int muic_probe(struct platform_device *pdev)
 #endif
 #if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
 	pmuic->i2c = pmfd->i2c;
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
 	if(gpio_is_valid(pmuic->switch_gpio)) {
 		switch_control_pinctrl = devm_pinctrl_get_select(&pmuic->i2c->dev, "muic_switch");
 		if (IS_ERR(switch_control_pinctrl)) {
@@ -929,6 +958,11 @@ static int muic_probe(struct platform_device *pdev)
 			switch_control_pinctrl = NULL;
 		}
 	}
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	pmuic->switch_gpio_en = false;
+	INIT_DELAYED_WORK(&pmuic->switch_gpio_delay_work, muic_switch_off);
+#endif
+#endif
 #else
 	pmuic->i2c = pmfd->muic;
 #endif
@@ -941,6 +975,8 @@ static int muic_probe(struct platform_device *pdev)
 	pmuic->usb_to_ta_state = false;
 #endif
 	pmuic->is_dcdtmr_intr = false;
+	pmuic->is_ccic_attach = false;
+	pmuic->retry_afc = false;
 
 #if defined(CONFIG_MUIC_SUPPORT_EARJACK)
 	pmuic->is_earkeypressed = false;

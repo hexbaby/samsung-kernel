@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 #include "JackTransportEngine.h"
 #include "driver_interface.h"
 #include "JackLibGlobals.h"
+#include "types.h"
 
 
 #include <math.h>
@@ -136,12 +137,16 @@ void JackClient::Cleanup()
 }
 #endif
 
-void JackClient::ShutDown()
+void JackClient::ShutDown(bool forcedCleanup)
 {
     jack_log("JackClient::ShutDown");
  
     if (fInfoShutdown) {
-        fInfoShutdown(JackFailure, "JACK server has been closed", fInfoShutdownArg);
+        if (forcedCleanup) {
+            fInfoShutdown((jack_status_t)(JackFailure | JackClientDeleted), "JACK client has been deleted after socket failure", fInfoShutdownArg);
+        } else {
+            fInfoShutdown(JackFailure, "JACK server has been closed", fInfoShutdownArg);
+        }
         fInfoShutdown = NULL;
     } else if (fShutdown) {
         fShutdown(fShutdownArg);
@@ -159,7 +164,7 @@ int JackClient::Close()
     fChannel->Stop();   // Channels is stopped first to avoid receiving notifications while closing
 
     // Request close only if server is still running
-    if (JackGlobals::fServerRunning){
+    if (JackGlobals::fServerRunning[GetClientControl()->fRefNum]){
         fChannel->ClientClose(GetClientControl()->fRefNum, &result);
     } else {
         jack_log("JackClient::Close server is shutdown");

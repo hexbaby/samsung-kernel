@@ -27,13 +27,16 @@
  */
   
 
-#include <byteswap.h>
+#include "bswap.h"
 #include <time.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include "pcm_local.h"
 #include "pcm_plugin.h"
-#include "iatomic.h"
+
+#define atomic_read(ptr)    __atomic_load_n(ptr, __ATOMIC_SEQ_CST )
+#define atomic_add(ptr, n)  __atomic_add_fetch(ptr, n, __ATOMIC_SEQ_CST)
+#define atomic_dec(ptr)     __atomic_sub_fetch(ptr, 1, __ATOMIC_SEQ_CST)
 
 #ifndef PIC
 /* entry for static linking */
@@ -61,7 +64,7 @@ typedef struct _snd_pcm_meter {
 	struct list_head scopes;
 	int closed;
 	int running;
-	atomic_t reset;
+	int reset;
 	pthread_t thread;
 	pthread_mutex_t update_mutex;
 	pthread_mutex_t running_mutex;
@@ -133,7 +136,6 @@ static int snd_pcm_meter_update_scope(snd_pcm_t *pcm)
  _again:
 	rptr = *pcm->hw.ptr;
 	old_rptr = meter->rptr;
-	rmb();
 	if (atomic_read(&meter->reset)) {
 		reset = 1;
 		atomic_dec(&meter->reset);
@@ -288,7 +290,7 @@ static int snd_pcm_meter_prepare(snd_pcm_t *pcm)
 {
 	snd_pcm_meter_t *meter = pcm->private_data;
 	int err;
-	atomic_inc(&meter->reset);
+	atomic_add(&meter->reset, 1);
 	err = snd_pcm_prepare(meter->gen.slave);
 	if (err >= 0) {
 		if (pcm->stream == SND_PCM_STREAM_PLAYBACK)
@@ -419,7 +421,7 @@ static int snd_pcm_meter_hw_refine_slave(snd_pcm_t *pcm, snd_pcm_hw_params_t *pa
 static int snd_pcm_meter_hw_params_slave(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
 {
 	snd_pcm_meter_t *meter = pcm->private_data;
-	return _snd_pcm_hw_params(meter->gen.slave, params);
+	return _snd_pcm_hw_params_internal(meter->gen.slave, params);
 }
 
 static int snd_pcm_meter_hw_refine(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
@@ -514,6 +516,9 @@ static const snd_pcm_ops_t snd_pcm_meter_ops = {
 	.async = snd_pcm_generic_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_generic_query_chmaps,
+	.get_chmap = snd_pcm_generic_get_chmap,
+	.set_chmap = snd_pcm_generic_set_chmap,
 };
 
 static const snd_pcm_fast_ops_t snd_pcm_meter_fast_ops = {
@@ -542,6 +547,7 @@ static const snd_pcm_fast_ops_t snd_pcm_meter_fast_ops = {
 	.poll_descriptors_count = snd_pcm_generic_poll_descriptors_count,
 	.poll_descriptors = snd_pcm_generic_poll_descriptors,
 	.poll_revents = snd_pcm_generic_poll_revents,
+	.may_wait_for_avail_min = snd_pcm_generic_may_wait_for_avail_min,
 };
 
 /**
@@ -584,7 +590,7 @@ int snd_pcm_meter_open(snd_pcm_t **pcmp, const char *name, unsigned int frequenc
 	pcm->private_data = meter;
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;
-	pcm->monotonic = slave->monotonic;
+	pcm->tstamp_type = slave->tstamp_type;
 	snd_pcm_link_hw_ptr(pcm, slave);
 	snd_pcm_link_appl_ptr(pcm, slave);
 	*pcmp = pcm;

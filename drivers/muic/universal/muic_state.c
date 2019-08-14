@@ -273,6 +273,10 @@ static void muic_handle_attach(muic_data_t *pmuic,
 		break;
 	case ATTACHED_DEV_RDU_TA_MUIC:
 		attach_ta(pmuic);
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+		if (pmuic->is_camera_on)
+			pmuic->is_afc_5v = 1;
+#endif
 		pmuic->attached_dev = new_dev;
 		break;
 	case ATTACHED_DEV_TA_MUIC:
@@ -391,8 +395,10 @@ static void muic_handle_detach(muic_data_t *pmuic)
 
 	ret = com_to_open_with_vbus(pmuic);
 
-	//Fixme.
-	//muic_enable_accdet(pmuic);
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+	pmuic->is_afc_5v = 0;
+	pmuic->check_charger_lcd_on = false;
+#endif
 
 #if defined(CONFIG_MUIC_HV)
 	hv_do_detach(pmuic->phv);
@@ -512,7 +518,15 @@ static void update_jig_state(muic_data_t *pmuic)
 	if (pmuic->pdata->jig_uart_cb)
 		pmuic->pdata->jig_uart_cb(jig_state);
 }
-
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+static void update_keyboard_state(muic_data_t *pmuic)
+{
+	if (pmuic->keyboard_state)
+		keyboard_notifier_attach();
+	else
+		keyboard_notifier_detach();
+}
+#endif
 void muic_detect_dev(muic_data_t *pmuic)
 {
 	muic_attached_dev_t new_dev = ATTACHED_DEV_UNKNOWN_MUIC;
@@ -526,11 +540,20 @@ void muic_detect_dev(muic_data_t *pmuic)
 	get_vps_data(pmuic, &pmuic->vps);
 
 	if (pmuic->vps_table == VPS_TYPE_SCATTERED) {
-		MUIC_INFO_K("%s:%s dev[1:0x%x, 2:0x%x, 3:0x%x], adc:0x%x, vbvolt:0x%x\n",
-			MUIC_DEV_NAME, __func__, pmuic->vps.s.val1, pmuic->vps.s.val2,
-			pmuic->vps.s.val3, pmuic->vps.s.adc, pmuic->vps.s.vbvolt);
+		MUIC_INFO_K("%s:%s dev[1:0x%x, 2:0x%x, 3:0x%x], adc:0x%x(0x%x), vbvolt:0x%x, chgtyp:%02x\n",
+			MUIC_DEV_NAME, __func__, pmuic->vps.s.val1,
+			pmuic->vps.s.val2, pmuic->vps.s.val3, pmuic->vps.s.adc,
+			pmuic->vps.s.adcerr, pmuic->vps.s.vbvolt,
+			pmuic->vps.s.chgtyp);
 		adc = pmuic->vps.s.adc;
 		vbvolt = pmuic->vps.s.vbvolt;
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+		if (pmuic->vps.s.adcerr == 0x2) {
+			pr_info("%s:%s: pogo pin malfuntion this irq ignore \n",
+				MUIC_DEV_NAME, __func__);
+			return;
+		}
+#endif
 	} else if (pmuic->vps_table == VPS_TYPE_TABLE) {
 		MUIC_INFO_K("%s:%s ST[0x%02x 0x%02x 0x%02x] CT[0x%02x 0x%02x 0x%02x 0x%02x] HVCT[0x%02x 0x%02x]\n",
 			MUIC_DEV_NAME, __func__,
@@ -559,10 +582,17 @@ void muic_detect_dev(muic_data_t *pmuic)
 		pr_info("%s:%s: discarded.\n",MUIC_DEV_NAME,__func__);
 		return;
 	}
-
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	update_keyboard_state(pmuic);
+#endif
 #if defined(CONFIG_MUIC_SUPPORT_CCIC)
 	if (pvendor->get_dcdtmr_irq) {
 		dcd = pvendor->get_dcdtmr_irq(pmuic->regmapdesc);
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+		if (pmuic->vps.s.chgtyp == CHGTYPS_TIMEOUT_SDP)
+			dcd = true;
+		else dcd = false;
+#endif
 		pr_info("%s:%s: get dcd timer state: %s\n",
 				MUIC_DEV_NAME, __func__, dcd ? "true": "false");
 		pmuic->is_dcdtmr_intr = dcd;

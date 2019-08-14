@@ -26,39 +26,10 @@
 #if defined(CONFIG_VBUS_NOTIFIER)
 #include <linux/vbus_notifier.h>
 #endif
-#include <linux/power_supply.h>
+#include "../../battery_v2/include/sec_charging_common.h"
 #if defined(CONFIG_USB_TYPEC_MANAGER_NOTIFIER)
 #include <linux/usb/manager/usb_typec_manager_notifier.h>
 #endif
-
-static inline struct power_supply *get_power_supply_by_name(char *name)
-{
-	if (!name)
-		return (struct power_supply *)NULL;
-	else
-		return power_supply_get_by_name(name);
-}
-
-#define psy_do_property(name, function, property, value) \
-{	\
-	struct power_supply *psy;	\
-	int ret;	\
-	psy = get_power_supply_by_name((name));	\
-	if (!psy) {	\
-		pr_err("%s: Fail to "#function" psy (%s)\n",	\
-			__func__, (name));	\
-		value.intval = 0;	\
-	} else {	\
-		if (psy->function##_property != NULL) { \
-			ret = psy->function##_property(psy, (property), &(value)); \
-			if (ret < 0) {	\
-				pr_err("%s: Fail to %s "#function" (%d=>%d)\n", \
-						__func__, name, (property), ret);	\
-				value.intval = 0;	\
-			}	\
-		}	\
-	}	\
-}
 
 extern void set_ncm_ready(bool ready);
 
@@ -381,6 +352,42 @@ static int set_online(int event, int state)
 	return 0;
 }
 
+#ifdef CONFIG_USB_CHARGING_EVENT
+static int usb_blocked_chg_control(int set)
+{
+	union power_supply_propval val;
+	struct device_node *np_charger = NULL;
+	char *charger_name;
+
+	np_charger = of_find_node_by_name(NULL, "battery");
+	if (!np_charger) {
+		pr_err("%s: failed to get the battery device node\n", __func__);
+		return 0;
+	} else {
+		if (!of_property_read_string(np_charger, "battery,charger_name",
+					(char const **)&charger_name)) {
+			pr_info("%s: charger_name = %s\n", __func__,
+					charger_name);
+		} else {
+			pr_err("%s: failed to get the charger name\n",  __func__);
+			return 0;
+		}
+	}
+	//  current setting for upsm
+	pr_info("usb: is blocked. charing current set = %d\n", set);
+
+	if (set)
+		val.intval = USB_CURRENT_HIGH_SPEED;
+	else
+		val.intval = USB_CURRENT_UNCONFIGURED;
+
+	psy_do_property("battery", set,
+		POWER_SUPPLY_EXT_PROP_USB_CONFIGURE, val);
+
+	return 0;
+}
+#endif
+
 static struct otg_notify sec_otg_notify = {
 	.vbus_drive	= otg_accessory_power,
 	.set_peripheral	= qcom_set_peripheral,
@@ -392,7 +399,10 @@ static struct otg_notify sec_otg_notify = {
 	.device_check_sec = 3,
 #if !defined(CONFIG_CCIC_NOTIFIER)
 	.auto_drive_vbus = NOTIFY_OP_PRE,
-#endif	
+#endif
+#ifdef CONFIG_USB_CHARGING_EVENT
+	.set_chg_current = usb_blocked_chg_control,
+#endif
 	.set_battcall = set_online,
 };
 

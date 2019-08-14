@@ -25,7 +25,7 @@ config ARM64
 	select GENERIC_ALLOCATOR
 	select EDAC_SUPPORT
 	select GENERIC_CLOCKEVENTS
-	select GENERIC_CLOCKEVENTS_BROADCAST if SMP
+	select GENERIC_CLOCKEVENTS_BROADCAST
 	select GENERIC_CPU_AUTOPROBE
 	select GENERIC_EARLY_IOREMAP
 	select GENERIC_IOMAP
@@ -40,6 +40,7 @@ config ARM64
 	select HARDIRQS_SW_RESEND
 	select HAVE_ALIGNED_STRUCT_PAGE if SLUB
 	select HAVE_ARCH_AUDITSYSCALL
+	select HAVE_ARCH_HARDENED_USERCOPY
 	select HAVE_ARCH_JUMP_LABEL
 	select HAVE_ARCH_KASAN if SPARSEMEM_VMEMMAP && !(ARM64_16K_PAGES && ARM64_VA_BITS_48)
 	select HAVE_ARCH_KGDB
@@ -200,6 +201,9 @@ config ARM64_DMA_IOMMU_ALIGNMENT
 
 endif
 
+config SMP
+	def_bool y
+
 config SWIOTLB
 	def_bool y
 
@@ -218,6 +222,15 @@ config PGTABLE_LEVELS
 	default 3 if ARM64_64K_PAGES && ARM64_VA_BITS_48
 	default 3 if ARM64_4K_PAGES && ARM64_VA_BITS_39
 	default 4 if ARM64_4K_PAGES && ARM64_VA_BITS_48
+
+config MSM_GVM_QUIN
+	bool "Enable virtualization Support for MSM kernel required for QUIN platform"
+	help
+		This enables support for MSM Kernel based virtual
+		machine for QUIN platform.
+		This helps to enable virtual driver support.
+		This should work on 64bit machine.
+		If you don't know what to do here, say N.
 
 source "init/Kconfig"
 
@@ -308,6 +321,14 @@ config ARCH_MSM8953
 	  This enables support for the MSM8953 chipset. If you don't
 	  know what to do here, say N
 
+config ARCH_SDM450
+	bool "Enable Support for Qualcomm Technologies Inc SDM450"
+	depends on ARCH_MSM
+	select ARCH_MSM8953_SOC_SETTINGS
+	help
+	  This enables support for the SDM450 chipset. If you don't
+	  know what to do here, say N
+
 config ARCH_MSM8937
 	bool "Enable Support for Qualcomm Technologies Inc MSM8937"
 	depends on ARCH_MSM
@@ -343,6 +364,7 @@ endmenu
 config SEC_FACTORY
         bool "when it comes to sec factory mode"
 	default n
+	select SEC_NAD
         help
           It will support a sec factory mode
 
@@ -685,6 +707,13 @@ config MACH_GTS3LLTE_ZC
 	bool "Samsung GTS3LLTE CHN OPEN"
 	help
 	  Support for Samsung GTS3LLTE CHN OPEN device.
+	  
+config MACH_GTS3LLTE_ZH
+	depends on SEC_GTS3LLTE_PROJECT
+	default n
+	bool "Samsung GTS3LLTE CHN HK"
+	help
+	  Support for Samsung GTS3LLTE CHN HK device.
 
 config MACH_GTS3LLTE_UB
 	depends on SEC_GTS3LLTE_PROJECT
@@ -714,12 +743,26 @@ config MACH_GTS3LLTE_JV
 	help
 	  Support for Samsung GTS3LLTE MEA OPEN device.
 
+config MACH_GTS3LLTE_TUR
+	depends on SEC_GTS3LLTE_PROJECT
+	default n
+	bool "Samsung GTS3LLTE MEA TUR"
+	help
+	  Support for Samsung GTS3LLTE MEA TUR device.
+
 config MACH_GTS3LLTE_DD
 	depends on SEC_GTS3LLTE_PROJECT
 	default n
 	bool "Samsung GTS3LLTE SWA OPEN"
 	help
 	  Support for Samsung GTS3LLTE SWA OPEN device.
+
+config MACH_GTS3LLTE_LDU
+	depends on SEC_GTS3LLTE_PROJECT
+	default n
+	bool "Samsung GTS3LLTE EUR LDU"
+	help
+	  Support for Samsung GTS3LLTE EUR LDU device.
 
 config SEC_GTS3LWIFI_PROJECT
 	depends on ARCH_MSM8996
@@ -741,6 +784,55 @@ config MACH_GTS3LWIFI_ZC
 	bool "Samsung GTS3LWIFI CHN OPEN"
 	help
 	  Support for Samsung GTS3LWIFI CHN OPEN device.
+
+config MACH_GTS3LLTE_USA
+	depends on SEC_GTS3LLTE_PROJECT
+	default n
+	bool "Samsung GTS3LLTE USA"
+	help
+	  Support for Samsung GTS3LLTE USA device.
+
+config MACH_GTS3LLTE_VZW
+	depends on MACH_GTS3LLTE_USA
+	default n
+	bool "Samsung GTS3LLTE USA VZW"
+	help
+	  Support for Samsung GTS3LLTE USA VZW device.
+
+config MACH_GTS3LLTE_SPR
+	depends on MACH_GTS3LLTE_USA
+	default n
+	bool "Samsung GTS3LLTE USA SPR"
+	help
+	  Support for Samsung GTS3LLTE USA SPR device.
+
+config MACH_GTS3LLTE_ATT
+	depends on MACH_GTS3LLTE_USA
+	default n
+	bool "Samsung GTS3LLTE USA ATT"
+	help
+	  Support for Samsung GTS3LLTE USA ATT device.
+
+config MACH_GTS3LLTE_TMO
+	depends on MACH_GTS3LLTE_USA
+	default n
+	bool "Samsung GTS3LLTE USA TMO"
+	help
+	  Support for Samsung GTS3LLTE USA TMO device.
+
+config MACH_GTS3LLTE_USC
+	depends on MACH_GTS3LLTE_USA
+	default n
+	bool "Samsung GTS3LLTE USA USC"
+	help
+	  Support for Samsung GTS3LLTE USA USC device.
+	  
+config MACH_GTS3LLTE_BMC
+	depends on MACH_GTS3LLTE_CAN
+	default n
+	bool "Samsung GTS3LLTE CAN BMC"
+	help
+	  Support for Samsung GTS3LLTE CAN BMC device.
 
 config SAMSUNG_PRODUCT_SHIP
         bool "set up for product shipping"
@@ -1013,13 +1105,6 @@ config ARM64_VA_BITS
 	default 42 if ARM64_VA_BITS_42
 	default 48 if ARM64_VA_BITS_48
 
-config ARM64_PGTABLE_LEVELS
-	int
-	default 2 if ARM64_64K_PAGES && ARM64_VA_BITS_42
-	default 3 if ARM64_64K_PAGES && ARM64_VA_BITS_48
-	default 3 if ARM64_4K_PAGES && ARM64_VA_BITS_39
-	default 4 if ARM64_4K_PAGES && ARM64_VA_BITS_48
-
 config CPU_BIG_ENDIAN
        bool "Build big-endian kernel"
        help
@@ -1043,22 +1128,8 @@ config ARM64_SEV_IN_LOCK_UNLOCK
 	  and spin_unlock to ensure that the core waiting on the lock
 	  wakes up from WFE.
 
-config SMP
-	bool "Symmetric Multi-Processing"
-	help
-	  This enables support for systems with more than one CPU.  If
-	  you say N here, the kernel will run on single and
-	  multiprocessor machines, but will use only one CPU of a
-	  multiprocessor machine. If you say Y here, the kernel will run
-	  on many, but not all, single processor machines. On a single
-	  processor machine, the kernel will run faster if you say N
-	  here.
-
-	  If you don't know what to do here, say N.
-
 config SCHED_MC
 	bool "Multi-core scheduler support"
-	depends on SMP
 	help
 	  Multi-core scheduler support improves the CPU scheduler's decision
 	  making when dealing with multi-core CPU chips at a cost of slightly
@@ -1066,7 +1137,6 @@ config SCHED_MC
 
 config SCHED_SMT
 	bool "SMT scheduler support"
-	depends on SMP
 	help
 	  Improves the CPU scheduler's decision making when dealing with
 	  MultiThreading at a cost of slightly increased overhead in some
@@ -1090,14 +1160,11 @@ config SCHED_SMT
 
 config NR_CPUS
 	int "Maximum number of CPUs (2-64)"
-	range 2 64
-	depends on SMP
 	# These have to remain sorted largest to smallest
 	default "8"
 
 config HOTPLUG_CPU
 	bool "Support for hot-pluggable CPUs"
-	depends on SMP
 	help
 	  Say Y here to experiment with turning CPUs off and on.  CPUs
 	  can be controlled through /sys/devices/system/cpu.
@@ -1219,20 +1286,6 @@ config FORCE_MAX_ZONEORDER
 	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
 	default "11"
 
-config ARM64_PAN
-	bool "Enable support for Privileged Access Never (PAN)"
-	default y
-	help
-	 Privileged Access Never (PAN; part of the ARMv8.1 Extensions)
-	 prevents the kernel or hypervisor from accessing user-space (EL0)
-	 memory directly.
-
-	 Choosing this option will cause any unprotected (not using
-	 copy_to_user et al) memory access to fail with a permission fault.
-
-	 The feature is detected at runtime, and will remain as a 'nop'
-	 instruction if the cpu does not implement the feature.
-
 menuconfig ARMV8_DEPRECATED
 	bool "Emulate deprecated/obsolete ARMv8 instructions"
 	depends on COMPAT
@@ -1300,6 +1353,53 @@ config SETEND_EMULATION
 	  If unsure, say Y
 
 endif
+
+config ARM64_SW_TTBR0_PAN
+	bool "Emulate Privileged Access Never using TTBR0_EL1 switching"
+	help
+	  Enabling this option prevents the kernel from accessing
+	  user-space memory directly by pointing TTBR0_EL1 to a reserved
+	  zeroed area and reserved ASID. The user access routines
+	  restore the valid TTBR0_EL1 temporarily.
+
+menu "ARMv8.1 architectural features"
+
+config ARM64_PAN
+	bool "Enable support for Privileged Access Never (PAN)"
+	default y
+	help
+	 Privileged Access Never (PAN; part of the ARMv8.1 Extensions)
+	 prevents the kernel or hypervisor from accessing user-space (EL0)
+	 memory directly.
+
+	 Choosing this option will cause any unprotected (not using
+	 copy_to_user et al) memory access to fail with a permission fault.
+
+	 The feature is detected at runtime, and will remain as a 'nop'
+	 instruction if the cpu does not implement the feature.
+
+endmenu
+
+config ARM64_UAO
+	bool "Enable support for User Access Override (UAO)"
+	default y
+	help
+	  User Access Override (UAO; part of the ARMv8.2 Extensions)
+	  causes the 'unprivileged' variant of the load/store instructions to
+	  be overriden to be privileged.
+
+	  This option changes get_user() and friends to use the 'unprivileged'
+	  variant of the load/store instructions. This ensures that user-space
+	  really did have access to the supplied memory. When addr_limit is
+	  set to kernel memory the UAO bit will be set, allowing privileged
+	  access to kernel memory.
+
+	  Choosing this option will cause copy_to_user() et al to use user-space
+	  memory permissions.
+
+	  The feature is detected at runtime, the kernel will use the
+	  regular load/store instructions if the cpu does not implement the
+	  feature.
 
 endmenu
 
@@ -1372,7 +1472,32 @@ config BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES
 	depends on BUILD_ARM64_APPENDED_DTB_IMAGE
 	help
 	  Space separated list of names of dtbs to append when
-	  building a concatenated Image.gz-dtb.
+	  building a concatenated Image.gz-dtb
+
+choice
+	prompt "Kernel compression method"
+	default BUILD_ARM64_KERNEL_COMPRESSION_GZIP
+	help
+	  Allows choice between gzip compressed or uncompressed
+	  kernel image
+
+config BUILD_ARM64_KERNEL_COMPRESSION_GZIP
+	bool "Build compressed kernel image"
+	help
+	  Build a kernel image using gzip
+	  compression with concatenated dtb.
+	  gzip is based on the DEFLATE
+	  algorithm.
+
+config BUILD_ARM64_UNCOMPRESSED_KERNEL
+	bool "Build uncompressed kernel image"
+	help
+	  Build a kernel image without
+	  compression and with
+	  concatenated dtb.
+
+endchoice
+
 
 config DMI
 	bool "Enable support for SMBIOS (DMI) tables"

@@ -17,9 +17,14 @@
  *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/kernel.h>
+#include <linux/i2c.h>
+#include <linux/input.h>
+#include <linux/delay.h>
+#include <linux/interrupt.h>
+
 #include "wacom.h"
 #include "wacom_i2c_func.h"
-#include "wacom_i2c_firm.h"
 
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 #define CONFIG_SAMSUNG_KERNEL_DEBUG_USER
@@ -51,14 +56,22 @@ int wacom_i2c_send(struct wacom_i2c *wac_i2c,
 {
 	struct i2c_client *client = mode ?
 		wac_i2c->client_boot : wac_i2c->client;
+	int retry_count = 3;
+	int ret = 0;
 
 	if (wac_i2c->boot_mode && !mode) {
-		printk(KERN_ERR
-			"epen:failed to send\n");
-		return 0;
+		input_err(true, &client->dev, "%s: invalid mode\n", __func__);
+		ret = -EINVAL;
+		goto out;
 	}
 
-	return i2c_master_send(client, buf, count);
+retry:
+	ret = i2c_master_send(client, buf, count);
+	if (ret < 0 && retry_count--)
+		goto retry;
+
+out:
+	return ret;
 }
 
 int wacom_i2c_recv(struct wacom_i2c *wac_i2c,
@@ -66,14 +79,21 @@ int wacom_i2c_recv(struct wacom_i2c *wac_i2c,
 {
 	struct i2c_client *client = mode ?
 		wac_i2c->client_boot : wac_i2c->client;
+	int retry_count = 3;
+	int ret = 0;
 
 	if (wac_i2c->boot_mode && !mode) {
-		printk(KERN_ERR
-			"epen:failed to send\n");
-		return 0;
+		input_err(true, &client->dev, "%s: invalid mode\n", __func__);
+		ret = -EINVAL;
+		goto out;
 	}
+retry:
+	ret = i2c_master_recv(client, buf, count);
+	if (ret < 0 && retry_count--)
+		goto retry;
 
-	return i2c_master_recv(client, buf, count);
+out:
+	return ret;
 }
 
 int wacom_i2c_test(struct wacom_i2c *wac_i2c)
@@ -82,7 +102,7 @@ int wacom_i2c_test(struct wacom_i2c *wac_i2c)
 	char buf, test[10];
 	buf = COM_QUERY;
 
-	ret = wacom_i2c_send(wac_i2c, &buf, sizeof(buf), false);
+	ret = wacom_i2c_send(wac_i2c, &buf, sizeof(buf), WACOM_I2C_MODE_NORMAL);
 	if (ret > 0)
 		printk(KERN_INFO "epen:buf:%d, sent:%d\n", buf, ret);
 	else {
@@ -90,7 +110,7 @@ int wacom_i2c_test(struct wacom_i2c *wac_i2c)
 		return -1;
 	}
 
-	ret = wacom_i2c_recv(wac_i2c, test, sizeof(test), false);
+	ret = wacom_i2c_recv(wac_i2c, test, sizeof(test), WACOM_I2C_MODE_NORMAL);
 	if (ret >= 0) {
 		for (i = 0; i < 8; i++)
 			printk(KERN_INFO "epen:%d\n", test[i]);
@@ -112,7 +132,7 @@ int wacom_checksum(struct wacom_i2c *wac_i2c)
 	buf[0] = COM_CHECKSUM;
 
 	while (retry--) {
-		ret = wacom_i2c_send(wac_i2c, &buf[0], 1, false);
+		ret = wacom_i2c_send(wac_i2c, &buf[0], 1, WACOM_I2C_MODE_NORMAL);
 		if (ret < 0) {
 			input_err(true, &client->dev, "failed to read, %s\n",
 				__func__);
@@ -121,7 +141,7 @@ int wacom_checksum(struct wacom_i2c *wac_i2c)
 
 		msleep(200);
 
-		ret = wacom_i2c_recv(wac_i2c, buf, 5, false);
+		ret = wacom_i2c_recv(wac_i2c, buf, 5, WACOM_I2C_MODE_NORMAL);
 		if (ret < 0) {
 			input_err(true, &client->dev, "failed to receive, %s",
 				__func__);
@@ -139,10 +159,10 @@ int wacom_checksum(struct wacom_i2c *wac_i2c)
 	}
 
 	for (i = 0; i < 5; ++i) {
-		if (buf[i] != fw_chksum[i]) {
+		if (buf[i] != wac_i2c->fw_chksum[i]) {
 			input_info(true, &client->dev,
 					"checksum fail %dth %x %x\n", i,
-					buf[i], fw_chksum[i]);
+					buf[i], wac_i2c->fw_chksum[i]);
 			break;
 		}
 	}
@@ -165,19 +185,20 @@ int wacom_i2c_query(struct wacom_i2c *wac_i2c)
 	int max_x, max_y, pressure;
 
 	for (i = 0; i < COM_QUERY_RETRY; i++) {
-		ret = wacom_i2c_send(wac_i2c, &buf, 1, false);
+		ret = wacom_i2c_send(wac_i2c, &buf, 1, WACOM_I2C_MODE_NORMAL);
 		if (ret < 0) {
 			input_err(true, &client->dev, "%s: failed to send\n",
 				__func__);
-			usleep_range(1000, 1000);
+			msleep(100);
 			continue;
 		}
-		usleep_range(1000, 1000);
+		msleep(100);
 
-		ret = wacom_i2c_recv(wac_i2c, query, read_size, false);
+		ret = wacom_i2c_recv(wac_i2c, query, read_size, WACOM_I2C_MODE_NORMAL);
 		if (ret < 0) {
 			input_err(true, &client->dev, "%s: failed to receive\n",
 				__func__);
+			msleep(100);
 			continue;
 		}
 
@@ -197,6 +218,10 @@ int wacom_i2c_query(struct wacom_i2c *wac_i2c)
 				((u16) query[EPEN_REG_FWVER1] << 8) +
 						(u16) query[EPEN_REG_FWVER2];
 			break;
+		} else {
+			input_err(true, &client->dev,
+					"%s: invalid query %d\n", __func__, i);
+			msleep(100);
 		}
 	}
 
@@ -211,7 +236,7 @@ int wacom_i2c_query(struct wacom_i2c *wac_i2c)
 				"%s: failed to read query\n", __func__);
 		wac_feature->fw_version = 0;
 		wac_i2c->query_status = false;
-		return ret;
+		return ret < 0 ? ret : -EINVAL;
 	}
 	wac_i2c->query_status = true;
 
@@ -220,17 +245,17 @@ int wacom_i2c_query(struct wacom_i2c *wac_i2c)
 	pressure = ((u16) query[EPEN_REG_PRESSURE1] << 8) +
 					(u16) query[EPEN_REG_PRESSURE2];
 
+	pdata->max_x = max_x;
+	pdata->max_y = max_y;
+	pdata->max_pressure = pressure;
+
 	input_info(true, &client->dev,
-			"%s: query max_x=%d max_y=%d, max_pressure=%d\n",
-			__func__, max_x, max_y, pressure);
-	input_info(true, &client->dev,
-			"%s: dt max_x=%d max_y=%d, max_pressure=%d\n",
+			"%s: max_x=%d max_y=%d, max_pressure=%d\n",
 			__func__, pdata->max_x, pdata->max_y,
 			pdata->max_pressure);
 	input_info(true, &client->dev,
-			"%s: fw_version=0x%X (d7:0x%X,d8:0x%X)\n",
-			__func__, wac_feature->fw_version,
-			query[EPEN_REG_FWVER1], query[EPEN_REG_FWVER2]);
+			"%s: fw_version=0x%X\n",
+			__func__, wac_feature->fw_version);
 	input_info(true, &client->dev,
 			"%s: mpu %#x, bl %#x, tx %d, ty %d, h %d\n",
 			__func__, query[EPEN_REG_MPUVER], query[EPEN_REG_BLVER],
@@ -238,31 +263,6 @@ int wacom_i2c_query(struct wacom_i2c *wac_i2c)
 			query[EPEN_REG_HEIGHT]);
 
 	return ret;
-}
-
-int wacom_i2c_modecheck(struct wacom_i2c *wac_i2c)
-{
-	u8 buf = COM_QUERY;
-	int ret;
-	int mode = WACOM_I2C_MODE_NORMAL;
-	u8 data[COM_QUERY_NUM] = {0, };
-	int read_size = COM_QUERY_NUM;
-
-	ret = wacom_i2c_send(wac_i2c, &buf, 1, false);
-	if (ret < 0) {
-		mode = WACOM_I2C_MODE_BOOT;
-	}
-	else{
-		mode = WACOM_I2C_MODE_NORMAL;
-	}
-
-	ret = wacom_i2c_recv(wac_i2c, data, read_size, false);
-	ret = wacom_i2c_recv(wac_i2c, data, read_size, false);
-	input_info(true, &wac_i2c->client->dev,
-			"%s: I2C send at usermode(%d) querys(%d)\n",
-			__func__, mode, ret);
-
-	return mode;
 }
 
 int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
@@ -275,7 +275,7 @@ int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
 	else
 		data[0] = COM_LOW_SENSE_MODE;
 
-	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_NORMAL_MODE);
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		dev_err(&wac_i2c->client->dev, "%s: failed to send wacom i2c mode, %d\n", __func__, retval);
 		return retval;
@@ -284,7 +284,7 @@ int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
 	msleep(60);
 
 	data[0] = COM_SAMPLERATE_STOP;
-	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_NORMAL_MODE);
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		dev_err(&wac_i2c->client->dev, "%s: failed to read wacom i2c send1, %d\n", __func__, retval);
 		return retval;
@@ -293,7 +293,7 @@ int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
 	msleep(60);
 
 	data[1] = COM_REQUEST_SENSE_MODE;
-	retval = wacom_i2c_send(wac_i2c, &data[1], 1, WACOM_NORMAL_MODE);
+	retval = wacom_i2c_send(wac_i2c, &data[1], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		dev_err(&wac_i2c->client->dev, "%s: failed to read wacom i2c send2, %d\n", __func__, retval);
 		return retval;
@@ -301,7 +301,7 @@ int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
 
 	msleep(60);
 
-	retval = wacom_i2c_recv(wac_i2c, &data[2], 2, WACOM_NORMAL_MODE);
+	retval = wacom_i2c_recv(wac_i2c, &data[2], 2, WACOM_I2C_MODE_NORMAL);
 	if (retval != 2) {
 		dev_err(&wac_i2c->client->dev, "%s: failed to read wacom i2c recv, %d\n", __func__, retval);
 		return retval;
@@ -310,7 +310,7 @@ int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
 	dev_info(&wac_i2c->client->dev, "%s: mode:%X, %X\n", __func__, data[2], data[3]);
 
 	data[0] = COM_SAMPLERATE_STOP;
-	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_NORMAL_MODE);
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		dev_err(&wac_i2c->client->dev, "%s: failed to read wacom i2c send3, %d\n", __func__, retval);
 		return retval;
@@ -319,7 +319,7 @@ int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c)
 	msleep(60);
 
 	data[0] = COM_SAMPLERATE_START;
-	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_NORMAL_MODE);
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		dev_err(&wac_i2c->client->dev, "%s: failed to read wacom i2c send4, %d\n", __func__, retval);
 		return retval;
@@ -339,16 +339,30 @@ int wacom_i2c_enter_survey_mode(struct wacom_i2c *wac_i2c)
 
 	data[0] = COM_SURVEYSCAN;
 
-	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_NORMAL_MODE);
+	/* send command once more for unexpected work. */
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		input_err(true, &client->dev,
 				"failed to send, %s\n", __func__);
 		return retval;
 	}
 
-	msleep(30);
+	cancel_delayed_work_sync(&wac_i2c->irq_ignore_work);
 
 	wac_i2c->survey_state = true;
+	wac_i2c->garbage_irq = true;
+	wac_i2c->send_done = false;
+
+	wac_i2c->survey_pos.id = 0;
+	wac_i2c->survey_pos.x = 0;
+	wac_i2c->survey_pos.y = 0;
+
+	/* 300ms is temporary */
+	schedule_delayed_work(&wac_i2c->irq_ignore_work, msecs_to_jiffies(300));
+
+	/* after etner survey mode, according to wacom guide need to 30ms wait */
+	msleep(30);
 
 	input_info(true, &client->dev, "%s\n", __func__);
 
@@ -363,16 +377,22 @@ int wacom_i2c_exit_survey_mode(struct wacom_i2c *wac_i2c)
 
 	data[0] = COM_SURVEYEXIT;
 
-	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_NORMAL_MODE);
+	/* send command once more for unexpected work. */
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
+	retval = wacom_i2c_send(wac_i2c, &data[0], 1, WACOM_I2C_MODE_NORMAL);
 	if (retval != 1) {
 		input_err(true, &client->dev,
 				"failed to send, %s\n", __func__);
 		return retval;
 	}
 
-	msleep(50);
+	cancel_delayed_work_sync(&wac_i2c->irq_ignore_work);
 
 	wac_i2c->survey_state = false;
+	wac_i2c->garbage_irq = false;
+
+	/* after exit survey mode, according to wacom guide need to 50ms wait */
+	msleep(50);
 
 	input_info(true, &client->dev, "%s\n", __func__);
 
@@ -381,25 +401,80 @@ int wacom_i2c_exit_survey_mode(struct wacom_i2c *wac_i2c)
 
 int wacom_get_aop_data(struct wacom_i2c *wac_i2c)
 {
+	struct wacom_g5_platform_data *pdata = wac_i2c->pdata;
 	struct i2c_client *client = wac_i2c->client;
-	int retval;
 	char data[COM_COORD_NUM] = {0, };
+	bool rdy, type;
+	u16 x, y;
+	int retval = 0;
 
-	/* READ IRQ status*/
-	if (!wac_i2c->pdata->get_irq_state())
-		return 0;
-
-	input_info(true, &wac_i2c->client->dev, "%s: get aop irq\n", __func__);
-
-	retval = wacom_i2c_recv(wac_i2c, data, COM_COORD_NUM, false);
-	if (retval < 0) {
-		input_err(true, &client->dev,  "%s: failed to read wacom i2c send survey, %d\n", __func__, retval);
+	/* read IRQ status */
+	if (!wac_i2c->get_irq_state(wac_i2c)) {
+		retval = -EINVAL;
+		goto out;
 	}
 
-	input_info(true, &client->dev, "%x, %x, %x, %x, %x, %x, %x %x %x %x %x %x %x %x\n",
-		data[0], data[1], data[2], data[3], data[4], data[5], data[6],
-		data[7], data[8], data[9], data[10], data[11], data[12], data[13]);
+	retval = wacom_i2c_recv(wac_i2c, data, COM_COORD_NUM, WACOM_I2C_MODE_NORMAL);
+	if (retval < 0) {
+		input_err(true, &client->dev,
+				"%s: failed to read coordinate data, %d\n",
+				__func__, retval);
+		goto out;
+	}
 
+	rdy = !!(data[0] & 0x80);
+	type = (((data[0] & 0x60) >> 0x5) == 0x1);
+
+	x = ((u16) data[1] << 8) + (u16) data[2];
+	y = ((u16) data[3] << 8) + (u16) data[4];
+
+	/* origin */
+	x = x - pdata->origin[0];
+	y = y - pdata->origin[1];
+
+	/* change axis from wacom to lcd */
+	if (pdata->x_invert)
+		x = pdata->max_x - x;
+	if (pdata->y_invert)
+		y = pdata->max_y - y;
+
+	if (pdata->xy_switch) {
+		int tmp = x;
+		x = y;
+		y = tmp;
+	}
+
+	/* validation check */
+	if (unlikely(x < 0 || y < 0 || x > pdata->max_y || y > pdata->max_x)) {
+		input_info(true, &client->dev,
+			"%s: raw coord data x=%d, y=%d\n", __func__, x, y);
+		x = y = 0;
+	}
+
+	wac_i2c->survey_pos.x = x;
+	wac_i2c->survey_pos.y = y;
+
+	if (wac_i2c->send_done) {
+		retval = -EINVAL;
+		goto out;
+	}
+
+	/* If gesture of wake up is missed, need to send key event by any event*/
+	if (!rdy || !type) {
+		/* need to ignore garbage interrupt while enter survey mode */
+		if (wac_i2c->garbage_irq) {
+			retval = -EINVAL;
+			goto out;
+		}
+	}
+
+	input_info(true, &client->dev,
+			"%s: get aop data %x, %x, %x, %x, %x, %x, %x %x %x %x %x %x %x %x\n",
+			__func__, data[0], data[1], data[2], data[3], data[4],
+			data[5], data[6], data[7], data[8], data[9], data[10],
+			data[11], data[12], data[13]);
+
+out:
 	return retval;
 }
 #endif
@@ -465,7 +540,7 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 	s8 retry = 3;
 
 	while (retry--) {
-		ret = wacom_i2c_recv(wac_i2c, data, COM_COORD_NUM, false);
+		ret = wacom_i2c_recv(wac_i2c, data, COM_COORD_NUM, WACOM_I2C_MODE_NORMAL);
 		if (ret >= 0)
 			break;
 
@@ -514,6 +589,13 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 			/* check pdct */
 			if (unlikely(wac_i2c->pen_pdct == PDCT_NOSIGNAL)) {
 				input_info(true, &client->dev, "%s: pdct is not active\n", __func__);
+
+				if (!wac_i2c->reset_on_going) {
+					wac_i2c->reset_on_going = true;
+					cancel_work_sync(&wac_i2c->reset_work);
+					schedule_work(&wac_i2c->reset_work);
+				}
+
 				return 0;
 			}
 

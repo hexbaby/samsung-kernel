@@ -121,6 +121,13 @@ enum sec_debug_upload_cause_t {
 	UPLOAD_CAUSE_POWER_THERMAL_RESET = 0x00000075,
 	UPLOAD_CAUSE_SECURE_WDOG_BITE = 0x00005DBE,
 	UPLOAD_CAUSE_BUS_HANG = 0x000000B5,
+#if defined(CONFIG_SEC_NAD)
+	UPLOAD_CAUSE_NAD_SRTEST = 0x00000A3E,
+	UPLOAD_CAUSE_NAD_QMVSDDR = 0x00000A29,
+	UPLOAD_CAUSE_NAD_QMVSCACHE = 0x00000AED,
+	UPLOAD_CAUSE_NAD_PMIC = 0x00000AB8,
+	UPLOAD_CAUSE_NAD_FAIL = 0x00000A65,
+#endif
 };
 
 #ifdef CONFIG_SEC_DEBUG_CANCERIZER
@@ -174,6 +181,9 @@ struct param_debug_header *klog_info = NULL;
 char *klog_read_buf = NULL;
 char *klog_buf = NULL;
 uint32_t klog_size = 0;
+
+static DEFINE_MUTEX(klog_mutex);
+static DEFINE_MUTEX(summary_mutex);
 
 /* enable sec_debug feature */
 static unsigned enable = 1;
@@ -1040,6 +1050,18 @@ static int sec_debug_panic_handler(struct notifier_block *nb,
 		sec_debug_set_upload_cause(UPLOAD_CAUSE_DSPS_RST_ERR);
 	else if (!strnicmp(buf, "subsys", len))
 		sec_debug_set_upload_cause(UPLOAD_CAUSE_PERIPHERAL_ERR);
+#if defined(CONFIG_SEC_NAD)
+	else if (!strnicmp(buf, "nad_srtest", len))
+		sec_debug_set_upload_cause(UPLOAD_CAUSE_NAD_SRTEST);
+	else if (!strnicmp(buf, "nad_qmesaddr", len))
+		sec_debug_set_upload_cause(UPLOAD_CAUSE_NAD_QMVSDDR);
+	else if (!strnicmp(buf, "nad_qmesacache", len))
+		sec_debug_set_upload_cause(UPLOAD_CAUSE_NAD_QMVSCACHE);
+	else if (!strnicmp(buf, "nad_pmic", len))
+		sec_debug_set_upload_cause(UPLOAD_CAUSE_NAD_PMIC);
+	else if (!strnicmp(buf, "nad_fail", len))
+		sec_debug_set_upload_cause(UPLOAD_CAUSE_NAD_FAIL);
+#endif	
 	else
 		sec_debug_set_upload_cause(UPLOAD_CAUSE_KERNEL_PANIC);
 
@@ -1562,7 +1584,7 @@ static int get_param_debug_header(enum param_debug_header_type type)
 			return -EINVAL;
 		}
 
-		summary_info = kmalloc(sizeof(summary_info), GFP_KERNEL);
+		summary_info = kmalloc(sizeof(struct param_debug_header), GFP_KERNEL);
 		if (!summary_info) {
 			pr_err("%s : fail - kmalloc for summary_info\n", __func__);
 			return -ENOMEM;
@@ -1591,7 +1613,7 @@ static int get_param_debug_header(enum param_debug_header_type type)
 			return -EINVAL;
 		}
 
-		klog_info = kmalloc(sizeof(klog_info), GFP_KERNEL);
+		klog_info = kmalloc(sizeof(struct param_debug_header), GFP_KERNEL);
 		if (!klog_info) {
 			pr_err("%s : fail - kmalloc for klog_info\n", __func__);
 			return -ENOMEM;
@@ -1617,7 +1639,7 @@ static int get_param_debug_header(enum param_debug_header_type type)
 	} else if (type == PDH_TYPE_CHECK_STORE) {
 		struct param_debug_header *check_store = NULL;
 
-		check_store = kmalloc(sizeof(check_store), GFP_KERNEL);
+		check_store = kmalloc(sizeof(struct param_debug_header), GFP_KERNEL);
 		if (!check_store) {
 			pr_err("%s : fail - kmalloc for check_store\n", __func__);
 			return -ENOMEM;
@@ -1754,23 +1776,32 @@ static ssize_t sec_reset_summary_info_proc_read(struct file *file, char __user *
 	loff_t pos = *offset;
 	ssize_t count;
 
-	if (sec_reset_summary_info_init() < 0)
+	mutex_lock(&summary_mutex);
+	if (sec_reset_summary_info_init() < 0) {
+		mutex_unlock(&summary_mutex);
 		return -ENOENT;
+	}
 
-	if (pos >= SEC_PARAM_DUMP_SUMMARY_SIZE)
+	if (pos >= SEC_PARAM_DUMP_SUMMARY_SIZE) {
+		mutex_unlock(&summary_mutex);
 		return -ENOENT;
+	}
 
 	if (pos >= summary_info->summary_size) {
 		pr_info("%s : pos %lld, size %d\n", __func__, pos, summary_info->summary_size);
 		sec_reset_summary_completed();
+		mutex_unlock(&summary_mutex);
 		return 0;
 	}
 
 	count = min(len, (size_t)(summary_info->summary_size - pos));
-	if (copy_to_user(buf, summary_buf + pos, count))
+	if (copy_to_user(buf, summary_buf + pos, count)) {
+		mutex_unlock(&summary_mutex);
 		return -EFAULT;
+	}
 
 	*offset += count;
+	mutex_unlock(&summary_mutex);
 	return count;
 }
 
@@ -1847,20 +1878,27 @@ static ssize_t sec_reset_klog_proc_read(struct file *file, char __user *buf,
 	loff_t pos = *offset;
 	ssize_t count;
 
-	if (sec_reset_klog_init() < 0)
+	mutex_lock(&klog_mutex);
+	if (sec_reset_klog_init() < 0) {
+		mutex_unlock(&klog_mutex);
 		return -ENOENT;
+	}
 
 	if (pos >= klog_size) {
 		pr_info("%s : pos %lld, size %d\n", __func__, pos, klog_size);
 		sec_reset_klog_completed();
+		mutex_unlock(&klog_mutex);
 		return 0;
 	}
 
 	count = min(len, (size_t)(klog_size - pos));
-	if (copy_to_user(buf, klog_buf + pos, count))
+	if (copy_to_user(buf, klog_buf + pos, count)) {
+		mutex_unlock(&klog_mutex);
 		return -EFAULT;
+	}
 
 	*offset += count;
+	mutex_unlock(&klog_mutex);
 	return count;
 }
 
@@ -2032,7 +2070,7 @@ int sec_debug_print_file_list(void)
 		}
 		rcu_read_unlock();
 	}
-	if(ret == nCnt)
+	if(ret > nCnt - 50)
 		return 1;
 	else
 		return 0;

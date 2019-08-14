@@ -78,90 +78,6 @@ int detach_ta(muic_data_t *pmuic)
 	return 0;
 }
 
-static int get_charger_type(muic_data_t *pmuic)
-{
-	struct regmap_ops *pops = pmuic->regmapdesc->regmapops;
-	int uattr;
-
-	pops->ioctl(pmuic->regmapdesc, GET_CHGTYPE, NULL, &uattr);
-	return regmap_read_value(pmuic->regmapdesc, uattr);
-}
-
-static int set_BCD_RESCAN_reg(muic_data_t *pmuic, int value)
-{
-	struct regmap_ops *pops = pmuic->regmapdesc->regmapops;
-	int uattr, ret;
-
-#if defined(CONFIG_MUIC_UNIVERSAL_SM5703) || defined(CONFIG_MUIC_UNIVERSAL_SM5705)
-	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
-
-	if (pvendor && pvendor->rescan) {
-	    ret = pvendor->rescan(pmuic->regmapdesc, value);
-	    return ret;
-	}
-#endif
-
-	pops->ioctl(pmuic->regmapdesc, GET_RESID3, NULL, &uattr);
-
-	uattr |= _ATTR_OVERWRITE_M;
-	ret = regmap_write_value(pmuic->regmapdesc, uattr, value);
-
-	_REGMAP_TRACE(pmuic->regmapdesc, 'w', ret, uattr, value);
-
-	return ret;
-}
-
-int do_BCD_rescan(muic_data_t *pmuic)
-{
-	static int bcd_rescan = 0;
-
-	pr_info("%s\n", __func__);
-
-	if (bcd_rescan) {
-		int chg_type = get_charger_type(pmuic);
-		int new_dev = 0;
-
-		bcd_rescan = 0;
-
-		if (chg_type < 0)
-			pr_err("%s:%s err %d\n", MUIC_DEV_NAME, __func__, chg_type);
-
-		pr_info("%s [MUIC] BCD result chg_type = 0x%x \n", __func__, chg_type);
-		switch(chg_type) {
-		case 0x01 : // DCP
-			new_dev = ATTACHED_DEV_TA_MUIC;
-			break;
-		case 0x02 : // CDP
-			new_dev = ATTACHED_DEV_CDP_MUIC;
-			break;
-		case 0x04 : // SDP
-			new_dev = ATTACHED_DEV_USB_MUIC;
-			break;
-		case 0x08 : // Time out SDP
-			new_dev = ATTACHED_DEV_USB_MUIC;
-			break;
-		case 0x10 : // U200
-			new_dev = ATTACHED_DEV_TA_MUIC;
-			break;
-		}
-
-		return new_dev;
-	}
-
-	pr_info("[MUIC] 219K USB Cable/Charger Connected\n");
-	pr_info("[MUIC] BCD rescan\n");
-
-	// 0x21 -> 1  0x21 -> 0
-	set_BCD_RESCAN_reg(pmuic, 0x01);
-	msleep(1);
-	pr_info("[MUIC] Writing BCD_RECAN\n");
-	set_BCD_RESCAN_reg(pmuic, 0x00);
-
-	bcd_rescan = 1;
-
-	return 0;
-}
-
 int get_switch_mode(muic_data_t *pmuic)
 {
 	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
@@ -194,15 +110,33 @@ void set_switch_mode(muic_data_t *pmuic, int mode)
 void muic_switch_enable(muic_data_t *pmuic, int enable)
 {
 	int val = 0;
-	if(gpio_is_valid(pmuic->switch_gpio)){
-		val = gpio_get_value(pmuic->switch_gpio);
-		if(val != enable)
-			gpio_set_value(pmuic->switch_gpio, enable);
+
+	if(enable) {
+#if defined(CONFIG_SEC_FACTORY)
+		if(!pmuic->is_keyboard_test) {
+#endif
+			if(gpio_is_valid(pmuic->switch_gpio)){
+				val = gpio_get_value(pmuic->switch_gpio);
+				if(val != enable)
+					gpio_set_value(pmuic->switch_gpio, enable);
+			}
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+			pmuic->switch_gpio_en = true;
+#endif
+#if defined(CONFIG_SEC_FACTORY)
+		}
+#endif
 	}
-	if(enable)
-		set_switch_mode(pmuic, SWMODE_MANUAL);
-	else
-		set_switch_mode(pmuic, SWMODE_AUTO);
+	else {
+		if(gpio_is_valid(pmuic->switch_gpio)){
+			val = gpio_get_value(pmuic->switch_gpio);
+			if(val != enable)
+				gpio_set_value(pmuic->switch_gpio, enable);
+		}
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+		pmuic->switch_gpio_en = false;
+#endif
+	}
 }
 #endif
 
@@ -253,6 +187,9 @@ int com_to_open_with_vbus(muic_data_t *pmuic)
 	int ret = 0;
 
 	pr_info("%s:%s\n", MUIC_DEV_NAME, __func__);
+
+	if (pmuic->vps_table == VPS_TYPE_SCATTERED)
+		set_switch_mode(pmuic,SWMODE_AUTO);
 
 	ret = regmap_com_to(pmuic->regmapdesc, COM_OPEN_WITH_V_BUS);
 	if (ret < 0)
@@ -357,6 +294,9 @@ int switch_to_ap_usb(muic_data_t *pmuic)
 
 	pr_info("%s:%s\n", MUIC_DEV_NAME, __func__);
 
+	if (pmuic->vps_table == VPS_TYPE_SCATTERED)
+		set_switch_mode(pmuic,SWMODE_MANUAL);
+
 	ret = com_to_usb_ap(pmuic);
 	if (ret < 0) {
 		pr_err("%s:%s com->usb set err\n", MUIC_DEV_NAME, __func__);
@@ -371,6 +311,9 @@ int switch_to_cp_usb(muic_data_t *pmuic)
 	int ret = 0;
 
 	pr_info("%s:%s\n", MUIC_DEV_NAME, __func__);
+
+	if (pmuic->vps_table == VPS_TYPE_SCATTERED)
+		set_switch_mode(pmuic,SWMODE_MANUAL);
 
 	ret = com_to_usb_cp(pmuic);
 	if (ret < 0) {
@@ -388,6 +331,9 @@ int switch_to_ap_uart(muic_data_t *pmuic)
 
 	pr_info("%s:%s\n", MUIC_DEV_NAME, __func__);
 
+	if (pmuic->vps_table == VPS_TYPE_SCATTERED)
+		set_switch_mode(pmuic,SWMODE_MANUAL);
+
 	if (pdata->set_gpio_uart_sel)
 		pdata->set_gpio_uart_sel(MUIC_PATH_UART_AP);
 
@@ -404,6 +350,9 @@ int switch_to_cp_uart(muic_data_t *pmuic)
 {
 	struct muic_platform_data *pdata = pmuic->pdata;
 	int ret = 0;
+
+	if (pmuic->vps_table == VPS_TYPE_SCATTERED)
+		set_switch_mode(pmuic,SWMODE_MANUAL);
 
 	pr_info("%s:%s\n", MUIC_DEV_NAME, __func__);
 
@@ -470,20 +419,20 @@ int attach_usb(muic_data_t *pmuic,
 	pr_info("%s:%s\n", MUIC_DEV_NAME, __func__);
 
 	if (pmuic->vps_table == VPS_TYPE_SCATTERED) {
-		if(new_dev == ATTACHED_DEV_TIMEOUT_OPEN_MUIC)
-			set_switch_mode(pmuic, SWMODE_MANUAL);
-		else
-			set_switch_mode(pmuic, SWMODE_AUTO);
-	}
-	ret = attach_usb_util(pmuic, new_dev);
-	if (ret < 0) {
-		pr_err("%s:%s fail.(%d)\n", MUIC_DEV_NAME, __func__, ret);
-		return ret;
-	}
-	if(pmuic->vps_table == VPS_TYPE_TABLE) {
+		switch_to_ap_usb(pmuic);
+		pmuic->attached_dev = new_dev;
+	} else {
+		ret = attach_usb_util(pmuic, new_dev);
+		if (ret < 0) {
+			pr_err("%s:%s fail.(%d)\n", MUIC_DEV_NAME,
+				__func__, ret);
+			return ret;
+		}
+
 		pops->ioctl(pmuic->regmapdesc, GET_COMP2, NULL, &comp2_uattr);
 		pops->ioctl(pmuic->regmapdesc, GET_COMN1, NULL, &comn1_uattr);
-		pr_info("%s:%s COMP2Sw:0x%x, COMN1Sw:0x%x\n", MUIC_DEV_NAME, __func__,
+		pr_info("%s:%s COMP2Sw:0x%x, COMN1Sw:0x%x\n",
+			MUIC_DEV_NAME, __func__,
 			regmap_read_value(pmuic->regmapdesc, comp2_uattr),
 			regmap_read_value(pmuic->regmapdesc, comn1_uattr));
 	}
@@ -884,7 +833,6 @@ int attach_jig_uart_boot_off(muic_data_t *pmuic, muic_attached_dev_t new_dev,
 				u8 vbvolt)
 {
 	struct muic_platform_data *pdata = pmuic->pdata;
-
 	int ret = 0;
 
 	pr_info("%s:%s JIG UART BOOT-OFF(0x%x)\n", MUIC_DEV_NAME, __func__,
@@ -894,6 +842,9 @@ int attach_jig_uart_boot_off(muic_data_t *pmuic, muic_attached_dev_t new_dev,
 		ret = switch_to_ap_uart(pmuic);
 	else
 		ret = switch_to_cp_uart(pmuic);
+
+	if (ret < 0)
+		pr_err("%s:%s com->uart set err\n", MUIC_DEV_NAME, __func__);
 
 	/* if VBUS is enabled, call host_notify_cb to check if it is OTGTEST*/
 	if (vbvolt) {

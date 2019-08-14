@@ -232,13 +232,9 @@ struct synaptics_rmi4_f12_finger_data {
 	unsigned char x_msb;
 	unsigned char y_lsb;
 	unsigned char y_msb;
-#if defined(TSP_SUPPROT_MULTIMEDIA) ||defined(REPORT_2D_Z)
 	unsigned char z;
-#endif
-#ifdef REPORT_2D_W
 	unsigned char wx;
 	unsigned char wy;
-#endif
 };
 
 struct synaptics_rmi4_f12_extra_data {
@@ -372,7 +368,6 @@ struct synaptics_rmi4_f51_data {
 		unsigned char proximity_data[5];
 	};
 
-#ifdef EDGE_SWIPE
 	union {
 		struct {
 			unsigned char edge_swipe_x_lsb;
@@ -387,16 +382,6 @@ struct synaptics_rmi4_f51_data {
 		} __packed;
 		unsigned char edge_swipe_data[9];
 	};
-#endif
-#ifdef SIDE_TOUCH
-	union {
-		struct {
-			unsigned char side_button_leading;
-			unsigned char side_button_trailing;
-		} __packed;
-		unsigned char side_button_data[2];
-	};
-#endif
 };
 
 /*

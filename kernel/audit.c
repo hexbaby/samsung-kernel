@@ -69,9 +69,11 @@
 
 #include "audit.h"
 
+// [ SEC_SELINUX_PORTING_QUALCOMM
 #ifdef CONFIG_PROC_AVC 
 #include <linux/proc_avc.h>
 #endif
+// ] SEC_SELINUX_PORTING_QUALCOMM
 
 /* No auditing will take place until audit_initialized == AUDIT_INITIALIZED.
  * (Initialization happens after skb_init is called.) */
@@ -394,6 +396,7 @@ static void audit_printk_skb(struct sk_buff *skb)
 	struct nlmsghdr *nlh = nlmsg_hdr(skb);
 	char *data = nlmsg_data(nlh);
 
+// [ SEC_SELINUX_PORTING_QUALCOMM
 #ifdef CONFIG_PROC_AVC
 	if (nlh->nlmsg_type != AUDIT_EOE && nlh->nlmsg_type != AUDIT_NETFILTER_CFG) {
 		sec_avc_log("%s\n", data);
@@ -404,6 +407,7 @@ static void audit_printk_skb(struct sk_buff *skb)
 		else
 			audit_log_lost("printk limit exceeded");
 #endif
+// ] SEC_SELINUX_PORTING_QUALCOMM
 	}
 
 	audit_hold_skb(skb);
@@ -426,6 +430,7 @@ static void kauditd_send_skb(struct sk_buff *skb)
 		/* we might get lucky and get this in the next auditd */
 		audit_hold_skb(skb);
 	} else{
+// [ SEC_SELINUX_PORTING_QUALCOMM
 #ifdef CONFIG_PROC_AVC
 		struct nlmsghdr *nlh = nlmsg_hdr(skb);
 		char *data = nlmsg_data(nlh);
@@ -434,6 +439,7 @@ static void kauditd_send_skb(struct sk_buff *skb)
 			sec_avc_log("%s\n", data);
 		}
 #endif
+// ] SEC_SELINUX_PORTING_QUALCOMM
 		/* drop the extra reference if sent ok */
 		consume_skb(skb);
 	}
@@ -879,6 +885,12 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 				return err;
 		}
 		if (s.mask & AUDIT_STATUS_PID) {
+			/* NOTE: we are using task_tgid_vnr() below because
+			 *       the s.pid value is relative to the namespace
+			 *       of the caller; at present this doesn't matter
+			 *       much since you can really only run auditd
+			 *       from the initial pid namespace, but something
+			 *       to keep in mind if this changes */
 			int new_pid = s.pid;
 
 			if ((!new_pid) && (task_tgid_vnr(current) != audit_pid))
@@ -1888,7 +1900,7 @@ void audit_log_task_info(struct audit_buffer *ab, struct task_struct *tsk)
 			 " euid=%u suid=%u fsuid=%u"
 			 " egid=%u sgid=%u fsgid=%u tty=%s ses=%u",
 			 task_ppid_nr(tsk),
-			 task_pid_nr(tsk),
+			 task_tgid_nr(tsk),
 			 from_kuid(&init_user_ns, audit_get_loginuid(tsk)),
 			 from_kuid(&init_user_ns, cred->uid),
 			 from_kgid(&init_user_ns, cred->gid),

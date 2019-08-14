@@ -46,6 +46,11 @@
 #include "muic-internal.h"
 #include "muic_coagent.h"
 
+/* SM5705_SWITCH_CONTROL is depend on MUIC_SUPPORT_CCIC */
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+#include "muic_ccic.h"
+#endif
+
 #if defined(CONFIG_USB_EXTERNAL_NOTIFY)
 extern void muic_send_dock_intent(int type);
 
@@ -113,7 +118,16 @@ static int muic_handle_usb_notification(struct notifier_block *nb,
 		}
 		muic_noti_usbconnection_status(1, "USB");
 		break;
-
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+	/* Mxmximum power saving mode enable&disable noti */
+	/* EXTERNAL_NOTIFY_MPSM_ENABLE don't need yet */
+	case EXTERNAL_NOTIFY_MPSM_ENABLE:
+		break;
+	case EXTERNAL_NOTIFY_MPSM_DISABLE:
+		pr_info("%s: EXTERNAL_NOTIFY_MPSM_DISABLE(%d)\n", __func__, devicetype);
+		muic_otg_switch_control(pmuic, 1);
+		break;
+#endif
 	default:
 		break;
 	}

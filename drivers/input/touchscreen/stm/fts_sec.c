@@ -108,6 +108,8 @@ static void set_mainscreen_disable(void *device_data);
 static void scrub_enable(void *device_data);
 static void spay_enable(void *device_data);
 static void aod_enable(void *device_data);
+static void set_aod_rect(void *device_data);
+static void get_aod_rect(void *device_data);
 static void delay(void *device_data);
 static void debug(void *device_data);
 static void run_autotune_enable(void *device_data);
@@ -217,6 +219,8 @@ static struct sec_cmd stm_ft_cmds[] = {
 	{SEC_CMD("scrub_enable", scrub_enable),},
 	{SEC_CMD("spay_enable", spay_enable),},
 	{SEC_CMD("aod_enable", aod_enable),},
+	{SEC_CMD("set_aod_rect", set_aod_rect),},
+	{SEC_CMD("get_aod_rect", get_aod_rect),},
 	{SEC_CMD("delay", delay),},
 	{SEC_CMD("debug", debug),},
 	{SEC_CMD("run_autotune_enable", run_autotune_enable),},
@@ -4770,6 +4774,100 @@ out:
 	sec_cmd_set_cmd_exit(sec);
 
 	tsp_debug_info(true, &info->client->dev, "%s: %s\n", __func__, buff);
+}
+
+static void set_aod_rect(void *device_data)
+{
+	struct sec_cmd_data *sec = (struct sec_cmd_data *)device_data;
+	struct fts_ts_info *info = container_of(sec, struct fts_ts_info, sec);
+	char buff[SEC_CMD_STR_LEN] = { 0 };
+	u8 data[8] = {0, };
+	int i, ret = -1;
+#ifdef FTS_SUPPORT_STRINGLIB
+	unsigned short addr = FTS_CMD_STRING_ACCESS + 2;
+#endif
+
+	sec_cmd_set_default_result(sec);
+
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+	input_info(true, &info->client->dev, "%s: w:%d, h:%d, x:%d, y:%d\n",
+			__func__, sec->cmd_param[0], sec->cmd_param[1],
+			sec->cmd_param[2], sec->cmd_param[3]);
+#endif
+
+	for (i = 0; i < 4; i++) {
+		data[i * 2] = sec->cmd_param[i] & 0xFF;
+		data[i * 2 + 1] = (sec->cmd_param[i] >> 8) & 0xFF;
+	}
+
+	disable_irq(info->client->irq);
+#ifdef FTS_SUPPORT_STRINGLIB
+	ret = info->fts_write_to_string(info, &addr, data, sizeof(data));
+#endif
+	if (ret < 0) {
+		input_err(true, &info->client->dev, "%s: failed. ret: %d\n", __func__, ret);
+		goto NG;
+	}
+
+	enable_irq(info->client->irq);
+
+	snprintf(buff, sizeof(buff), "%s", "OK");
+	sec->cmd_state = SEC_CMD_STATUS_OK;
+	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+	sec_cmd_set_cmd_exit(sec);
+	return;
+NG:
+	enable_irq(info->client->irq);
+	snprintf(buff, sizeof(buff), "%s", "NG");
+	sec->cmd_state = SEC_CMD_STATUS_FAIL;
+	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+	sec_cmd_set_cmd_exit(sec);
+}
+
+static void get_aod_rect(void *device_data)
+{
+	struct sec_cmd_data *sec = (struct sec_cmd_data *)device_data;
+	struct fts_ts_info *info = container_of(sec, struct fts_ts_info, sec);
+	char buff[SEC_CMD_STR_LEN] = { 0 };
+	u8 data[8] = {0, };
+	u16 rect_data[4] = {0, };
+	int i, ret = -1;
+#ifdef FTS_SUPPORT_STRINGLIB
+	unsigned short addr = FTS_CMD_STRING_ACCESS + 2;
+#endif
+
+	sec_cmd_set_default_result(sec);
+
+	disable_irq(info->client->irq);
+#ifdef FTS_SUPPORT_STRINGLIB
+	ret = info->fts_read_from_string(info, &addr, data, sizeof(data));
+#endif
+	if (ret < 0) {
+		input_err(true, &info->client->dev, "%s: failed. ret: %d\n", __func__, ret);
+		goto NG;
+	}
+
+	enable_irq(info->client->irq);
+
+	for (i = 0; i < 4; i++)
+		rect_data[i] = (data[i * 2 + 1] & 0xFF) << 8 | (data[i * 2] & 0xFF);
+
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+	input_info(true, &info->client->dev, "%s: w:%d, h:%d, x:%d, y:%d\n",
+			__func__, rect_data[0], rect_data[1], rect_data[2], rect_data[3]);
+#endif
+
+	snprintf(buff, sizeof(buff), "%s", "OK");
+	sec->cmd_state = SEC_CMD_STATUS_OK;
+	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+	sec_cmd_set_cmd_exit(sec);
+	return;
+NG:
+	enable_irq(info->client->irq);
+	snprintf(buff, sizeof(buff), "%s", "NG");
+	sec->cmd_state = SEC_CMD_STATUS_FAIL;
+	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+	sec_cmd_set_cmd_exit(sec);
 }
 
 #if defined(CONFIG_TOUCHSCREEN_DUMP_MODE)

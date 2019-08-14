@@ -4,6 +4,8 @@
 # Copyright 2008 Wind River Systems
 #
 
+ifeq (true,$(call spf_check,SEC_PRODUCT_FEATURE_AUDIO_JAM,TRUE))
+
 ifeq ($(TARGET_BOARD_PLATFORM),mrvl)
 
 # do not build alsa-lib in Marvell platform.
@@ -29,7 +31,7 @@ LOCAL_CFLAGS := \
 	-DALSA_CONFIG_DIR=\"/system/usr/share/alsa\" \
 	-DALSA_PLUGIN_DIR=\"/system/usr/lib/alsa-lib\" \
 	-DALSA_DEVICE_DIRECTORY=\"/dev/snd/\"
-LOCAL_CFLAGS += -Wno-pointer-arith -Wno-strict-aliasing
+LOCAL_CFLAGS += -Wno-pointer-arith -Wno-strict-aliasing -Wno-pointer-bool-conversion -Wno-tautological-pointer-compare -Wno-int-conversion
 
 LOCAL_LDFLAGS := -Wl,--no-fatal-warnings
 
@@ -77,7 +79,7 @@ LOCAL_CFLAGS := \
 	-DALSA_CONFIG_DIR=\"/system/usr/share/alsa\" \
 	-DALSA_PLUGIN_DIR=\"/system/usr/lib/alsa-lib\" \
 	-DALSA_DEVICE_DIRECTORY=\"/dev/snd/\"
-LOCAL_CFLAGS += -Wno-pointer-arith -Wno-strict-aliasing
+LOCAL_CFLAGS += -Wno-pointer-arith -Wno-strict-aliasing -Wno-pointer-bool-conversion -Wno-tautological-pointer-compare -Wno-int-conversion
 
 LOCAL_LDFLAGS := -Wl,--no-fatal-warnings
 
@@ -104,5 +106,7 @@ LOCAL_MULTILIB := 32
 endif
 
 include $(BUILD_STATIC_LIBRARY)
+
+endif
 
 endif

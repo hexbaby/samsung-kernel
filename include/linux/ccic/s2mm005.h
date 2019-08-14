@@ -49,6 +49,8 @@
 #define REG_TX_REQUEST_MSG	0x0240
 #define REG_RX_SRC_CAPA_MSG	0x0260
 
+#define CCIC_FW_VERSION_INVALID -1
+
 /******************************************************************************/
 /* definitions & structures                                                   */
 /******************************************************************************/
@@ -116,14 +118,49 @@ typedef union
 
 typedef union
 {
-	uint32_t        DATA;
-    struct {
+	uint32_t	DATA;
+	uint8_t	BYTE[4];
+	struct {
         uint32_t    PD_State:8,
-                    RSP_BYTE2:8,
+                    RSP_BYTE1:8,
                     PD_Next_State:8,
-                    RSP_BYTE4:8;
+                    RSP_BYTE2:8;
+	}BYTES;
+    struct {
+		uint32_t    PD_State:8,
+			CC1_PLUG_STATE:3,
+			RSP_BYTE1:1,
+			CC2_PLUG_STATE:3,
+			RSP_BYTE2:1,
+			PD_Next_State:8,
+			ATTACH_DONE:1,
+			IS_SOURCE:1,
+			IS_DFP:1,
+			RP_CurrentLvl:2,
+			VBUS_CC_Short:1,
+			VBUS_SBU_Short:1,
+			RESET:1;
 	}BITS;
 } FUNC_STATE_Type;
+
+typedef union
+{
+    uint32_t DATA;
+	uint8_t    BYTE[4];
+    struct {
+    uint32_t
+            AUTO_LP_ENABLE_BIT:1,       //0: AUTO_LP_Disable
+            LOW_POWER_BIT:1,            //0: Active power state
+            Force_LP_BIT:1,             //0:
+            WATER_DET:1,
+            SW_JIGON:1,
+            RUN_DRY:1,                  //0: default, 1: wet -> dry
+            BOOTING_RUN_DRY:1,
+            RSP_BYTE1:2,                // b7-b8
+            PDSTATE29_SBU_DONE:1,       // b9
+            RSP_BYTE:22;                // b10 - b31
+    } BITS;
+} LP_STATE_Type;
 
 typedef union
 {
@@ -650,6 +687,8 @@ typedef enum {
 
 	// Type-C referenced states
 	State_ErrorRecovery									= 29,
+	State_PE_PRS_SRC_SNK_Transition_to_off		= 52,
+	State_PE_PRS_SNK_SRC_Source_on		= 64,
 } function_status_t;
 #if defined(CONFIG_DUAL_ROLE_USB_INTF)
 typedef enum
@@ -677,10 +716,11 @@ typedef enum
 
 typedef enum
 {
-	RP_CURRENT_LEVEL_NONE = 0,
-	RP_CURRENT_LEVEL_DEFAULT,
-	RP_CURRENT_LEVEL2,
-	RP_CURRENT_LEVEL3,
+	Rp_Sbu_check = 0,
+	Rp_56K = 1,	/* 80uA */
+	Rp_22K = 2,	/* 180uA */
+	Rp_10K = 3,	/* 330uA */
+	Rp_Abnormal = 4,
 } CCIC_RP_CURRENT_LEVEL;
 
 #define S2MM005_REG_MASK(reg, mask)	((reg & mask##_MASK) >> mask##_SHIFT)
@@ -690,8 +730,9 @@ struct ccic_state_work {
 	struct work_struct ccic_work;
 	int dest;
 	int id;
-	int attach;
-	int event;
+	int sub1;
+	int sub2;
+	int sub3;
 };
 #endif
 
@@ -717,6 +758,8 @@ struct s2mm005_data {
 	int prev_rid;
 	int cur_rid;
 	int water_det;
+	int run_dry;
+	int run_dry_support;
 
 	u8 firm_ver[4];
 

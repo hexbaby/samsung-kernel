@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <byteswap.h>
+#include "bswap.h"
 #include "pcm_local.h"
 
 
@@ -62,6 +62,11 @@ int snd_pcm_format_signed(snd_pcm_format_t format)
 	case SNDRV_PCM_FORMAT_U20_3BE:
 	case SNDRV_PCM_FORMAT_U18_3LE:
 	case SNDRV_PCM_FORMAT_U18_3BE:
+	case SNDRV_PCM_FORMAT_DSD_U8:
+	case SNDRV_PCM_FORMAT_DSD_U16_LE:
+	case SNDRV_PCM_FORMAT_DSD_U32_LE:
+	case SNDRV_PCM_FORMAT_DSD_U16_BE:
+	case SNDRV_PCM_FORMAT_DSD_U32_BE:
 		return 0;
 	default:
 		return -EINVAL;
@@ -134,6 +139,8 @@ int snd_pcm_format_little_endian(snd_pcm_format_t format)
 	case SNDRV_PCM_FORMAT_U24_3LE:
 	case SNDRV_PCM_FORMAT_U20_3LE:
 	case SNDRV_PCM_FORMAT_U18_3LE:
+	case SNDRV_PCM_FORMAT_DSD_U16_LE:
+	case SNDRV_PCM_FORMAT_DSD_U32_LE:
 		return 1;
 	case SNDRV_PCM_FORMAT_S16_BE:
 	case SNDRV_PCM_FORMAT_U16_BE:
@@ -150,6 +157,8 @@ int snd_pcm_format_little_endian(snd_pcm_format_t format)
 	case SNDRV_PCM_FORMAT_U24_3BE:
 	case SNDRV_PCM_FORMAT_U20_3BE:
 	case SNDRV_PCM_FORMAT_U18_3BE:
+	case SNDRV_PCM_FORMAT_DSD_U16_BE:
+	case SNDRV_PCM_FORMAT_DSD_U32_BE:
 		return 0;
 	default:
 		return -EINVAL;
@@ -195,11 +204,14 @@ int snd_pcm_format_width(snd_pcm_format_t format)
 	switch (format) {
 	case SNDRV_PCM_FORMAT_S8:
 	case SNDRV_PCM_FORMAT_U8:
+	case SNDRV_PCM_FORMAT_DSD_U8:
 		return 8;
 	case SNDRV_PCM_FORMAT_S16_LE:
 	case SNDRV_PCM_FORMAT_S16_BE:
 	case SNDRV_PCM_FORMAT_U16_LE:
 	case SNDRV_PCM_FORMAT_U16_BE:
+	case SNDRV_PCM_FORMAT_DSD_U16_LE:
+	case SNDRV_PCM_FORMAT_DSD_U16_BE:
 		return 16;
 	case SNDRV_PCM_FORMAT_S18_3LE:
 	case SNDRV_PCM_FORMAT_S18_3BE:
@@ -226,6 +238,8 @@ int snd_pcm_format_width(snd_pcm_format_t format)
 	case SNDRV_PCM_FORMAT_U32_BE:
 	case SNDRV_PCM_FORMAT_FLOAT_LE:
 	case SNDRV_PCM_FORMAT_FLOAT_BE:
+	case SNDRV_PCM_FORMAT_DSD_U32_LE:
+	case SNDRV_PCM_FORMAT_DSD_U32_BE:
 		return 32;
 	case SNDRV_PCM_FORMAT_FLOAT64_LE:
 	case SNDRV_PCM_FORMAT_FLOAT64_BE:
@@ -253,11 +267,14 @@ int snd_pcm_format_physical_width(snd_pcm_format_t format)
 	switch (format) {
 	case SNDRV_PCM_FORMAT_S8:
 	case SNDRV_PCM_FORMAT_U8:
+	case SNDRV_PCM_FORMAT_DSD_U8:
 		return 8;
 	case SNDRV_PCM_FORMAT_S16_LE:
 	case SNDRV_PCM_FORMAT_S16_BE:
 	case SNDRV_PCM_FORMAT_U16_LE:
 	case SNDRV_PCM_FORMAT_U16_BE:
+	case SNDRV_PCM_FORMAT_DSD_U16_LE:
+	case SNDRV_PCM_FORMAT_DSD_U16_BE:
 		return 16;
 	case SNDRV_PCM_FORMAT_S18_3LE:
 	case SNDRV_PCM_FORMAT_S18_3BE:
@@ -284,6 +301,8 @@ int snd_pcm_format_physical_width(snd_pcm_format_t format)
 	case SNDRV_PCM_FORMAT_FLOAT_BE:
 	case SNDRV_PCM_FORMAT_IEC958_SUBFRAME_LE:
 	case SNDRV_PCM_FORMAT_IEC958_SUBFRAME_BE:
+	case SNDRV_PCM_FORMAT_DSD_U32_LE:
+	case SNDRV_PCM_FORMAT_DSD_U32_BE:
 		return 32;
 	case SNDRV_PCM_FORMAT_FLOAT64_LE:
 	case SNDRV_PCM_FORMAT_FLOAT64_BE:
@@ -309,11 +328,14 @@ ssize_t snd_pcm_format_size(snd_pcm_format_t format, size_t samples)
 	switch (format) {
 	case SNDRV_PCM_FORMAT_S8:
 	case SNDRV_PCM_FORMAT_U8:
+	case SNDRV_PCM_FORMAT_DSD_U8:
 		return samples;
 	case SNDRV_PCM_FORMAT_S16_LE:
 	case SNDRV_PCM_FORMAT_S16_BE:
 	case SNDRV_PCM_FORMAT_U16_LE:
 	case SNDRV_PCM_FORMAT_U16_BE:
+	case SNDRV_PCM_FORMAT_DSD_U16_LE:
+	case SNDRV_PCM_FORMAT_DSD_U16_BE:
 		return samples * 2;
 	case SNDRV_PCM_FORMAT_S18_3LE:
 	case SNDRV_PCM_FORMAT_S18_3BE:
@@ -338,6 +360,8 @@ ssize_t snd_pcm_format_size(snd_pcm_format_t format, size_t samples)
 	case SNDRV_PCM_FORMAT_U32_BE:
 	case SNDRV_PCM_FORMAT_FLOAT_LE:
 	case SNDRV_PCM_FORMAT_FLOAT_BE:
+	case SNDRV_PCM_FORMAT_DSD_U32_LE:
+	case SNDRV_PCM_FORMAT_DSD_U32_BE:
 		return samples * 4;
 	case SNDRV_PCM_FORMAT_FLOAT64_LE:
 	case SNDRV_PCM_FORMAT_FLOAT64_BE:
@@ -382,6 +406,12 @@ u_int64_t snd_pcm_format_silence_64(snd_pcm_format_t format)
 		return 0;
 	case SNDRV_PCM_FORMAT_U8:
 		return 0x8080808080808080ULL;
+	case SNDRV_PCM_FORMAT_DSD_U8:
+	case SNDRV_PCM_FORMAT_DSD_U16_LE:
+	case SNDRV_PCM_FORMAT_DSD_U32_LE:
+	case SNDRV_PCM_FORMAT_DSD_U16_BE:
+	case SNDRV_PCM_FORMAT_DSD_U32_BE:
+		return 0x6969696969696969ULL;
 #ifdef SNDRV_LITTLE_ENDIAN
 	case SNDRV_PCM_FORMAT_U16_LE:
 		return 0x8000800080008000ULL;

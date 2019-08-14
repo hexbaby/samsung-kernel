@@ -1,11 +1,20 @@
-SUBDIRS=cards pcm
+SUBDIRS=cards pcm alsa.conf.d
+
+if BUILD_UCM
+SUBDIRS += ucm
+endif
+if BUILD_TOPOLOGY
+SUBDIRS += topology
+endif
 
 cfg_files = alsa.conf
 if BUILD_ALISP
 cfg_files += sndo-mixer.alisp
 endif
 if BUILD_MODULES
+if BUILD_PYTHON
 cfg_files += smixer.conf
+endif
 endif
 
 EXTRA_DIST = $(cfg_files)

@@ -39,7 +39,7 @@
 #endif
 
 #define VENDOR_NAME              "SEMTECH"
-#define MODEL_NAME               "SX9310_wifi"
+#define MODEL_NAME               "SX9310_WIFI"
 #define MODULE_NAME              "grip_sensor_wifi"
 
 #define I2C_M_WR                 0 /* for i2c Write */
@@ -69,7 +69,8 @@
 #define TOUCH_STATE              1
 #define BODY_STATE               2
 
-#define HALLIC_PATH             "/sys/class/sec/sec_key/hall_detect"
+#define HALL_PATH              "/sys/class/sec/sec_key/hall_detect"
+#define HALL_CLOSE_STATE       1
 
 struct sx9310_p {
 	struct i2c_client *client;
@@ -89,6 +90,7 @@ struct sx9310_p {
 	bool check_usb;
 	u8 normal_th;
 	u8 normal_th_buf;
+	u8 ta_th;
 	int irq;
 	int gpio_nirq;
 	int state;
@@ -106,40 +108,39 @@ struct sx9310_p {
 	int ch2_state;
 
 	atomic_t enable;
-
-	unsigned char hall_ic[5];
 };
 
-static int check_hallic_state(char *file_path, unsigned char hall_ic_status[])
+static int sx9310_get_hall_state(struct sx9310_p *data)
 {
-	int iRet = 0;
+	char hall_buf[6];
+	int ret = -ENODEV;
+	int hall_state = -1;
 	mm_segment_t old_fs;
 	struct file *filep;
-	u8 hall_sysfs[5];
 
+	memset(hall_buf, 0, sizeof(hall_buf));
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
-	filep = filp_open(file_path, O_RDONLY, 0666);
+	filep = filp_open(HALL_PATH, O_RDONLY, 0666);
 	if (IS_ERR(filep)) {
-		iRet = PTR_ERR(filep);
 		set_fs(old_fs);
-		goto exit;
+		return hall_state;
 	}
 
-	iRet = filep->f_op->read(filep, hall_sysfs,
-		(int)sizeof(u8) * 4, &filep->f_pos);
+	ret = filep->f_op->read(filep, hall_buf,
+		sizeof(hall_buf) - 1, &filep->f_pos);
+	if (ret != sizeof(hall_buf) - 1)
+		goto exit;
 
-	if (iRet == (int)sizeof(u8) * 4)
-		strncpy(hall_ic_status, hall_sysfs, sizeof(hall_sysfs));
-	else
-		iRet = -EIO;
+	if (strcmp(hall_buf, "CLOSE") == 0)
+		hall_state = HALL_CLOSE_STATE;
 
+exit:
 	filp_close(filep, current->files);
 	set_fs(old_fs);
 
-exit:
-	return iRet;
+	return hall_state;
 }
 
 static int sx9310_get_nirq_state(struct sx9310_p *data)
@@ -269,8 +270,6 @@ static int sx9310_set_offset_calibration(struct sx9310_p *data)
 
 static void send_event(struct sx9310_p *data, u8 state)
 {
-	data->normal_th = data->normal_th_buf;
-
 	if (state == ACTIVE) {
 		data->state = ACTIVE;
 #if (MAIN_SENSOR == 1)
@@ -458,7 +457,7 @@ static ssize_t sx9310_register_write_store(struct device *dev,
 	int regist = 0, val = 0;
 	struct sx9310_p *data = dev_get_drvdata(dev);
 
-	if (sscanf(buf, "%d,%d", &regist, &val) != 2) {
+	if (sscanf(buf, "%2x,%2x", &regist, &val) != 2) {
 		pr_err("[SX9310W]: %s - The number of data are wrong\n",
 			__func__);
 		return -EINVAL;
@@ -647,7 +646,7 @@ static ssize_t sx9310_normal_threshold_store(struct device *dev,
 	data->normal_th |= val;
 
 	pr_info("[SX9310W]: %s - normal threshold %lu\n", __func__, val);
-	data->normal_th_buf = data->normal_th = (u8)(val);
+	data->normal_th = (u8)(val);
 
 	return count;
 }
@@ -824,7 +823,7 @@ static ssize_t sx9310_body_threshold_store(struct device *dev,
 	data->normal_th |= val;
 
 	pr_info("[SX9310W]: %s - body threshold %lu\n", __func__, val);
-	data->normal_th_buf = data->normal_th = (u8)(val);
+	data->normal_th = (u8)(val);
 
 	return count;
 }
@@ -1063,8 +1062,8 @@ static void sx9310_debug_work_func(struct work_struct *work)
 {
 	struct sx9310_p *data = container_of((struct delayed_work *)work,
 		struct sx9310_p, debug_work);
-	static int hall_flag = 1;
-	static int size_char = sizeof(u8) * 4;
+	static int hall_prev_state;
+	int hall_state;
 
 	if (atomic_read(&data->enable) == ON) {
 		if (data->debug_count >= GRIP_LOG_TIME) {
@@ -1075,17 +1074,13 @@ static void sx9310_debug_work_func(struct work_struct *work)
 		}
 	}
 
-	if (hall_flag) {
-		check_hallic_state(HALLIC_PATH, data->hall_ic);
-
-		/* Hall IC closed : offset cal (once)*/
-		if (strncmp(data->hall_ic, "CLOSE", size_char) == 0) {
-			pr_info("[SX9310W]: %s - hall IC is closed\n",
-				__func__);
-			sx9310_set_offset_calibration(data);
-			hall_flag = 0;
-		}
+	hall_state = sx9310_get_hall_state(data);
+	if (hall_state == HALL_CLOSE_STATE && hall_prev_state != hall_state) {
+		pr_info("[SX9310W]: %s - hall is closed\n", __func__);
+		sx9310_set_offset_calibration(data);
 	}
+	hall_prev_state = hall_state;
+
 	schedule_delayed_work(&data->debug_work, msecs_to_jiffies(1000));
 }
 
@@ -1209,6 +1204,16 @@ static int sx9310_parse_dt(struct sx9310_p *data, struct device *dev)
 		pr_err("[SX9310W]: %s - Can't get normal_th: default is %d\n",
 			__func__, data->normal_th);
 	}
+	ret = of_property_read_u32(node, "sx9310_wifi-i2c,ta_th", &temp_val);
+	if (!ret) {
+		data->ta_th = (u8)temp_val;
+		pr_info("[SX9310W]: %s - Ta Touch Threshold : %u\n",
+			__func__, data->ta_th);
+	} else {
+		data->ta_th = data->normal_th;
+		pr_info("[SX9310W]: %s - Can't get ta_th: default is %d\n",
+			__func__, data->ta_th);
+	}
 
 	return 0;
 }
@@ -1237,10 +1242,16 @@ static int ccic_sx9310_handle_notification(struct notifier_block *nb,
 		case USB_STATUS_NOTIFY_ATTACH_UFP:
 		case USB_STATUS_NOTIFY_ATTACH_DFP:
 		case USB_STATUS_NOTIFY_DETACH:
-			pr_info("[SX9310W]: %s - drp = %d attat = %d\n",
-				__func__, usb_status.drp,
-				usb_status.attach);
+			if(usb_status.attach)
+				pdata->normal_th = pdata->ta_th;
+			else
+				pdata->normal_th = pdata->normal_th_buf;
+
+			sx9310_i2c_write(pdata, SX9310_CPS_CTRL9_REG, pdata->normal_th);
 			sx9310_set_offset_calibration(pdata);
+			pr_info("[SX9310W]: %s - drp = %d attat = %d th = %u\n",
+				__func__, usb_status.drp,
+				usb_status.attach, pdata->normal_th);
 			break;
 		default:
 			pr_info("[SX9310W]: %s - DRP type : %d\n",

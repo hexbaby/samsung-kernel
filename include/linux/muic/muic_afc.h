@@ -25,6 +25,7 @@
 struct muic_data_t;
 
 /* SM5705 AFC CTRL register */
+#define AFCCTRL_ENQC20		6
 #define AFCCTRL_DIS_AFC		5
 #define AFCCTRL_VBUS_READ    3
 #define AFCCTRL_DM_RESET     2
@@ -34,5 +35,6 @@ struct muic_data_t;
 int muic_check_afc_state(int state);
 int muic_torch_prepare(int state);
 void muic_init_afc_state(muic_data_t *pmuic);
+int muic_restart_afc(void);
 
 #endif /* __MUIC_AFC_H__ */

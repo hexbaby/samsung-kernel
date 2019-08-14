@@ -1293,8 +1293,6 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 	unsigned char LastLeftEvent = 0;
 	int x = 0, y = 0, z = 0;
 	int bw = 0, bh = 0, palm = 0, sumsize = 0;
-	unsigned short string_addr;
-	unsigned char string;
 #ifdef FTS_SUPPORT_2NDSCREEN_FLAG
 	u8 currentSideFlag = 0;
 #endif
@@ -1308,6 +1306,11 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 	unsigned char tool_type = MT_TOOL_FINGER;
 #ifdef USE_STYLUS_PEN
 	bool finger_type = MT_TOOL_FINGER;
+#endif
+#ifdef FTS_SUPPORT_STRINGLIB
+	unsigned short string_addr;
+	unsigned char string_event_id;
+	unsigned char string_data[5];
 #endif
 
 	for (EventNum = 0; EventNum < LeftEvent; EventNum++) {
@@ -1746,56 +1749,54 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			}
 			break;
 #endif
-
+#ifdef FTS_SUPPORT_STRINGLIB
 		case EVENTID_FROM_STRING:
 			string_addr = FTS_CMD_STRING_ACCESS + 1;
-			fts_read_from_string(info, &string_addr, &string, sizeof(string));
+			fts_read_from_string(info, &string_addr, &string_event_id, sizeof(string_event_id));
 
-			dev_info(&info->client->dev,
+			input_dbg(true, &info->client->dev,
 					"%s: [String] %02X %02X %02X %02X %02X %02X %02X %02X || %04X: %02X\n",
 					__func__, data[0], data[1], data[2], data[3],
 					data[4], data[5], data[6], data[7],
-					string_addr, string);
-
-			switch (string) {
+					string_addr, string_event_id);
+			
+			switch (string_event_id) {
 			case FTS_STRING_EVENT_AOD_TRIGGER:
-				tsp_debug_info(true, &info->client->dev, "%s: AOD[%X]\n", __func__, string);
+				string_addr = FTS_CMD_STRING_ACCESS + 10;
+				fts_read_from_string(info, &string_addr, string_data, sizeof(string_data));
+
 				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
-				info->scrub_id = (string << 3) & 0xFF;
+				info->scrub_id = SPECIAL_EVENT_TYPE_AOD_DOUBLETAB;
+				info->scrub_x = (string_data[1] & 0xFF) << 8 | (string_data[0] & 0xFF);
+				info->scrub_y = (string_data[3] & 0xFF) << 8 | (string_data[2] & 0xFF);
+
+#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
+				input_info(true, &info->client->dev, "%s: AOD[%d]\n", __func__, info->scrub_id);
+#else
+				input_info(true, &info->client->dev, "%s: AOD[%d %d %d]\n", __func__,
+						info->scrub_id, info->scrub_x, info->scrub_y);
+#endif
 				break;
-		/*	case FTS_STRING_EVENT_WATCH_STATUS:
-			case FTS_STRING_EVENT_FAST_ACCESS:
-			case FTS_STRING_EVENT_DIRECT_INDICATOR:
-				tsp_debug_info(true, &info->client->dev, "%s: SCRUB[%X]\n", __func__, string_data[1]);
-				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
-				info->scrub_id = (string_data[1] >> 2) & 0x3;
-				info->scrub_x = string_data[2] | (string_data[3] << 8);
-				info->scrub_y = string_data[4] | (string_data[5] << 8);
-				break;*/
 			case FTS_STRING_EVENT_SPAY:
-			case FTS_STRING_EVENT_SPAY1:
-			case FTS_STRING_EVENT_SPAY2:
-				tsp_debug_info(true, &info->client->dev, "%s: SPAY[%X]\n", __func__, string);
 				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
-				info->scrub_id = (string >> 2) & 0xF;
+				info->scrub_id = SPECIAL_EVENT_TYPE_SPAY;
+
+				input_info(true, &info->client->dev, "%s: SPAY[%d]\n", __func__, info->scrub_id);
 				break;
-		/*	case FTS_STRING_EVENT_EDGE_SWIPE_RIGHT:
-			case FTS_STRING_EVENT_EDGE_SWIPE_LEFT:
-				tsp_debug_info(true, &info->client->dev, "%s: Edge swipe[%X]\n", __func__, string_data[1]);
-				input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
-				info->scrub_id = (string_data[1] >> 2) & 0xFF;
-				break;*/
 			default:
-				tsp_debug_info(true, &info->client->dev, "%s: no event:%X\n", __func__, string);
+				input_info(true, &info->client->dev,
+					"%s: [No event] %02X %02X %02X %02X %02X %02X %02X %02X || %04X: %02X\n",
+					__func__, data[0], data[1], data[2], data[3],
+					data[4], data[5], data[6], data[7],
+					string_addr, string_event_id);
 				break;
 			}
 
 			input_sync(info->input_dev);
-
 			input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 0);
 
 			break;
-
+#endif
 		default:
 			fts_debug_msg_event_handler(info, &data[EventNum * FTS_EVENT_SIZE]);
 			continue;
@@ -2307,6 +2308,10 @@ static int fts_parse_dt(struct device *dev,
 	rc = of_property_read_u32(np, "stm,bringup", &dt_data->bringup);
 	if (rc < 0)
 		dt_data->bringup = 0;
+
+	rc = of_property_read_u32(np, "stm,poweroff-pinctrl", &dt_data->poweroff_pinctrl);
+	if (rc < 0)
+		dt_data->poweroff_pinctrl = 0;
 
 	dev_err(dev, "%s: tsp_int= %d, X= %d, Y= %d, grip_area= %d, project= %s, gesture[%d], string[%d], bringup[%d], tsp_id=%d, tsp_id2=%d, fw_name=%s\n",
 		__func__, dt_data->irq_gpio,
@@ -3379,6 +3384,9 @@ static int fts_stop_device(struct fts_ts_info *info)
 		fts_power_ctrl(info->client, false);
 		mutex_unlock(&info->i2c_mutex);
 		info->power_state = STATE_POWEROFF;
+
+		if (info->dt_data->poweroff_pinctrl)
+			i2c_msm_pinctrl_set_slave_power_off(info->client->adapter);
 	}
 	fts_pinctrl_configure(info, false);
 out:

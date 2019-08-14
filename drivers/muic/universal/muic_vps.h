@@ -32,6 +32,22 @@ typedef enum {
 	CHGTYP_MIN = CHGTYP_NO_VOLTAGE
 } chgtyp_t;
 
+/* Silicon Mitus chgtype */
+typedef enum {
+	CHGTYPS_NO_CHARGER		= 0x00,
+	CHGTYPS_DEDICATED_CHARGER	= 0x01,
+	CHGTYPS_CDP			= 0x02,
+	CHGTYPS_USB			= 0x04,
+	CHGTYPS_TIMEOUT_SDP		= 0x08,
+	CHGTYPS_U200			= 0x10,
+	CHGTYPS_AFC			= 0x11,
+	CHGTYPS_LO			= 0x12,
+	CHGTYPS_QC20			= 0x13,
+	CHGTYPS_MAX,
+
+	CHGTYPS_MIN = CHGTYPS_NO_CHARGER
+} chgtyp_s;
+
 #define MDEV(name) ATTACHED_DEV_##name##_MUIC
 /*
  * VPS attribute field.

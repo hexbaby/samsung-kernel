@@ -6,6 +6,8 @@ obj-y += ss_dsi_mdnie_lite_common.o
 obj-y += ss_dsi_smart_dimming_common.o
 obj-y += ss_regulator_common.o
 obj-$(CONFIG_SAMSUNG_DEBUG_DISPLAY) += dlog.o
+obj-$(CONFIG_DISPLAY_USE_INFO) += ss_dpui_common.o
+
 #
 # panel directory make file
 #

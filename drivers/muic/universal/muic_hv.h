@@ -115,6 +115,6 @@ extern void hv_set_afc_by_user(struct hv_data *phv, bool onoff);
 extern void hv_irq_init(struct hv_data *phv);
 extern void hv_muic_change_afc_voltage(muic_data_t *pmuic, int tx_data);
 extern void hv_clear_hvcontrol(struct hv_data *phv);
-
+extern int muic_afc_set_voltage(int vol);
 #endif /* __MUIC_HV_H__ */
 

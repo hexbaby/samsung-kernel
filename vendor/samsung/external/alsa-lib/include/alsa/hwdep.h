@@ -68,8 +68,16 @@ typedef enum _snd_hwdep_iface {
 	SND_HWDEP_IFACE_USX2Y_PCM,	/**< Tascam US122, US224 & US428 raw USB PCM */
 	SND_HWDEP_IFACE_PCXHR,		/**< Digigram PCXHR */
 	SND_HWDEP_IFACE_SB_RC,		/**< SB Extigy/Audigy2NX remote control */
-                
-	SND_HWDEP_IFACE_LAST = SND_HWDEP_IFACE_SB_RC  /**< last known hwdep interface */
+	SND_HWDEP_IFACE_HDA,		/**< HD-audio */
+	SND_HWDEP_IFACE_USB_STREAM,	/**< direct access to usb stream */
+	SND_HWDEP_IFACE_FW_DICE,	/**< TC DICE FireWire device */
+	SND_HWDEP_IFACE_FW_FIREWORKS,	/**< Echo Audio Fireworks based device */
+	SND_HWDEP_IFACE_FW_BEBOB,	/**< BridgeCo BeBoB based device */
+	SND_HWDEP_IFACE_FW_OXFW,	/**< Oxford OXFW970/971 based device */
+	SND_HWDEP_IFACE_FW_DIGI00X,	/* Digidesign Digi 002/003 family */
+	SND_HWDEP_IFACE_FW_TASCAM,	/* TASCAM FireWire series */
+
+	SND_HWDEP_IFACE_LAST = SND_HWDEP_IFACE_FW_TASCAM	/**< last known hwdep interface */
 } snd_hwdep_iface_t;
 
 /** open for reading */
@@ -97,6 +105,7 @@ typedef struct _snd_hwdep snd_hwdep_t;
 int snd_hwdep_open(snd_hwdep_t **hwdep, const char *name, int mode);
 int snd_hwdep_close(snd_hwdep_t *hwdep);
 int snd_hwdep_poll_descriptors(snd_hwdep_t *hwdep, struct pollfd *pfds, unsigned int space);
+int snd_hwdep_poll_descriptors_count(snd_hwdep_t *hwdep);
 int snd_hwdep_poll_descriptors_revents(snd_hwdep_t *hwdep, struct pollfd *pfds, unsigned int nfds, unsigned short *revents);
 int snd_hwdep_nonblock(snd_hwdep_t *hwdep, int nonblock);
 int snd_hwdep_info(snd_hwdep_t *hwdep, snd_hwdep_info_t * info);

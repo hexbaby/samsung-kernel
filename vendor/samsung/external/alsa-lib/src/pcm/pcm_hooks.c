@@ -165,6 +165,9 @@ static const snd_pcm_ops_t snd_pcm_hooks_ops = {
 	.async = snd_pcm_generic_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_generic_query_chmaps,
+	.get_chmap = snd_pcm_generic_get_chmap,
+	.set_chmap = snd_pcm_generic_set_chmap,
 };
 
 static const snd_pcm_fast_ops_t snd_pcm_hooks_fast_ops = {
@@ -196,6 +199,7 @@ static const snd_pcm_fast_ops_t snd_pcm_hooks_fast_ops = {
 	.poll_descriptors_count = snd_pcm_generic_poll_descriptors_count,
 	.poll_descriptors = snd_pcm_generic_poll_descriptors,
 	.poll_revents = snd_pcm_generic_poll_revents,
+	.may_wait_for_avail_min = snd_pcm_generic_may_wait_for_avail_min,
 };
 
 /**
@@ -236,7 +240,7 @@ int snd_pcm_hooks_open(snd_pcm_t **pcmp, const char *name, snd_pcm_t *slave, int
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;
 	pcm->mmap_shadow = 1;
-	pcm->monotonic = slave->monotonic;
+	pcm->tstamp_type = slave->tstamp_type;
 	snd_pcm_link_hw_ptr(pcm, slave);
 	snd_pcm_link_appl_ptr(pcm, slave);
 	*pcmp = pcm;
@@ -385,6 +389,7 @@ static int snd_pcm_hook_add_conf(snd_pcm_t *pcm, snd_config_t *root, snd_config_
 	if (err >= 0) {
 		if (snd_config_get_type(type) != SND_CONFIG_TYPE_COMPOUND) {
 			SNDERR("Invalid type for PCM type %s definition", str);
+			err = -EINVAL;
 			goto _err;
 		}
 		snd_config_for_each(i, next, type) {
@@ -452,7 +457,8 @@ static int snd_pcm_hook_add_conf(snd_pcm_t *pcm, snd_config_t *root, snd_config_
 		err = hook_add_dlobj(pcm, h);
 
 	if (err < 0) {
-		snd_dlclose(h);
+		if(h)
+			snd_dlclose(h);
 		return err;
 	}
 	return 0;
@@ -661,7 +667,7 @@ int _snd_pcm_hook_ctl_elems_install(snd_pcm_t *pcm, snd_config_t *conf)
 {
 	int err;
 	int card;
-	snd_pcm_info_t *info;
+	snd_pcm_info_t info = {0};
 	char ctl_name[16];
 	snd_ctl_t *ctl;
 	snd_sctl_t *sctl = NULL;
@@ -669,11 +675,11 @@ int _snd_pcm_hook_ctl_elems_install(snd_pcm_t *pcm, snd_config_t *conf)
 	snd_pcm_hook_t *h_hw_params = NULL, *h_hw_free = NULL, *h_close = NULL;
 	assert(conf);
 	assert(snd_config_get_type(conf) == SND_CONFIG_TYPE_COMPOUND);
-	snd_pcm_info_alloca(&info);
-	err = snd_pcm_info(pcm, info);
+
+	err = snd_pcm_info(pcm, &info);
 	if (err < 0)
 		return err;
-	card = snd_pcm_info_get_card(info);
+	card = snd_pcm_info_get_card(&info);
 	if (card < 0) {
 		SNDERR("No card for this PCM");
 		return -EINVAL;

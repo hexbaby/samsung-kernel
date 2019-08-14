@@ -67,7 +67,25 @@ void *snd_dlopen(const char *name, int mode)
 #endif
 #endif
 #ifdef HAVE_LIBDL
-	return dlopen(name, mode);
+	/*
+	 * Handle the plugin dir not being on the default dlopen search
+	 * path, without resorting to polluting the entire system namespace
+	 * via ld.so.conf.
+	 */
+	void *handle = NULL;
+	char *filename;
+
+	if (name && name[0] != '/') {
+		filename = malloc(sizeof(ALSA_PLUGIN_DIR) + 1 + strlen(name) + 1);
+		strcpy(filename, ALSA_PLUGIN_DIR);
+		strcat(filename, "/");
+		strcat(filename, name);
+		handle = dlopen(filename, mode);
+		free(filename);
+	}
+	if (!handle)
+		handle = dlopen(name, mode);
+	return handle;
 #else
 	return NULL;
 #endif
@@ -159,11 +177,13 @@ void *snd_dlsym(void *handle, const char *name, const char *version)
 	}
 #endif
 #ifdef HAVE_LIBDL
+#ifdef VERSIONED_SYMBOLS
 	if (version) {
 		err = snd_dlsym_verify(handle, name, version);
 		if (err < 0)
 			return NULL;
 	}
+#endif
 	return dlsym(handle, name);
 #else
 	return NULL;
@@ -208,8 +228,7 @@ void *snd_dlobj_cache_get(const char *lib, const char *name,
 {
 	struct list_head *p;
 	struct dlobj_cache *c;
-	void *func, *dlobj = NULL;
-	int dlobj_close = 0;
+	void *func, *dlobj;
 
 	snd_dlobj_lock();
 	list_for_each(p, &pcm_dlobj_list) {
@@ -220,7 +239,6 @@ void *snd_dlobj_cache_get(const char *lib, const char *name,
 			continue;
 		if (!lib && c->lib)
 			continue;
-		dlobj = c->dlobj;
 		if (strcmp(c->name, name) == 0) {
 			c->refcnt++;
 			func = c->func;
@@ -228,17 +246,16 @@ void *snd_dlobj_cache_get(const char *lib, const char *name,
 			return func;
 		}
 	}
+
+	dlobj = snd_dlopen(lib, RTLD_NOW);
 	if (dlobj == NULL) {
-		dlobj = snd_dlopen(lib, RTLD_NOW);
-		if (dlobj == NULL) {
-			if (verbose)
-				SNDERR("Cannot open shared library %s",
+		if (verbose)
+			SNDERR("Cannot open shared library %s",
 						lib ? lib : "[builtin]");
-			snd_dlobj_unlock();
-			return NULL;
-		}
-		dlobj_close = 1;
+		snd_dlobj_unlock();
+		return NULL;
 	}
+
 	func = snd_dlsym(dlobj, name, version);
 	if (func == NULL) {
 		if (verbose)
@@ -257,8 +274,7 @@ void *snd_dlobj_cache_get(const char *lib, const char *name,
 		free((void *)c->lib);
 		free(c);
 	      __err:
-		if (dlobj_close)
-			snd_dlclose(dlobj);
+		snd_dlclose(dlobj);
 		snd_dlobj_unlock();
 		return NULL;
 	}
@@ -274,6 +290,9 @@ int snd_dlobj_cache_put(void *func)
 	struct list_head *p;
 	struct dlobj_cache *c;
 	unsigned int refcnt;
+
+	if (!func)
+		return -ENOENT;
 
 	snd_dlobj_lock();
 	list_for_each(p, &pcm_dlobj_list) {
@@ -298,14 +317,15 @@ void snd_dlobj_cache_cleanup(void)
 	snd_dlobj_lock();
 	list_for_each_safe(p, npos, &pcm_dlobj_list) {
 		c = list_entry(p, struct dlobj_cache, list);
-		if (c->refcnt == 0) {
-			list_del(p);
-			snd_dlclose(c->dlobj);
-			free((void *)c->name); /* shut up gcc warning */
-			free((void *)c->lib); /* shut up gcc warning */
-			free(c);
-		}
+		if (c->refcnt)
+			continue;
+		list_del(p);
+		snd_dlclose(c->dlobj);
+		free((void *)c->name); /* shut up gcc warning */
+		free((void *)c->lib); /* shut up gcc warning */
+		free(c);
 	}
+
 	snd_dlobj_unlock();
 }
 #endif

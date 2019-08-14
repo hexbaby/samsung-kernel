@@ -5,7 +5,6 @@
 
 LOCAL_PATH:= $(call my-dir)
 ifneq (sc,$(findstring sc,$(TARGET_BOARD_PLATFORM)))
-ifneq (mt,$(findstring mt,$(TARGET_BOARD_PLATFORM)))
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := libdmverity_hashgen.c
@@ -33,10 +32,22 @@ LOCAL_CFLAGS += -D__NO_UI_PRINT
 LOCAL_CFLAGS += -D__USE_DM_VERITY -g
 
 LOCAL_SRC_FILES := dm_verity_hash.c 
-LOCAL_C_INCLUDES += system/extras/ext4_utils \
+LOCAL_C_INCLUDES += system/extras/ext4_utils/include/ext4_utils \
 	$(TOP)/external/boringssl/include
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/..
 
+#Using sha256 chipset-independently
+ifeq ($(DMVERITY_SHA256),true)
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
+
+ifeq (mt,$(findstring mt,$(TARGET_BOARD_PLATFORM)))
+LOCAL_CFLAGS += -DMTK_TZ
+ifeq ($(TARGET_SOC),MT6757)
+LOCAL_CFLAGS += -DMT6757
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
+else
 ifeq (exynos,$(findstring exynos,$(TARGET_SOC)))
 ifeq ($(TARGET_SOC),exynos5433)
 LOCAL_CFLAGS += -DEXYNOS_5433
@@ -49,12 +60,24 @@ ifeq ($(TARGET_SOC),exynos8895)
 LOCAL_CFLAGS += -DEXYNOS_8895
 LOCAL_CFLAGS += -DUSE_SHA256
 endif
+ifeq ($(TARGET_SOC),exynos9810)
+LOCAL_CFLAGS += -DEXYNOS_9810
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
 ifeq ($(TARGET_SOC),exynos7420)
 LOCAL_CFLAGS += -DEXYNOS_7420
 LOCAL_CFLAGS += -DUSE_SHA1
 endif
 ifeq ($(TARGET_SOC),exynos7870)
 LOCAL_CFLAGS += -DEXYNOS_7870
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
+ifeq ($(TARGET_SOC),exynos7880)
+LOCAL_CFLAGS += -DEXYNOS_7880
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
+ifeq ($(TARGET_SOC),exynos7885)
+LOCAL_CFLAGS += -DEXYNOS_7885
 LOCAL_CFLAGS += -DUSE_SHA256
 endif
 ifeq ($(TARGET_PROJECT), TRE)
@@ -85,6 +108,18 @@ ifeq ($(TARGET_BOARD_PLATFORM),msm8998)
 LOCAL_CFLAGS += -DMSM_8998
 LOCAL_CFLAGS += -DUSE_SHA256
 endif
+ifeq ($(TARGET_BOARD_PLATFORM),sdm845)
+LOCAL_CFLAGS += -DMSM_845
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
+ifeq ($(TARGET_BOARD_PLATFORM),sdm660)
+LOCAL_CFLAGS += -DSDM_660
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
+ifeq ($(TARGET_BOARD_PLATFORM),sdm450)
+LOCAL_CFLAGS += -DSDM_450
+LOCAL_CFLAGS += -DUSE_SHA256
+endif
 ifeq ($(TARGET_BOARD_PLATFORM),msm8916)
 LOCAL_CFLAGS += -DMSM_8916
 endif
@@ -92,16 +127,15 @@ ifeq ($(TARGET_BOARD_PLATFORM),msm8953)
 LOCAL_CFLAGS += -DUSE_SHA256
 endif
 endif
+endif
 
 LOCAL_STATIC_LIBRARIES := \
 	libc \
 	libstdc++ \
-	libext4_utils_static \
-	libmtdutils \
+	libext4_utils \
 	libdmverity_hashgen \
-	libmincrypt \
 	libfs_mgr \
-	libcrypto_static
+	libcrypto
 
 LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/sbin
 include $(BUILD_EXECUTABLE)
@@ -116,7 +150,7 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/.. \
 		$(TOP)/external/boringssl/include
 #LOCAL_C_INCLUDES += system/extras/ext4_utils
 
-LOCAL_MODULE := libdmverity_hashgen_host
+LOCAL_MODULE := libdmverity_hashgen
 
 include $(BUILD_HOST_STATIC_LIBRARY)
 
@@ -128,5 +162,4 @@ include $(BUILD_HOST_STATIC_LIBRARY)
 # LOCAL_STATIC_LIBRARIES := libmincrypt libsparse_host libz
 
 # include $(BUILD_HOST_EXECUTABLE)
-endif
 endif

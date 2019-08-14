@@ -101,39 +101,35 @@ static ssize_t s2mm005_store_manual_lpm_mode(struct device *dev,
 
 	switch(mode){
 	case 0:
-		/* Disable Low Power Mode for App (JIGON Low + LP Off) */
-		s2mm005_manual_LPM(usbpd_data, 0x3);
+		/* Disable Low Power Mode for App (SW JIGON Disable) */
 		s2mm005_manual_JIGON(usbpd_data, 0);
 		usbpd_data->manual_lpm_mode = 0;
 		break;
 	case 1:
-		/* Enable Low Power Mode (JIGON High + Force LP On) */
+		/* Enable Low Power Mode for App (SW JIGON Enable) */
 		s2mm005_manual_JIGON(usbpd_data, 1);
-		s2mm005_manual_LPM(usbpd_data, 0x8);	// force Low power mode
 		usbpd_data->manual_lpm_mode = 1;
 		break;
 	case 2:
-		/* Enable Low Power Mode (Normal LP On) */
+		/* SW JIGON Enable */
 		s2mm005_manual_JIGON(usbpd_data, 1);
-		s2mm005_manual_LPM(usbpd_data, 0x1);	// normal power mode
+//		s2mm005_manual_LPM(usbpd_data, 0x1);
 		usbpd_data->manual_lpm_mode = 1;
 		break;
-	case 3:
-		/* Disable Low Power Mode (LP Off) */
-		s2mm005_manual_LPM(usbpd_data, 0x3);
-		usbpd_data->manual_lpm_mode = 0;
+	case 4:
+		/* water lpm mode */
+		s2mm005_manual_LPM(usbpd_data, 0x9);
 		break;
 	default:
-		/* Disable Low Power Mode (JIGON Low + LP Off) */
-		s2mm005_manual_LPM(usbpd_data, 0x3);
+		/* SW JIGON Disable */
 		s2mm005_manual_JIGON(usbpd_data, 0);
 		usbpd_data->manual_lpm_mode = 0;
-		break;		
+		break;
 	}
 
 	return size;
 }
-static DEVICE_ATTR(lpm_mode, 0664, 
+static DEVICE_ATTR(lpm_mode, 0664,
 	s2mm005_show_manual_lpm_mode, s2mm005_store_manual_lpm_mode);
 
 static ssize_t ccic_state_show(struct device *dev,
@@ -186,6 +182,7 @@ static ssize_t s2mm005_store_control_option_command(struct device *dev,
 static DEVICE_ATTR(ccic_control_option, 0664, NULL, s2mm005_store_control_option_command);
 #endif
 
+#ifdef CONFIG_CCIC_MANUAL_UPDATE
 static int ccic_firmware_update_built_in(struct device *dev)
 {
 	struct s2mm005_data *usbpd_data = dev_get_drvdata(dev);
@@ -280,6 +277,7 @@ open_err:
 	set_fs(old_fs);
 	return error; 
 }
+#endif
 
 static ssize_t ccic_store_firmware_status_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -303,7 +301,10 @@ static ssize_t ccic_store_firmware_update(struct device *dev,
 {
 	struct s2mm005_data *usbpd_data = dev_get_drvdata(dev);
 	struct s2mm005_version version;
-	int mode = 0,  ret = 1;
+	int mode = 0;
+#ifdef CONFIG_CCIC_MANUAL_UPDATE
+	int ret = 1;
+#endif
 
     if (!usbpd_data) {
         pr_err("usbpd_data is NULL\n");
@@ -324,12 +325,14 @@ static ssize_t ccic_store_firmware_update(struct device *dev,
  	* 1 : [UMS] Getting firmware from sd card.
  	*/
 	switch (mode) {
+#ifdef CONFIG_CCIC_MANUAL_UPDATE
 	case BUILT_IN:
 		ret = ccic_firmware_update_built_in(dev);
 		break;
 	case UMS:
 		ret = ccic_firmware_update_ums(dev);
 		break;
+#endif
 	default:
 		pr_err("%s: Not support command[%d]\n",
 			__func__, mode);
@@ -344,6 +347,22 @@ static ssize_t ccic_store_firmware_update(struct device *dev,
 }
 static DEVICE_ATTR(fw_update, 0220, NULL, ccic_store_firmware_update);
 
+static ssize_t ccic_water_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct s2mm005_data *usbpd_data = dev_get_drvdata(dev);
+
+	if(!usbpd_data) {
+		pr_err("%s usbpd_data is null!!\n", __func__);
+		return -ENODEV;
+	}
+	pr_info("%s water=%d, run_dry=%d\n", __func__,
+		usbpd_data->water_det, usbpd_data->run_dry);
+
+	return sprintf(buf, "%d\n", (usbpd_data->water_det | !usbpd_data->run_dry));
+}
+static DEVICE_ATTR(water, 0444, ccic_water_show, NULL);
+
 static struct attribute *ccic_attributes[] = {
 	&dev_attr_cur_version.attr,
 	&dev_attr_src_version.attr,
@@ -355,6 +374,7 @@ static struct attribute *ccic_attributes[] = {
 #endif
 	&dev_attr_fw_update.attr,
 	&dev_attr_fw_update_status.attr,
+	&dev_attr_water.attr,
 	NULL
 };
 

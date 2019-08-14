@@ -11,13 +11,19 @@ For installation you can use these commands:
 	make install
 
 
-Compilation from HG sources
+Compilation from Git-sources
 ---------------------------
 
-You need also GNU packages automake and libtool installed in your system
-to compile HG (Mercurial) sources of alsa-lib package.
+Requirements:
+	* automake
+	* libtool
 
-For compilation you can use these commands:
+To compile alsa-lib from source:
+
+	./gitcompile
+
+If you do not want to use the supplied gitcompile-script, you can
+compile alsa-lib manually by using these steps:
 
 	libtoolize --force --copy --automake
 	aclocal
@@ -27,7 +33,6 @@ For compilation you can use these commands:
 	./configure
 	make
 
-The included hgcompile script does this job for you.
 
 Note: Some automake packages have missing aclocal program. Use newer version
       in the case.
@@ -78,16 +83,13 @@ When you would like to cross-compile ALSA library (e.g. compile on
 i686 host but for arm architecture) you will need to call ./configure
 script with additional parameters:
 
-CC=arm-linux-gcc ./configure --target=arm-linux
+CC=arm-linux-gcc ./configure --host=arm-linux
 
-In this example host where the library is build is guessed (should be
-given with --host=platform) and target for which is the library build is
-Linux on ARM architecture.  You should omit setting 'CC' variable and
-cross-compiler will be guessed too.
+You can omit setting 'CC' variable and cross-compiler will be guessed too.
 
 So simplest version would be:
 
-./configure --target=arm-linux
+./configure --host=arm-linux
 
 For platform names in the form cpu-vendor-os (or aliases for this)
 you should look in 'config.guess' script. Target and all paths
@@ -101,6 +103,15 @@ If your machine does not have FP unit, you should use '--with-softfloat'
 option. This option disables usage of float numbers in PCM route plugin.
 ALSA could then leave much more CPU cycles for your applications, but you 
 could still need some floating point emulator.
+
+Thread-safety option
+--------------------
+
+As default, major PCM functions of alsa-lib are built to be
+thread-safe with pthread mutex (while this wasn't present in the
+versions earlier than 1.1.2).  If you want to build without this
+thread-safety support but reduce the overhead, pass
+--disable-thread-safety configure option.
 
 Jack plugin
 -----------

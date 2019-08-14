@@ -884,6 +884,11 @@
 };
 
 &i2c_9 {
+	pinctrl-names = "i2c_active", "i2c_sleep", "i2c_pwr_off";
+	pinctrl-0 = <&i2c_9_active>;
+	pinctrl-1 = <&i2c_9_sleep>;
+	pinctrl-2 = <&i2c_9_pwr_off>;
+
 	fts_i2c@49 {
 		compatible = "stm,fts_ts";
 		reg = <0x49>;
@@ -892,8 +897,8 @@
 		avdd-supply = <&max77838_l4>;
 		vddo-supply = <&max77838_l2>;
 		pinctrl-names = "tsp_active", "tsp_suspend";
-		pinctrl-0 = <&tsp_int_active &tsp_i2c_active>;
-		pinctrl-1 = <&tsp_int_suspend &tsp_i2c_sleep>;
+		pinctrl-0 = <&tsp_int_active>;
+		pinctrl-1 = <&tsp_int_suspend>;
 		stm,irq-gpio = <&tlmm 123 0x0>;
 		stm,tsp-id = <&pm8994_gpios 11 0x1>;
 		stm,tsp-id2 = <&pm8994_gpios 20 0x1>;
@@ -918,8 +923,8 @@
 		avdd-supply = <&max77838_l4>;
 		vddo-supply = <&max77838_l2>;
 		pinctrl-names = "tsp_active", "tsp_suspend";
-		pinctrl-0 = <&tsp_int_active &tsp_i2c_active>;
-		pinctrl-1 = <&tsp_int_suspend &tsp_i2c_sleep>;
+		pinctrl-0 = <&tsp_int_active>;
+		pinctrl-1 = <&tsp_int_suspend>;
 		sec,supply-num = <0>;		// the number of regulators
 		sec,supply-name = "max77838-l4", "max77838-l2";	// the name of regulators, in power-on order
 		sec,irq_gpio = <&tlmm 123 0x0>;
@@ -932,6 +937,7 @@
 		sec,i2c-burstmax = <256>;
 		sec,bringup = <0>;
 		sec,firmware_name = "tsp_sec/sec_hero.fw";
+		sec,poweroff-pinctrl = <1>;
 		clock-names = "iface_clk", "core_clk";
 		clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
 			<&clock_gcc clk_gcc_blsp2_qup3_i2c_apps_clk>;

@@ -102,65 +102,51 @@ struct JackLibGlobals
 	
 #if defined (__ANDROID__)
 	static void Cleanup(){
-		jack_log("Clients[%d] are still allocated, cleanup!!!+", fClientCount);
-
+		assert(JackGlobals::fOpenMutex);
+		JackGlobals::fOpenMutex->Lock();
 		if (fClientCount > 0) {
+			jack_error("Jack clients (%d) are still open on library unload!", fClientCount);
 			JackGlobals::CheckContext("jack_client_close");
 			
-			assert(JackGlobals::fOpenMutex);
-			JackGlobals::fOpenMutex->Lock();
-
             // Cleanup remaining clients
-            
             for (int i = 0; i < CLIENT_NUM; i++) {
                 JackClient* client = JackGlobals::fClientTable[i];
                 if (client) {
                     jack_error("Cleanup client ref = %d", i);
-                    client->ClientNotify(client->GetClientControl()->fRefNum, client->GetClientControl()->fName, kShutDownCallback, false, "JACK Clinet has been deleted", JackFailure|JackClientDeleted, 0);
-                    client->Cleanup();
                     client->Close();
-                    delete client;
+                    client->ShutDown(true);
                     JackGlobals::fClientTable[i] = NULL;
+                    delete client;
                 }
             }
 
-
-            // Cleanup global context
-            fClientCount = 0;
-            delete fGlobals;
-            fGlobals = NULL;
-			JackGlobals::fOpenMutex->Unlock();
+			if (fClientCount > 0) {
+				jack_error("Someone forgot to call JackLibGlobals::Destroy, cleaning up!");
+				// Cleanup global context
+				fClientCount = 0;
+				EndTime();
+				delete fGlobals;
+				fGlobals = NULL;
+			}
 
         }
-
-		jack_log("Clients are still allocated, cleanup!!!-");
+		JackGlobals::fOpenMutex->Unlock();
 	}
 #endif
 
     static void Init()
     {
-        if (!JackGlobals::fServerRunning && fClientCount > 0) {
-
-            // Cleanup remaining clients
-            jack_error("Jack server was closed but clients are still allocated, cleanup...");
-            for (int i = 0; i < CLIENT_NUM; i++) {
-                JackClient* client = JackGlobals::fClientTable[i];
-                if (client) {
-                    jack_error("Cleanup client ref = %d", i);
-                    client->ClientNotify(client->GetClientControl()->fRefNum, client->GetClientControl()->fName, kShutDownCallback, false, "JACK Clinet has been deleted", JackFailure|JackClientDeleted, 0);
-                    client->Cleanup();
-                    client->Close();
-                    delete client;
-                    JackGlobals::fClientTable[i] = NULL;
-                }
-            }
-
-            // Cleanup global context
-            fClientCount = 0;
-            delete fGlobals;
-            fGlobals = NULL;
-        }
-
+		// Try to cleanup clients that have failed and are not yet cleaned up.
+		for (int i = 0; i < CLIENT_NUM; i++) {
+			JackClient* client = JackGlobals::fClientTable[i];
+			if (client && !JackGlobals::fServerRunning[i]) {
+				jack_error("Cleanup dead client on Init, ref = %d", i);
+				client->Close();
+				client->ShutDown(true);
+				JackGlobals::fClientTable[i] = NULL;
+				delete client;
+			}
+		}
         if (fClientCount++ == 0 && !fGlobals) {
             jack_log("JackLibGlobals Init %x", fGlobals);
             InitTime();

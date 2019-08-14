@@ -123,8 +123,8 @@ bool JackServerGlobals::Init()
     int replace_registry = 0;
 
     FILE* fp = 0;
-    char filename[255];
-    char buffer[255];
+    char filename[255] = {0};
+    char buffer[255] = {0};
     int argc = 0;
     char* argv[32];
 
@@ -179,11 +179,12 @@ bool JackServerGlobals::Init()
 
         argc = 0;
         if (fp) {
-            ret = fscanf(fp, "%s", buffer);
+            ret = fscanf(fp, "%254s", buffer);
             while (ret != 0 && ret != EOF) {
                 argv[argc] = (char*)malloc(64);
-                strcpy(argv[argc], buffer);
-                ret = fscanf(fp, "%s", buffer);
+                strncpy(argv[argc], buffer, 63);
+                argv[argc][63] = '\0';
+                ret = fscanf(fp, "%254s", buffer);
                 argc++;
             }
             fclose(fp);

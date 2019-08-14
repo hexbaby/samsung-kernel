@@ -185,6 +185,11 @@ jackctl_driver_restore_parameters(jackctl_driver_t * driver_ctr)
     jackctl_parameter_t * param = NULL;
     union jackctl_parameter_value value;
 
+	if (driver_ctr == NULL) {
+        jack_error("driver driver_ctr parameters are null, can't restore them.");
+		return false;
+	}
+
     if (backup_ptr == NULL) {
         jack_error("driver backup parameters are null, can't restore them.");
         return false;
@@ -196,6 +201,19 @@ jackctl_driver_restore_parameters(jackctl_driver_t * driver_ctr)
         return false;
     }
 
+	int highLatencyBufSize = 0;
+	FILE *fbugSize = NULL;
+	fbugSize = fopen("/data/misc/jack/high_latency_buf_size.cmd", "r");
+
+	if( fbugSize == NULL ){
+		ALOGE("high_latency_buf_size file open failed");
+	}else{
+		char readText[255] = {0,};
+		fgets(readText, 255, fbugSize);
+		highLatencyBufSize = atoi(readText);
+		fclose(fbugSize);
+	}
+
     node_ptr = (JSList *)driver_params;
     while (node_ptr) {
         param = (jackctl_parameter_t*)node_ptr->data;
@@ -206,6 +224,7 @@ jackctl_driver_restore_parameters(jackctl_driver_t * driver_ctr)
         backup_node_ptr = backup_ptr;
         while (backup_node_ptr) {
             backup_param_t * backup = (backup_param_t *)backup_node_ptr->data;
+
             if (id == backup->id) {
             // update latency from "apa_settings.cfg"
                 if(id == 'p') {
@@ -214,23 +233,39 @@ jackctl_driver_restore_parameters(jackctl_driver_t * driver_ctr)
                     std::ifstream in("/data/misc/jack/apa_settings.cfg");
                     in >> usb;
                     in >> latency;
-                    switch(latency) {
-                        case 0:
-                            value.ui = 480;
-                            break;
-                        case 1:
-                            value.ui = 960;
-                            break;
-                        case 2:
-                            value.ui = 240;
-                            break;
-                    }
+
+					if( 0 != highLatencyBufSize ){
+	                    switch(latency) {
+							case 0:
+								value.ui = highLatencyBufSize/2;  // MID
+								break;
+							case 1:
+								value.ui = highLatencyBufSize;    // HIGH
+								break;
+							case 2:
+								value.ui = highLatencyBufSize/4;   // LOW
+								break;
+	                    }
+					}
+					else{
+						switch(latency) {
+							case 0:
+								value.ui = 480;
+								break;
+							case 1:
+								value.ui = 960;
+								break;
+							case 2:
+								value.ui = 240;
+								break;
+						}
+					}
 
                     //decision of sync or async mode (depends on platform)
 #if defined (MID_ASYNC_MODE)					
-                    if(value.ui <= 480) {
+                    if(value.ui == 480) {
 #else
-                    if(value.ui <= 240) {
+                    if(value.ui == 240) {
 #endif					
                         jack_log("use async mode when use %d period", value.ui);
                         if(GetEngineControl()->fSyncMode == true)
@@ -240,7 +275,27 @@ jackctl_driver_restore_parameters(jackctl_driver_t * driver_ctr)
                         if(GetEngineControl()->fSyncMode == false)
                             GetEngineControl()->UpdateSyncModePending(true);
                     }
-                } else {
+                } else if((id == 'C') && (768 == highLatencyBufSize)){  // OpenSL driver only
+						
+					FILE *captureState = NULL;
+					captureState = fopen("/data/misc/jack/capture_state.cmd", "r");
+					
+					if( captureState == NULL ){
+						ALOGE("capture_state open failed");
+						memcpy(&value, &backup->value, sizeof(jackctl_parameter_value));
+					}else{
+					
+						char readText[10] = {0,};
+						while(fgets(readText, 10, captureState)){
+							if(!strncmp(readText, "C0", 2)){
+								value.ui = 0;
+							}else{
+								value.ui = 2;
+							}
+						}
+						fclose(captureState);
+					}
+				}else {
                     memcpy(&value, &backup->value, sizeof(jackctl_parameter_value));
                 }
                 jackctl_parameter_set_value(param, &value);  //restore
@@ -277,6 +332,50 @@ jackctl_driver_update_parameters(char * master_driver_name, jackctl_driver_t * d
     }
     memset(dev_param, 0, sizeof(device_parameter_t));
     dev_param->verbose = 0;
+
+
+#ifdef USE_4SPEAKER
+	FILE *currentAudioPath = NULL;
+	currentAudioPath = fopen("/data/misc/jack/current_audio_path.cmd", "r");
+
+	if( currentAudioPath == NULL ){
+		ALOGE("currentAudioPath open failed path");
+	}else{
+		char readText[255] = {0,};
+		while(fgets(readText, 255, currentAudioPath)){
+			if( NULL != strstr(readText, "speaker_tdm")){
+	            sprintf(dev_param->playback_nch, "%d", 4);
+			}else{
+	            sprintf(dev_param->playback_nch, "%d", 2);
+			}
+		}
+		fclose(currentAudioPath);
+
+		const JSList* driver_params = jackctl_driver_get_parameters(driver_ctr);
+		if (driver_params == NULL) {
+			jack_error("driver parameters are null.");
+			free(dev_param);
+			return false;
+		}
+
+		node_ptr = (JSList *)driver_params;
+		while (node_ptr) {
+			param = (jackctl_parameter_t*)node_ptr->data;
+			char id = jackctl_parameter_get_id(param);
+			value = jackctl_parameter_get_value(param);
+	
+			// TODO: update parameters here...
+			switch (id) {
+				case 'o':
+					value.ui = atoi(dev_param->playback_nch);
+					jackctl_parameter_set_value(param, &value);
+					break;
+			}
+			node_ptr = node_ptr->next;
+		}
+	
+	}
+#endif
 
 #ifdef SUPPORT_JACK_USBAUDIO
     //detect usb device & fill parameters.

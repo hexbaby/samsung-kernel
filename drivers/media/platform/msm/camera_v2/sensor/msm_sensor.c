@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +18,10 @@
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
 
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+#include <linux/muic/muic_afc.h>
+int32_t afc_checked_for_camera = 0;
+#endif
 #undef CDBG
 #define CDBG(fmt, args...) pr_err(fmt, ##args)
 
@@ -144,6 +148,9 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_power_ctrl_t *power_info;
 	enum msm_camera_device_type_t sensor_device_type;
 	struct msm_camera_i2c_client *sensor_i2c_client;
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	uint8_t camera_id = 0;
+#endif
 	int rc;
 
 	CDBG("Enter\n");
@@ -160,12 +167,21 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	sensor_device_type = s_ctrl->sensor_device_type;
 	sensor_i2c_client = s_ctrl->sensor_i2c_client;
 
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	camera_id = s_ctrl->sensordata->sensor_info->position;
+#endif
 	if (!power_info || !sensor_i2c_client) {
 		pr_err("%s:%d failed: power_info %pK sensor_i2c_client %pK\n",
 			__func__, __LINE__, power_info, sensor_i2c_client);
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	if(!camera_id) {
+		muic_check_afc_state(0);
+		afc_checked_for_camera = 0;
+	}
+#endif
 	rc = msm_camera_power_down(power_info, sensor_device_type,
 		sensor_i2c_client, s_ctrl->is_secure, SUB_DEVICE_TYPE_SENSOR);
 	if (rc < 0) {
@@ -190,6 +206,9 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_i2c_client *sensor_i2c_client;
 	struct msm_camera_slave_info *slave_info;
 	const char *sensor_name;
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	uint8_t  camera_id = 0;
+#endif
 	uint32_t retry = 0;
 
 	CDBG("Enter\n");
@@ -207,6 +226,9 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 	slave_info = s_ctrl->sensordata->slave_info;
 	sensor_name = s_ctrl->sensordata->sensor_name;
 
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	camera_id = s_ctrl->sensordata->sensor_info->position;
+#endif
 	if (!power_info || !sensor_i2c_client || !slave_info ||
 		!sensor_name) {
 		pr_err("%s:%d failed: %pK %pK %pK %pK\n",
@@ -218,11 +240,28 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 	if (s_ctrl->set_mclk_23880000)
 		msm_sensor_adjust_mclk(power_info);
 
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+	if(!camera_id) {
+		for (retry = 0; retry < 3; retry++) {
+			if(muic_check_afc_state(1) == 1) {
+				afc_checked_for_camera = 1;
+				break;
+			}
+
+			pr_err("%s:%d ERROR: AFC disable unsuccessfull retrying after 30ms\n", __func__, __LINE__);
+			msleep(30);
+		}
+
+		if (retry == 3) {
+			pr_err("%s:%d ERROR: AFC disable failed\n", __func__, __LINE__);
+		}
+	}
+#endif
 	if (s_ctrl->is_secure) {
 		rc = msm_camera_tz_i2c_power_up(sensor_i2c_client);
 		if (rc < 0) {
 			pr_err("[%s:%d] power_up failed (retry %d) \n", __func__, __LINE__, retry);
-			return rc;
+			goto EXIT;
 		} else {
 			/* session is secure */
 			s_ctrl->sensor_i2c_client->i2c_func_tbl =
@@ -236,9 +275,16 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 		pr_err("[%s:%d] power_up failed (retry %d) \n", __func__, __LINE__, retry);
 		if (s_ctrl->is_secure)
 			msm_camera_tz_i2c_power_down(sensor_i2c_client);
-		return rc;
+		goto EXIT;
 	}
 
+EXIT:
+#ifdef CONFIG_MUIC_UNIVERSAL_SM5705_AFC
+        if(rc < 0 && !camera_id) {
+		muic_check_afc_state(0);
+		afc_checked_for_camera = 0;
+	}
+#endif
 	return rc;
 }
 

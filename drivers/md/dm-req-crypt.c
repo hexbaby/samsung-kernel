@@ -88,18 +88,17 @@ struct req_crypt_result {
 	TZ_SYSCALL_CREATE_SMC_ID(TZ_OWNER_SIP, TZ_SVC_ES, TZ_ES_SET_ICE_KEY)
 
 #define TZ_ES_INVALIDATE_ICE_KEY_ID \
-		TZ_SYSCALL_CREATE_SMC_ID(TZ_OWNER_SIP, \
-			TZ_SVC_ES, TZ_ES_INVALIDATE_ICE_KEY)
+	TZ_SYSCALL_CREATE_SMC_ID(TZ_OWNER_SIP, \
+		TZ_SVC_ES, TZ_ES_INVALIDATE_ICE_KEY)
 
 #define TZ_ES_SET_ICE_KEY_PARAM_ID \
-	TZ_SYSCALL_CREATE_PARAM_ID_5( \
-		TZ_SYSCALL_PARAM_TYPE_VAL, \
-		TZ_SYSCALL_PARAM_TYPE_BUF_RW, TZ_SYSCALL_PARAM_TYPE_VAL, \
-		TZ_SYSCALL_PARAM_TYPE_BUF_RW, TZ_SYSCALL_PARAM_TYPE_VAL)
+	TZ_SYSCALL_CREATE_PARAM_ID_6( \
+		TZ_SYSCALL_PARAM_TYPE_VAL, TZ_SYSCALL_PARAM_TYPE_BUF_RW, TZ_SYSCALL_PARAM_TYPE_VAL, \
+		TZ_SYSCALL_PARAM_TYPE_BUF_RW, TZ_SYSCALL_PARAM_TYPE_VAL, TZ_SYSCALL_PARAM_TYPE_VAL)
 
 #define TZ_ES_INVALIDATE_ICE_KEY_PARAM_ID \
-	TZ_SYSCALL_CREATE_PARAM_ID_1( \
-	TZ_SYSCALL_PARAM_TYPE_VAL)
+	TZ_SYSCALL_CREATE_PARAM_ID_2( \
+		TZ_SYSCALL_PARAM_TYPE_VAL, TZ_SYSCALL_PARAM_TYPE_VAL)
 
 #define ICE_KEY_SIZE 32
 #define ICE_SALT_SIZE 32
@@ -107,7 +106,7 @@ struct req_crypt_result {
 #define ICE_DM_CRYPT_KEY_IDEX 2
 
 uint8_t reset_ice_key[ICE_KEY_SIZE];
-uint8_t reset_ice_salt[ICE_KEY_SIZE];
+uint8_t reset_ice_salt[ICE_SALT_SIZE];
 #endif
 
 static struct dm_dev *dev;
@@ -173,6 +172,29 @@ static void req_crypt_split_io_complete
 		(struct req_crypt_result *res, int err);
 
 #ifdef CONFIG_CRYPTO_FDE_KEY_UPDATE
+static int req_crypt_decode_key(uint8_t *key, uint8_t *hex, unsigned int size)
+{
+	char buffer[3];
+	unsigned int i;
+
+	buffer[2] = '\0';
+
+	for (i = 0; i < size; i++) {
+		buffer[0] = *hex++;
+		buffer[1] = *hex++;
+
+		if (kstrtou8(buffer, 16, &key[i]))
+			return -EINVAL;
+	}
+
+	if (*hex != '\0') {
+		DMERR("%s: Error\n", __func__);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int req_crypt_ice_set_key(uint32_t index, uint8_t *key, uint8_t *salt)
 {
 	struct scm_desc desc = {0};
@@ -196,8 +218,14 @@ static int req_crypt_ice_set_key(uint32_t index, uint8_t *key, uint8_t *salt)
 	memset(tzbuf_key, 0, tzbuflen_key);
 	memset(tzbuf_salt, 0, tzbuflen_salt);
 
-	memcpy(reset_ice_key, key, tzbuflen_key);
-	memcpy(reset_ice_salt, salt, tzbuflen_salt);
+	if (req_crypt_decode_key((uint8_t*)reset_ice_key, key, ICE_KEY_SIZE) < 0) {
+		DMERR("%s: Error: reset_ice_key\n", __func__);
+		return -EINVAL;
+	}
+	if (req_crypt_decode_key((uint8_t*)reset_ice_salt, salt, ICE_SALT_SIZE) < 0) {
+		DMERR("%s: Error: reset_ice_salt\n", __func__);
+		return -EINVAL;
+	}
 
 	dmac_flush_range(tzbuf_key, tzbuf_key + tzbuflen_key);
 	dmac_flush_range(tzbuf_salt, tzbuf_salt + tzbuflen_salt);
@@ -211,6 +239,11 @@ static int req_crypt_ice_set_key(uint32_t index, uint8_t *key, uint8_t *salt)
 	desc.args[2] = tzbuflen_key;
 	desc.args[3] = virt_to_phys(tzbuf_salt);
 	desc.args[4] = tzbuflen_salt;
+#ifdef CONFIG_SCSI_UFSHCD
+	desc.args[5] = 10;
+#else
+	desc.args[5] = 20;
+#endif
 
 	ret = scm_call2(smc_id, &desc);
 	DMDEBUG("%s , ret = %d\n", __func__, ret);
@@ -1362,7 +1395,11 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			err = -ENOMEM;
 			goto ctr_exit;
 		}
+#ifdef CONFIG_AES_256_ICE
+		ice_settings->key_size = ICE_CRYPTO_KEY_SIZE_256;
+#else
 		ice_settings->key_size = ICE_CRYPTO_KEY_SIZE_128;
+#endif
 		ice_settings->algo_mode = ICE_CRYPTO_ALGO_MODE_AES_XTS;
 		ice_settings->key_mode = ICE_CRYPTO_USE_LUT_SW_KEY;
 
@@ -1370,21 +1407,32 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		if (argc >= 8 && argv[7] && !strcmp(argv[7], "update_key")) {
 			ice_settings->key_index = ICE_DM_CRYPT_KEY_IDEX;
 
-			if (qcom_ice_setup_ice_hw("ufs", true)) {
+#ifdef CONFIG_SCSI_UFSHCD
+			if (qcom_ice_setup_ice_hw("ufs", true))
+#else
+			if (qcom_ice_setup_ice_hw("sdcc", true))
+#endif
+			{
 				DMERR("%s: could not enable clocks\n", __func__);
 				err = DM_REQ_CRYPT_ERROR;
 				goto ctr_exit;
 			}
 
 			if (!req_crypt_ice_set_key(ice_settings->key_index, (uint8_t*)argv[1], (uint8_t*)argv[8])) {
-				DMINFO("%s: New ICE key set sucess!\n", __func__);
+				DMINFO("%s: New ICE key set success!\n", __func__);
 			} else {
 				DMERR("%s Err: New ICE key set fail\n", __func__);
 				err = DM_REQ_CRYPT_ERROR;
 				goto ctr_exit;
 			}
 
+#ifdef CONFIG_SCSI_UFSHCD
+			DMINFO("%s: This is UFS!\n", __func__);
 			qcom_ice_setup_ice_hw("ufs", false);
+#else
+			DMINFO("%s: This is eMMC!\n", __func__);
+			qcom_ice_setup_ice_hw("sdcc", false);
+#endif
 		} else
 #endif
 		if (kstrtou16(argv[1], 0, &ice_settings->key_index) ||
@@ -1395,6 +1443,7 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			err = DM_REQ_CRYPT_ERROR;
 			goto ctr_exit;
 		}
+
 #ifdef CONFIG_CRYPTO_FDE_KEY_UPDATE
 		DMINFO("%s: Apply ICE key index : %d\n", __func__, ice_settings->key_index);
 #endif
@@ -1425,6 +1474,10 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	DMINFO("%s: Mapping block_device %s to dm-req-crypt ok!\n",
 	       __func__, argv[3]);
 ctr_exit:
+#ifdef CONFIG_CRYPTO_FDE_KEY_UPDATE
+	memset(reset_ice_key, 0, ICE_KEY_SIZE);
+	memset(reset_ice_salt, 0, ICE_SALT_SIZE);
+#endif
 	if (err)
 		req_crypt_dtr(ti);
 

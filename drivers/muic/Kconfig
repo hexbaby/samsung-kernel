@@ -140,6 +140,13 @@ config MUIC_SUPPORT_EARJACK
 	help
 	 If you say yes here you will get support for the mUSB Earjack.
 
+config MUIC_SUPPORT_KEYBOARDDOCK
+	bool "MUIC supports KEYBOARDDOCK"
+	depends on MUIC_UNIVERSAL
+	default n
+	help
+	 If you say yes here you will get support for the pogo KEYBOARD.
+
 config MUIC_HV_FORCE_LIMIT
         bool "Force limit AFC QC MAX CHG VOLTAGE"
         depends on MUIC_UNIVERSAL_MAX77854

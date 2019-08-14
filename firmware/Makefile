@@ -204,13 +204,13 @@ ifdef CONFIG_SEC_GTS3LLTE_PROJECT
 fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX2)	+= tsp_synaptics/s5807_gts3llte.fw
 fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte.fw
 fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte_r04.fw
-fw-shipped-$(CONFIG_EPEN_WACOM_W9019)			+= epen/w9019_gts3llte.fw
+fw-shipped-$(CONFIG_EPEN_WACOM_W9019)			+= epen/w9019_gts3l.fw
 endif
 ifdef CONFIG_SEC_GTS3LWIFI_PROJECT
 fw-shipped-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_DSX2)	+= tsp_synaptics/s5807_gts3llte.fw
 fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte.fw
 fw-shipped-$(CONFIG_KEYBOARD_TC3XXK)			+= coreriver/tc305k_gts3llte_r04.fw
-fw-shipped-$(CONFIG_EPEN_WACOM_W9019)			+= epen/w9019_gts3llte.fw
+fw-shipped-$(CONFIG_EPEN_WACOM_W9019)			+= epen/w9019_gts3l.fw
 endif
 
 

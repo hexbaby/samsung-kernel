@@ -789,7 +789,11 @@ Jack::JackDriverClientInterface* JackDriverInfo::Open(jack_driver_desc_t* driver
 
 JackDriverInfo::~JackDriverInfo()
 {
-    delete fBackend;
+    if(fBackend){
+        delete fBackend;
+        fBackend = NULL;
+    }
+
     if (fHandle) {
         UnloadDriverModule(fHandle);
     }

@@ -65,7 +65,7 @@ static const struct reg_config general_config[] = {
 	{ 0x91, 0x55},
 	{ 0x92, 0x55},
 	{ 0x93, 0x55},
-	{ 0x95, 0x00},
+	{ 0x95, 0x40},
 	{ 0x96, 0x00},
 	{ 0x98, 0x00},
 	{ 0x99, 0x0c},
@@ -93,33 +93,33 @@ static const struct reg_config general_config[] = {
 
 static const struct reg_config revg_general_config[] = {
 	{ 0x1e, 0x0b},
-	{ 0x18, 0x39},
+	{ 0x18, 0x0a},
 	{ 0x1c, 0x7f},
 	{ 0x1d, 0x80},
-	{ 0x25, 0x04},
+	{ 0x25, 0x10},
 	{ 0x28, 0x20},
 	{ 0x50, 0x0c},
-	{ 0x5b, 0x01},
-	{ 0x81, 0x9a},
+	{ 0x5b, 0x00},
+	{ 0x81, 0x9d},
 	{ 0x86, 0x18},
-	{ 0x87, 0x14},
+	{ 0x87, 0x02},
 	{ 0x92, 0x5d},
 	{ 0x93, 0x56},
 	{ 0x99, 0x00},
 	{ 0x9a, 0xdc},
 	{ 0xa0, 0x28},
 	{ 0xb4, 0x01},
-	{ 0xb5, 0x64},
-	{ 0x82, 0xc2},
+	{ 0xb5, 0x24},
+	{ 0x82, 0xc3},
 	{ 0x83, 0x45},
 	{ 0xb3, 0x02},
 	{ 0x94, 0x15},
 	{ 0x14, 0x6c00},
 	{ 0x16, 0x48},
-	{ 0x17, 0x15},
+	{ 0x17, 0x10},
 	{ 0x19, 0x01b0},
 	{ 0x1a, 0x00},
-	{ 0x1f, 0xca},
+	{ 0x1f, 0xba},
 	{ 0x20, 0x97},
 	{ 0x21, 0x64},
 	{ 0x22, 0x05},
@@ -299,31 +299,32 @@ static int rt5508_set_bias_level(struct snd_soc_codec *codec,
 		dapm->bias_level = level;
 		break;
 	case SND_SOC_BIAS_STANDBY:
+		if (dapm->bias_level != SND_SOC_BIAS_OFF) {
+			dapm->bias_level = level;
+			break;
+		}
 		ret = rt5508_power_on(chip, true);
 		if (ret < 0)
 			return ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
-			0x03, chip->mode_store);
+		ret = snd_soc_write(codec, RT5508_REG_BST_MODE,
+			chip->mode_store);
 		if (ret < 0)
 			return ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKCONF4,
-			0x80, 0x80);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKCONF4, 0xdd);
 		if (ret < 0)
 			return ret;
 		dapm->bias_level = level;
 		ret = 0;
 		break;
 	case SND_SOC_BIAS_OFF:
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKCONF4,
-			0x80, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKCONF4, 0x5d);
 		if (ret < 0)
 			return ret;
 		ret = snd_soc_read(codec, RT5508_REG_BST_MODE);
 		if (ret < 0)
 			return ret;
 		chip->mode_store = ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
-			0x03, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_BST_MODE, 0x08);
 		if (ret < 0)
 			return ret;
 		ret = rt5508_power_on(chip, false);
@@ -372,16 +373,6 @@ static int rt5508_init_general_setting(struct snd_soc_codec *codec)
 	int i, ret = 0;
 
 	dev_dbg(codec->dev, "%s\n", __func__);
-	ret = snd_soc_update_bits(codec, RT5508_REG_I2SSEL, 0x0c,
-				  chip->pdata->chan_sel << 2);
-	if (ret < 0)
-		return ret;
-	if (chip->pdata->do_enable) {
-		ret = snd_soc_update_bits(codec, RT5508_REG_I2SDOSEL,
-					  0x01, 0x01);
-		if (ret < 0)
-			return ret;
-	}
 	for (i = 0; i < ARRAY_SIZE(general_config); i++) {
 		ret = snd_soc_write(codec, general_config[i].reg_addr,
 			general_config[i].reg_data);
@@ -418,6 +409,30 @@ under_revc:
 			return ret;
 	}
 out_init_general:
+	ret = snd_soc_update_bits(codec, RT5508_REG_I2SSEL, 0x0c,
+				  chip->pdata->chan_sel << 2);
+	if (ret < 0)
+		return ret;
+	if (chip->pdata->do_enable) {
+		ret = snd_soc_update_bits(codec, RT5508_REG_I2SDOSEL,
+					  0x01, 0x01);
+		if (ret < 0)
+			return ret;
+	}
+	ret = snd_soc_update_bits(codec, RT5508_REG_TDM_CTRL, 0x02,
+				  chip->pdata->tdm_dac_slot << 1);
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_update_bits(codec, RT5508_REG_TDM_CTRL, 0x04,
+				  chip->pdata->tdm_adc_slot << 2);
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_update_bits(codec, RT5508_REG_TDM_CTRL,
+				  RT5508_TDM_ENMASK,
+				  chip->pdata->tdm_mode ? 0xff : 0);
+	if (ret < 0)
+		return ret;
+	chip->tdm_mode = chip->pdata->tdm_mode;
 	return 0;
 }
 
@@ -485,6 +500,71 @@ tcsense_calc:
 	tc_sense &= 0xffff;
 	dev_dbg(codec->dev, "tc_sense %04x\n", tc_sense);
 	return  snd_soc_write(codec, RT5508_REG_TCOEFF, tc_sense);
+}
+
+static int rt5508_check_vbat_sense(struct snd_soc_codec *codec)
+{
+	uint32_t vbat_data, vbat_gain;
+	int ret = 0;
+
+	dev_dbg(codec->dev, "%s\n", __func__);
+	ret = snd_soc_write(codec, RT5508_REG_DSPKCONF5, 0x55);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_DSPKEN1, 0xc3);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_DSPKVMID, 0x98);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_CLKEN1, 0xff);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_AMPCONF, 0xb8);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_DSPKCONF4, 0xdd);
+	if (ret < 0)
+		goto out_check_vbat;
+	mdelay(15);
+	ret = snd_soc_read(codec, RT5508_REG_VBATDATA);
+	if (ret < 0)
+		goto out_check_vbat;
+	vbat_data = ret;
+	ret = snd_soc_read(codec, RT5508_REG_VBATGAIN);
+	if (ret < 0)
+		goto out_check_vbat;
+	vbat_gain = ret;
+	vbat_data *= vbat_gain;
+	/* check if vbat is larger then 4.7V or not */
+	dev_info(codec->dev, "vbat 0x%08x\n", vbat_data);
+	if (vbat_data > 0x4B3333) {
+		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
+				0x03, 0x01);
+		if (ret < 0)
+			goto out_check_vbat;
+	}
+	ret = snd_soc_write(codec, RT5508_REG_DSPKCONF4, 0x5d);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_AMPCONF, 0x00);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_CLKEN1, 0x00);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_DSPKVMID, 0x18);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_DSPKEN1, 0x03);
+	if (ret < 0)
+		goto out_check_vbat;
+	ret = snd_soc_write(codec, RT5508_REG_DSPKCONF5, 0x15);
+	if (ret < 0)
+		goto out_check_vbat;
+	return 0;
+out_check_vbat:
+	return ret;
 }
 
 static int rt5508_do_otp_recheck(struct snd_soc_codec *codec)
@@ -634,6 +714,11 @@ static ssize_t rt5508_proprietary_store(struct device *dev,
 					const char *buf, size_t cnt)
 {
 	struct rt5508_chip *chip = dev_get_drvdata(dev);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0))
+	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(chip->codec);
+#else
+	struct snd_soc_dapm_context *dapm = &(chip->codec->dapm);
+#endif
 	struct rt5508_proprietary_param *param = NULL;
 	int i = 0, size = 0;
 	const u8 *bin_offset;
@@ -691,10 +776,12 @@ static ssize_t rt5508_proprietary_store(struct device *dev,
 		bin_offset += param->cfg_size[i];
 	}
 	chip->pdata->p_param = param;
-	if (rt5508_set_bias_level(chip->codec, SND_SOC_BIAS_STANDBY) < 0)
+	if (dapm->bias_level != SND_SOC_BIAS_OFF)
+		goto out_param_write;
+	if (rt5508_power_on(chip, true) < 0)
 		goto out_param_write;
 	rt5508_init_proprietary_setting(chip->codec);
-	if (rt5508_set_bias_level(chip->codec, SND_SOC_BIAS_OFF) < 0)
+	if (rt5508_power_on(chip, false) < 0)
 		goto out_param_write;
 	return cnt;
 out_param_write:
@@ -792,6 +879,11 @@ static int rt5508_codec_probe(struct snd_soc_codec *codec)
 		dev_err(codec->dev, "do tcsense fix fail\n");
 		goto err_out_probe;
 	}
+	ret = rt5508_check_vbat_sense(codec);
+	if (ret < 0) {
+		dev_err(codec->dev, "check vbat sense\n");
+		goto err_out_probe;
+	}
 	ret = rt5508_param_create(chip);
 	if (ret < 0)
 		goto err_out_probe;
@@ -844,23 +936,18 @@ static int rt5508_clk_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		ret = snd_soc_update_bits(codec, RT5508_REG_CLKEN1,
-			RT5508_CLKEN1_MASK, 0xbf);
+		ret = snd_soc_write(codec, RT5508_REG_CLKEN1, 0xbf);
 		if (ret < 0)
 			goto out_clk_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_CLKEN2,
-			RT5508_CLKEN2_MASK, RT5508_CLKEN2_MASK);
+		ret = snd_soc_write(codec, RT5508_REG_CLKEN2, 0x03);
 		if (ret < 0)
 			goto out_clk_event;
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		msleep(20);
-		ret = snd_soc_update_bits(codec, RT5508_REG_CLKEN2,
-			RT5508_CLKEN2_MASK, ~RT5508_CLKEN2_MASK);
+		ret = snd_soc_write(codec, RT5508_REG_CLKEN2, 0x00);
 		if (ret < 0)
 			goto out_clk_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_CLKEN1,
-			RT5508_CLKEN1_MASK, ~RT5508_CLKEN1_MASK);
+		ret = snd_soc_write(codec, RT5508_REG_CLKEN1, 0x00);
 		if (ret < 0)
 			goto out_clk_event;
 		break;
@@ -888,135 +975,101 @@ static int rt5508_boost_event(struct snd_soc_dapm_widget *w,
 		if (ret < 0)
 			goto out_boost_event;
 		chip->mode_store = ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
-			0x03, 0x01);
+		ret = snd_soc_write(codec, RT5508_REG_BST_MODE, 0x09);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKCONF5,
-			RT5508_VBG_ENMASK, RT5508_VBG_ENMASK);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKCONF5, 0x55);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKVMID,
-			RT5508_VMID_ENMASK, RT5508_VMID_ENMASK);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKVMID, 0x98);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKEN1,
-				RT5508_BUF_ENMASK | RT5508_BIAS_ENMASK,
-				RT5508_BUF_ENMASK | RT5508_BIAS_ENMASK);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKEN1, 0xc3);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec,
-			RT5508_REG_AMPCONF, 0xF8, 0xB8);
+		ret = snd_soc_write(codec, RT5508_REG_AMPCONF, 0xb8);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_CONF1,
-			0x80, 0x80);
+		ret = snd_soc_write(codec, RT5508_REG_BST_CONF1, 0x85);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_OCPOTPEN,
-			0x03, 0x03);
+		ret = snd_soc_write(codec, RT5508_REG_OCPOTPEN, 0x03);
 		if (ret < 0)
 			goto out_boost_event;
 		if (chip->chip_rev > RT5508_CHIP_REVF) {
-			ret = snd_soc_update_bits(codec, RT5508_REG_OVPUVPCTRL,
-				0xe0, 0xe0);
+			ret = snd_soc_write(codec, RT5508_REG_OVPUVPCTRL,
+				0xe0);
 		} else {
-			ret = snd_soc_update_bits(codec, RT5508_REG_OVPUVPCTRL,
-				0xc0, 0xc0);
+			ret = snd_soc_write(codec, RT5508_REG_OVPUVPCTRL,
+				0xc0);
 		}
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_CHIPEN,
-			RT5508_TRIWAVE_ENMASK, RT5508_TRIWAVE_ENMASK);
+		ret = snd_soc_write(codec, RT5508_REG_CHIPEN, 0x20);
 		if (ret < 0)
 			goto out_boost_event;
 		dev_info(chip->dev, "amp turn on\n");
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		msleep(10);
-		ret = snd_soc_update_bits(codec, RT5508_REG_CLKEN1, 0x40, 0x40);
+		mdelay(5);
+		ret = snd_soc_write(codec, RT5508_REG_CLKEN1, 0xff);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
-			0x03, chip->mode_store);
+		ret = snd_soc_write(codec, RT5508_REG_BST_MODE,
+			chip->mode_store);
+		if (ret < 0)
+			goto out_boost_event;
+		ret = snd_soc_write(codec, RT5508_REG_ECO_CTRL, 0x64);
 		if (ret < 0)
 			goto out_boost_event;
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_CONF1,
-			0x80, 0x80);
+		ret = snd_soc_write(codec, RT5508_REG_ECO_CTRL, 0x24);
+		if (ret < 0)
+			goto out_boost_event;
+		ret = snd_soc_write(codec, RT5508_REG_BST_CONF1, 0xb5);
 		if (ret < 0)
 			goto out_boost_event;
 		ret = snd_soc_read(codec, RT5508_REG_BST_MODE);
 		if (ret < 0)
 			goto out_boost_event;
 		chip->mode_store = ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
-			0x03, 0x01);
+		ret = snd_soc_write(codec, RT5508_REG_BST_MODE, 0x09);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_CLKEN1, 0x40, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_CLKEN1, 0xbf);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_OVPUVPCTRL,
-			0xe0, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_OVPUVPCTRL, 0x00);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_OCPOTPEN,
-			0x03, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_OCPOTPEN, 0x00);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_read(codec, RT5508_REG_CHIPEN);
-		if (ret < 0)
-			goto out_boost_event;
-		if (ret & RT5508_SPKPROT_ENMASK) {
-			ret = snd_soc_update_bits(codec, RT5508_REG_CHIPEN,
-				RT5508_SPKPROT_ENMASK, ~RT5508_SPKPROT_ENMASK);
-			if (ret < 0)
-				goto out_boost_event;
-			ret = snd_soc_update_bits(codec, RT5508_REG_CHIPEN,
-				RT5508_SPKPROT_ENMASK, RT5508_SPKPROT_ENMASK);
-			if (ret < 0)
-				goto out_boost_event;
-		}
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		dev_info(chip->dev, "amp turn off\n");
-		msleep(50);
-		ret = snd_soc_update_bits(codec, RT5508_REG_PILOTEN, 0x80, 0);
-		if (ret < 0)
-			return ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_PILOTEN,
-					  0x80, 0x80);
-		if (ret < 0)
-			return ret;
-		ret = snd_soc_update_bits(codec, RT5508_REG_CHIPEN,
-			RT5508_TRIWAVE_ENMASK, ~RT5508_TRIWAVE_ENMASK);
+		mdelay(5);
+		ret = snd_soc_write(codec, RT5508_REG_CHIPEN, 0x00);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec,
-			RT5508_REG_AMPCONF, 0xF8, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_AMPCONF, 0x00);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKEN1,
-			RT5508_BUF_ENMASK | RT5508_BIAS_ENMASK,
-			~(RT5508_BUF_ENMASK | RT5508_BIAS_ENMASK));
+		ret = snd_soc_write(codec, RT5508_REG_DSPKEN1, 0x03);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKVMID,
-			RT5508_VMID_ENMASK, ~RT5508_VMID_ENMASK);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKVMID, 0x18);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_DSPKCONF5,
-			RT5508_VBG_ENMASK, ~RT5508_VBG_ENMASK);
+		ret = snd_soc_write(codec, RT5508_REG_DSPKCONF5, 0x15);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_CONF1,
-			0x80, 0x00);
+		ret = snd_soc_write(codec, RT5508_REG_BST_CONF1, 0x05);
 		if (ret < 0)
 			goto out_boost_event;
-		ret = snd_soc_update_bits(codec, RT5508_REG_BST_MODE,
-			0x03, chip->mode_store);
+		ret = snd_soc_write(codec, RT5508_REG_BST_MODE,
+			chip->mode_store);
 		if (ret < 0)
 			goto out_boost_event;
 		break;
@@ -1030,11 +1083,16 @@ out_boost_event:
 static const char * const rt5508_i2smux_text[] = { "I2S1", "I2S2"};
 static const char * const rt5508_i2sdomux_text[] = { "I2SDOR/L", "DATAI3"};
 static SOC_ENUM_SINGLE_DECL(rt5508_i2s_muxsel,
-	RT5508_REG_I2SSEL, RT5508_I2SSEL_SHFT, rt5508_i2smux_text);
+	SND_SOC_NOPM, 0, rt5508_i2smux_text);
 static SOC_ENUM_SINGLE_DECL(rt5508_i2s_dosel,
 	RT5508_REG_I2SDOSEL, 1, rt5508_i2sdomux_text);
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 15, 0))
 static const struct snd_kcontrol_new rt5508_i2smux_ctrl =
 	SOC_DAPM_ENUM("Switch", rt5508_i2s_muxsel);
+#else
+static const struct snd_kcontrol_new rt5508_i2smux_ctrl =
+	SOC_DAPM_ENUM_VIRT("Switch", rt5508_i2s_muxsel);
+#endif /* #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 15, 0)) */
 static const struct snd_kcontrol_new rt5508_i2sdo_ctrl =
 	SOC_DAPM_ENUM("Switch", rt5508_i2s_dosel);
 static const struct snd_soc_dapm_widget rt5508_dapm_widgets[] = {
@@ -1190,6 +1248,10 @@ static int rt5508_rlrfunc_put(struct snd_kcontrol *kcontrol,
 		ret = snd_soc_write(codec, RT5508_REG_NDELAY, ret + 0x128f5c);
 		if (ret < 0)
 			return ret;
+		ret = snd_soc_read(codec, RT5508_REG_ALCGAIN);
+		if (ret < 0)
+			return ret;
+		chip->alc_gain = (u8)ret;
 		ret = snd_soc_write(codec, RT5508_REG_ALCGAIN, 0x00);
 		if (ret < 0)
 			return ret;
@@ -1203,7 +1265,7 @@ static int rt5508_rlrfunc_put(struct snd_kcontrol *kcontrol,
 		ret = snd_soc_write(codec, RT5508_REG_NDELAY, ret - 0x128f5c);
 		if (ret < 0)
 			return ret;
-		ret = snd_soc_write(codec, RT5508_REG_ALCGAIN, 0x70);
+		ret = snd_soc_write(codec, RT5508_REG_ALCGAIN, chip->alc_gain);
 		if (ret < 0)
 			return ret;
 	}
@@ -1537,27 +1599,6 @@ static const struct snd_soc_codec_driver rt5508_codec_drv = {
 	.write = rt5508_io_write,
 };
 
-static int rt5508_aif_digital_mute(struct snd_soc_dai *dai, int mute)
-{
-	struct rt5508_chip *chip = snd_soc_codec_get_drvdata(dai->codec);
-	bool action = 1;
-	int ret = 0;
-
-	dev_info(dai->dev, "%s: mute %d\n", __func__, mute);
-	if (chip->playback_active != dai->playback_active) {
-		chip->playback_active = dai->playback_active;
-		action = 1;
-	}
-	if ((mute && dai->playback_active) && action)
-		action = 0;
-	if (action) {
-		ret =  snd_soc_update_bits(dai->codec, RT5508_REG_CHIPEN,
-			RT5508_SPKMUTE_ENMASK,
-			mute ? RT5508_SPKMUTE_ENMASK : ~RT5508_SPKMUTE_ENMASK);
-	}
-	return ret;
-}
-
 static int rt5508_aif_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	u8 regval = 0;
@@ -1686,8 +1727,7 @@ static int rt5508_aif_hw_params(struct snd_pcm_substream *substream,
 	}
 	if (chip->tdm_mode)
 		pll_divider >>= 1;
-	ret = snd_soc_update_bits(dai->codec, RT5508_REG_AUDSR,
-			RT5508_BCKMODE_MASK | RT5508_SRMODE_MASK, regval[0]);
+	ret = snd_soc_write(dai->codec, RT5508_REG_AUDSR, regval[0]);
 	if (ret < 0) {
 		dev_err(dai->dev, "configure bck and sr fail\n");
 		goto out_hw_params;
@@ -1750,7 +1790,6 @@ static int rt5508_aif_set_tdm_slot(struct snd_soc_dai *dai,
 static const struct snd_soc_dai_ops rt5508_dai_ops = {
 	.set_fmt = rt5508_aif_set_fmt,
 	.hw_params = rt5508_aif_hw_params,
-	.digital_mute = rt5508_aif_digital_mute,
 	.startup = rt5508_aif_startup,
 	.shutdown = rt5508_aif_shutdown,
 	.trigger = rt5508_aif_trigger,
@@ -1815,11 +1854,6 @@ static int rt5508_i2c_initreg(struct rt5508_chip *chip)
 {
 	int ret = 0;
 
-	/* mute first, before codec_probe register init */
-	ret = rt5508_set_bits(chip->i2c,
-		RT5508_REG_CHIPEN, RT5508_SPKMUTE_ENMASK);
-	if (ret < 0)
-		goto out_init_reg;
 	/* disable TriWave */
 	ret = rt5508_clr_bits(chip->i2c, RT5508_REG_CHIPEN,
 		RT5508_TRIWAVE_ENMASK);
@@ -1896,6 +1930,18 @@ static inline int rt5508_parse_dt(struct device *dev,
 	}
 	if (of_property_read_bool(dev->of_node, "rt,do_enable"))
 		pdata->do_enable = true;
+	if (of_property_read_u32(dev->of_node,
+				 "rt,tdm_dac_slot", &pdata->tdm_dac_slot) < 0) {
+		/* if no default tdm_dac_slot, select to slot 0 */
+		pdata->tdm_dac_slot = 0;
+	}
+	if (of_property_read_u32(dev->of_node,
+				 "rt,tdm_adc_slot", &pdata->tdm_adc_slot) < 0) {
+		/* if no default tdm_dac_slot, select to slot 0 */
+		pdata->tdm_adc_slot = 0;
+	}
+	if (of_property_read_bool(dev->of_node, "rt,tdm_mode"))
+		pdata->tdm_mode = true;
 	param_np = of_find_node_by_name(dev->of_node, "proprietary_param");
 	if (!param_np)
 		goto OUT_PARSE_DT;

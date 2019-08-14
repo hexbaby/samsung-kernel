@@ -306,7 +306,7 @@ static ssize_t max_latency_store(struct device *dev,
 	}
 
 	/* Disable batching for this sensor */
-	if (latency < sensors_cdev->delay_msec) {
+	if ((latency < sensors_cdev->delay_msec) && (latency != 0)) {
 		dev_err(dev, "max_latency is less than delay_msec\n");
 		return -EINVAL;
 	}
@@ -660,13 +660,13 @@ int sensors_input_init(void)
 	if (ret < 0) {
 		pr_err("[SENSOR CORE] failed register meta dev\n");
 		input_free_device(meta_input_dev);
+		return ret;
 	}
 
 	ret = sensors_create_symlink(meta_input_dev);
 	if (ret < 0) {
 		pr_err("[SENSOR CORE] failed create meta symlink\n");
 		input_unregister_device(meta_input_dev);
-		input_free_device(meta_input_dev);
 	}
 
 	return ret;

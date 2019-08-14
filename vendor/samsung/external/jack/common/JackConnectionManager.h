@@ -420,7 +420,7 @@ class SERVER_EXPORT JackConnectionManager
         JackActivationCount fInputCounter[CLIENT_NUM];					/*! Activation counter per refnum */
         JackLoopFeedback<CONNECTION_NUM_FOR_PORT> fLoopFeedback;		/*! Loop feedback connections */
 
-        bool IsLoopPathAux(int ref1, int ref2) const;
+        bool IsLoopPathAux(int ref1, int ref2, JackFixedArray<CLIENT_NUM> & visit) const;
 
     public:
 

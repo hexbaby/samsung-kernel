@@ -79,8 +79,8 @@ parse_one(struct action_util *a, int *argc_p, char ***argv_p, int tca_id, struct
 
 		if (matches(*argv, "action") == 0) {
 			break;
-               } else if (matches(*argv, "egress") == 0
-                           || matches(*argv, "ingress") == 0) {
+        } else if (matches(*argv, "egress") == 0
+                   || matches(*argv, "ingress") == 0) {
 			NEXT_ARG();
 			ok++;
 			continue;
@@ -99,10 +99,10 @@ parse_one(struct action_util *a, int *argc_p, char ***argv_p, int tca_id, struct
 					break;
 				}
 			} else if(!ok) {
-                                if (egress)
-                                      fprintf(stderr, "was expecting egress (%s)\n", *argv);
-                                else
-                                      fprintf(stderr, "was expecting ingress (%s)\n", *argv);
+                if (egress)
+                    fprintf(stderr, "was expecting egress (%s)\n", *argv);
+                else
+                    fprintf(stderr, "was expecting ingress (%s)\n", *argv);
 				break;
 			} else if (!mirror && matches(*argv, "mirror") == 0) {
 				mirror=1;
@@ -240,12 +240,12 @@ parse_mirred(struct action_util *a, int *argc_p, char ***argv_p,
 		}
 
 	} else if (matches(*argv, "ingress") == 0) {
-               int ret = parse_one(a, &argc, &argv, tca_id, n, 0);
-               if (ret == 0) {
-                       *argc_p = argc;
-                       *argv_p = argv;
-                       return 0;
-               }
+        int ret = parse_one(a, &argc, &argv, tca_id, n, 0);
+        if (ret == 0) {
+            *argc_p = argc;
+            *argv_p = argv;
+            return 0;
+        }
 	} else if (matches(*argv, "help") == 0) {
 		usage();
 	} else {

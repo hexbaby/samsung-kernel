@@ -9,9 +9,9 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  You should have received a copy of the GNU Lesser General Public
+ *  License along with this library; if not, write to the Free Software  
+ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  *  Support for the verb/device/modifier core logic and API,
  *  command line tool and file parser was kindly sponsored by
@@ -37,6 +37,7 @@
 #endif
 
 #include "local.h"
+#include <pthread.h>
 #include "use-case.h"
 
 #define MAX_FILE		256
@@ -46,6 +47,9 @@
 #define SEQUENCE_ELEMENT_TYPE_CSET	2
 #define SEQUENCE_ELEMENT_TYPE_SLEEP	3
 #define SEQUENCE_ELEMENT_TYPE_EXEC	4
+#define SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE	5
+#define SEQUENCE_ELEMENT_TYPE_CSET_TLV	6
+#define SEQUENCE_ELEMENT_TYPE_CMPT_SEQ	7
 
 struct ucm_value {
         struct list_head list;
@@ -53,14 +57,21 @@ struct ucm_value {
         char *data;
 };
 
+/* sequence of a component device */
+struct component_sequence {
+	struct use_case_device *device; /* component device */
+	int enable; /* flag to choose enable or disable list of the device */
+};
+
 struct sequence_element {
 	struct list_head list;
 	unsigned int type;
 	union {
-		long sleep; /* Sleep time in msecs if sleep element, else 0 */
+		long sleep; /* Sleep time in microseconds if sleep element, else 0 */
 		char *cdev;
 		char *cset;
 		char *exec;
+		struct component_sequence cmpt_seq; /* component sequence */
 	} data;
 };
 
@@ -76,11 +87,21 @@ struct transition_sequence {
 /*
  * Modifier Supported Devices.
  */
-struct dev_list {
+enum dev_list_type {
+	DEVLIST_NONE,
+	DEVLIST_SUPPORTED,
+	DEVLIST_CONFLICTING
+};
+
+struct dev_list_node {
 	struct list_head list;
 	char *name;
 };
 
+struct dev_list {
+	enum dev_list_type type;
+	struct list_head list;
+};
 
 /*
  * Describes a Use Case Modifier and it's enable and disable sequences.
@@ -100,8 +121,8 @@ struct use_case_modifier {
 	/* modifier transition list */
 	struct list_head transition_list;
 
-	/* list of supported devices per modifier */
-	struct list_head dev_list;
+	/* list of devices supported or conflicting */
+	struct dev_list dev_list;
 
 	/* values */
 	struct list_head value_list;
@@ -124,6 +145,9 @@ struct use_case_device {
 
 	/* device transition list */
 	struct list_head transition_list;
+
+	/* list of devices supported or conflicting */
+	struct dev_list dev_list;
 
 	/* value list */
 	struct list_head value_list;
@@ -150,6 +174,9 @@ struct use_case_verb {
 
 	/* hardware devices that can be used with this use case */
 	struct list_head device_list;
+
+	/* component device list */
+	struct list_head cmpt_device_list;
 
 	/* modifiers that can be used with this use case */
 	struct list_head modifier_list;
@@ -185,6 +212,14 @@ struct snd_use_case_mgr {
 	/* change to list of ctl handles */
 	snd_ctl_t *ctl;
 	char *ctl_dev;
+
+	/* Components don't define cdev, the card device. When executing
+	 * a sequence of a component device, ucm manager enters component
+	 * domain and needs to provide cdev to the component. This cdev
+	 * should be defined by the machine, parent of the component.
+	 */
+	int in_component_domain;
+	char *cdev;
 };
 
 #define uc_error SNDERR

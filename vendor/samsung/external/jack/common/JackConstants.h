@@ -26,7 +26,7 @@
 
 #define VERSION "1.9.9.5"
 
-#define BUFFER_SIZE_MAX 8192
+#define BUFFER_SIZE_MAX 960   //8192
 
 #define JACK_PORT_NAME_SIZE 256
 #define JACK_PORT_TYPE_SIZE 32
@@ -73,11 +73,16 @@
 
 #define JACK_PROTOCOL_VERSION 8
 
-#define SOCKET_TIME_OUT 2               // in sec
-#define DRIVER_OPEN_TIMEOUT 5           // in sec
+// Timeout for notification socket read/write
+#define SOCKET_TIME_OUT 8               // in sec
+// Timeout for  socket read
+#define SOCKET_READ_TIME_OUT 7               // in sec
+// Timeout for client open
+#define DRIVER_OPEN_TIMEOUT 8 //25          // in sec
+// Timeout for process callbacks in freewheel mode
 #define FREEWHEEL_DRIVER_TIMEOUT 10     // in sec
-#define DRIVER_TIMEOUT_FACTOR    10
-
+// Timeout for process callbacks
+#define DRIVER_TIMEOUT_FACTOR    10     // multiple of period
 
 #define NO_PORT   0xFFFE
 

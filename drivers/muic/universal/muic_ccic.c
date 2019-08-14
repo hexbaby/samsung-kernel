@@ -34,6 +34,7 @@
 #include <linux/of_gpio.h>
 #endif
 
+#include <linux/ccic/s2mm005.h>
 #include <linux/muic/muic.h>
 #if defined(CONFIG_MUIC_NOTIFIER)
 #include <linux/muic/muic_notifier.h>
@@ -53,6 +54,10 @@
 #if defined(CONFIG_MUIC_HV)
 #include "muic_hv.h"
 #include "muic_hv_max77854.h"
+#endif
+
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+#include <linux/muic/muic_afc.h>
 #endif
 
 #define MUIC_CCIC_NOTI_ATTACH (1)
@@ -182,6 +187,35 @@ static bool mdev_is_supported(int mdev)
 	return false;
 }
 
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL) && defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+void muic_switch_off(struct work_struct *work)
+{
+	muic_data_t *pmuic;
+
+	pr_info("%s\n", __func__);
+
+	pmuic = container_of(work, muic_data_t, switch_gpio_delay_work.work);
+
+	if (get_adc_scan_mode(pmuic) != ADC_SCANMODE_ONESHOT)
+		set_adc_scan_mode(pmuic, ADC_SCANMODE_ONESHOT);
+}
+
+void muic_otg_switch_control(muic_data_t *pmuic, int enable)
+{
+	struct mdev_desc_t *pdesc = &mdev_desc;
+
+	if (pdesc->ccic_evt_rprd) {
+		if (enable) {
+			muic_switch_enable(pmuic, 1);
+			set_adc_scan_mode(pmuic, ADC_SCANMODE_CONTINUOUS);
+		} else {
+			muic_switch_enable(pmuic, 0);
+			schedule_delayed_work(&pmuic->switch_gpio_delay_work, msecs_to_jiffies(200));
+		}
+	}
+}
+#endif
+
 static int mdev_com_to(muic_data_t *pmuic, int path)
 {
 #if defined(CONFIG_MUIC_HV)
@@ -190,6 +224,10 @@ static int mdev_com_to(muic_data_t *pmuic, int path)
 	switch (path) {
 	case MUIC_PATH_OPEN:
 #if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK)
+		if (get_adc_scan_mode(pmuic) != ADC_SCANMODE_ONESHOT)
+			set_adc_scan_mode(pmuic, ADC_SCANMODE_ONESHOT);
+#endif
 		muic_switch_enable(pmuic, 0);
 #endif
 		com_to_open_with_vbus(pmuic);
@@ -197,6 +235,9 @@ static int mdev_com_to(muic_data_t *pmuic, int path)
 
 	case MUIC_PATH_USB_AP:
 	case MUIC_PATH_USB_CP:
+#if defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
+		muic_switch_enable(pmuic, 1);
+#endif
 		switch_to_ap_usb(pmuic);
 		break;
 	case MUIC_PATH_UART_AP:
@@ -272,10 +313,17 @@ static void mdev_handle_ccic_detach(muic_data_t *pmuic)
 	pdesc->ccic_evt_dcdcnt = 0;
 	pdesc->ccic_evt_attached = MUIC_CCIC_NOTI_UNDEFINED;
 
+	pmuic->ccic_rp = 0;
 	pmuic->legacy_dev = 0;
 	pmuic->attached_dev = 0;
+	pmuic->is_ccic_attach = false;
+	pmuic->retry_afc = false;
 #if defined(CONFIG_MUIC_HV)
 	pmuic->phv->attached_dev = 0;
+#endif
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+	pmuic->is_afc_5v = 0;
+	pmuic->check_charger_lcd_on = false;
 #endif
 #if defined(CONFIG_SEC_DEBUG)
 	pmuic->usb_to_ta_state = false;
@@ -486,8 +534,8 @@ static int muic_handle_ccic_ATTACH(muic_data_t *pmuic, CC_NOTI_ATTACH_TYPEDEF *p
 	struct vendor_ops *pvendor = pmuic->regmapdesc->vendorops;
 	int prev_status = pdesc->ccic_evt_attached;
 
-	pr_info("%s: src:%d dest:%d id:%d attach:%d cable_type:%d rprd:%d\n", __func__,
-		pnoti->src, pnoti->dest, pnoti->id, pnoti->attach, pnoti->cable_type, pnoti->rprd);
+	pr_info("%s: src:%d dest:%d id:%d attach:%d cable_type:%d rprd:%d retry_afc:%d\n", __func__,
+		pnoti->src, pnoti->dest, pnoti->id, pnoti->attach, pnoti->cable_type, pnoti->rprd, pmuic->retry_afc);
 
 	pdesc->ccic_evt_attached = pnoti->attach ? 
 		MUIC_CCIC_NOTI_ATTACH : MUIC_CCIC_NOTI_DETACH;
@@ -511,6 +559,10 @@ static int muic_handle_ccic_ATTACH(muic_data_t *pmuic, CC_NOTI_ATTACH_TYPEDEF *p
 			pdesc->ccic_evt_rprd = 1;
 			if (pvendor && pvendor->enable_chgdet)
 				pvendor->enable_chgdet(pmuic->regmapdesc, 0);
+#if defined(CONFIG_MUIC_SUPPORT_KEYBOARDDOCK) && defined(CONFIG_MUIC_SM5705_SWITCH_CONTROL)
+		if (!pmuic->switch_gpio_en && pmuic->vps.s.adc == ADC_OPEN)
+			set_adc_scan_mode(pmuic, ADC_SCANMODE_CONTINUOUS);
+#endif
 			pdesc->mdev = ATTACHED_DEV_OTG_MUIC;
 			mdev_com_to(pmuic, MUIC_PATH_USB_AP);
 			return 0;
@@ -520,6 +572,40 @@ static int muic_handle_ccic_ATTACH(muic_data_t *pmuic, CC_NOTI_ATTACH_TYPEDEF *p
 			pr_info("%s: Valid VBUS-> handled in irq handler\n", __func__);
 		else
 			pr_info("%s: No VBUS-> doing nothing.\n", __func__);
+
+		pmuic->ccic_rp = pnoti->cable_type;
+
+		/* To prevent damage by RP0 Cable, AFC should be progress after ccic_attach */
+		pmuic->is_ccic_attach = true;
+
+		/* W/A for late ccic attach */
+		if (pmuic->retry_afc) {
+			pmuic->retry_afc = false;
+			pr_info("%s: Retry to AFC because of ccic_attach, RP Info = %d\n", __func__, pmuic->ccic_rp);
+
+			switch(pmuic->ccic_rp) {
+			case Rp_56K:
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5705_AFC)
+				muic_restart_afc();
+#elif defined(CONFIG_MUIC_HV)
+				muic_afc_set_voltage(9);
+#endif
+				break;
+			case Rp_Abnormal:
+				pr_info("%s:%s Working SBU-Vbus Short W/A\n", MUIC_DEV_NAME, __func__);
+				pmuic->legacy_dev = pmuic->attached_dev = ATTACHED_DEV_NONE_MUIC;
+				muic_notifier_detach_attached_dev(pmuic->attached_dev);
+				muic_check_afc_state(1);
+				msleep(500);
+				pmuic->legacy_dev = pmuic->attached_dev = ATTACHED_DEV_TA_MUIC;
+				muic_notifier_attach_attached_dev(pmuic->attached_dev);
+				break;
+			default:
+				break;
+			}
+			
+			return 0;
+		}
 
 		/* W/A for Incomplete insertion case */
 		pdesc->ccic_evt_dcdcnt = 0;

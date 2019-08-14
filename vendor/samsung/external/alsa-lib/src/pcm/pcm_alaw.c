@@ -26,7 +26,7 @@
  *
  */
   
-#include <byteswap.h>
+#include "bswap.h"
 #include "pcm_local.h"
 #include "pcm_plugin.h"
 
@@ -404,6 +404,9 @@ static const snd_pcm_ops_t snd_pcm_alaw_ops = {
 	.async = snd_pcm_generic_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_generic_query_chmaps,
+	.get_chmap = snd_pcm_generic_get_chmap,
+	.set_chmap = snd_pcm_generic_set_chmap,
 };
 
 /**
@@ -450,7 +453,7 @@ int snd_pcm_alaw_open(snd_pcm_t **pcmp, const char *name, snd_pcm_format_t sform
 	pcm->private_data = alaw;
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;
-	pcm->monotonic = slave->monotonic;
+	pcm->tstamp_type = slave->tstamp_type;
 	snd_pcm_set_hw_ptr(pcm, &alaw->plug.hw_ptr, -1, 0);
 	snd_pcm_set_appl_ptr(pcm, &alaw->plug.appl_ptr, -1, 0);
 	*pcmp = pcm;

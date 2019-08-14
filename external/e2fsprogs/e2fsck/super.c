@@ -9,6 +9,7 @@
  * %End-Header%
  */
 
+#include "config.h"
 #ifdef HAVE_ERRNO_H
 #include <errno.h>
 #endif
@@ -29,9 +30,9 @@ static void check_super_value(e2fsck_t ctx, const char *descr,
 {
 	struct		problem_context pctx;
 
-	if (((flags & MIN_CHECK) && (value < min_val)) ||
-	    ((flags & MAX_CHECK) && (value > max_val)) ||
-	    ((flags & LOG2_CHECK) && (value & (value - 1) != 0))) {
+	if ((flags & MIN_CHECK && value < min_val) ||
+	    (flags & MAX_CHECK && value > max_val) ||
+	    (flags & LOG2_CHECK && (value & (value - 1)) != 0)) {
 		clear_problem_context(&pctx);
 		pctx.num = value;
 		pctx.str = descr;
@@ -78,7 +79,7 @@ static errcode_t read_block_bitmaps(e2fsck_t ctx, char * buf)
 	blk64_t blk;
 	errcode_t retval;
 
-	for (i = 0; i < fs->group_desc_count; i++) {
+	for (i = 0; i < (int)fs->group_desc_count; i++) {
 		if (EXT2_HAS_RO_COMPAT_FEATURE(fs->super, EXT4_FEATURE_RO_COMPAT_GDT_CSUM
 			&& ext2fs_bg_flags_test(fs, i, EXT2_BG_BLOCK_UNINIT)))
 			continue;
@@ -90,6 +91,27 @@ static errcode_t read_block_bitmaps(e2fsck_t ctx, char * buf)
 			return 1;
 		}
 	}
+	return 0;
+}
+
+static int check_sec_magic(e2fsck_t ctx)
+{
+	ext2_filsys fs = ctx->fs;
+	struct ext2_super_block *es = fs->super;
+
+#define EXT4_SEC_DATA_MAGIC 0xBAB0CAFE /* data partition magic */
+
+	if (strlen("/data") == strlen(ctx->mount_point) &&
+		  !strncmp(ctx->mount_point, "/data", strlen("/data"))) {
+		if (ext2fs_le32_to_cpu(es->s_sec_magic) != EXT4_SEC_DATA_MAGIC &&
+				!(ctx->options & E2F_OPT_READONLY)) {
+			log_out(ctx, "Fix invalid sec magic 0x%X\n",
+				ext2fs_le32_to_cpu(es->s_sec_magic));
+			es->s_sec_magic = EXT4_SEC_DATA_MAGIC;
+			ext2fs_mark_super_dirty(fs);
+		}
+	}
+
 	return 0;
 }
 
@@ -132,7 +154,7 @@ static int check_free_count(e2fsck_t ctx)
 		}
 	}
 
-	for (i = 0; i < fs->group_desc_count; i++) {
+	for (i = 0; i < (int)fs->group_desc_count; i++) {
 		if (csum_flag && ext2fs_bg_flags_test(fs, i, EXT2_BG_BLOCK_UNINIT)) {
 			if (ext2fs_bg_free_blocks_count(fs, i) != es->s_blocks_per_group) {
 				log_out(ctx, "%d th uninit block group has wrong free count at group descriptor",i);
@@ -154,7 +176,7 @@ static int check_free_count(e2fsck_t ctx)
 					((ext2fs_blocks_count(es)
 					  - (__u64) es->s_first_data_block)
 					 % (__u64) EXT2_BLOCKS_PER_GROUP(es)));
-			if (i == fs->group_desc_count - 1 && remainder) {
+			if (i == (int)fs->group_desc_count - 1 && remainder) {
 				unsigned int bitmap_count = ext4_count_free(block_buf, remainder/8, remainder%8);
 				if (gdt_count != bitmap_count) {
 					log_out(ctx, "%d th bg has wrong free counts gdt count : %u, bitmap count : %u, remainder : %u\n",
@@ -205,7 +227,7 @@ static int release_inode_block(ext2_filsys fs,
 	pctx->blk = blk;
 	pctx->blkcount = blockcnt;
 
-	if (HOLE_BLKADDR(blk))
+	if (blk == 0)
 		return 0;
 
 	if ((blk < fs->super->s_first_data_block) ||
@@ -305,7 +327,8 @@ static int release_inode_blocks(e2fsck_t ctx, ext2_ino_t ino,
 		pb.truncate_block = (e2_blkcnt_t)
 			((EXT2_I_SIZE(inode) + fs->blocksize - 1) /
 			 fs->blocksize);
-		pb.truncate_offset = (inode->i_flags & EXT4_ENCRYPT_FL)? 0 : inode->i_size % fs->blocksize;
+		pb.truncate_offset = (inode->i_flags & EXT4_ENCRYPT_FL) ?
+			0 : inode->i_size % fs->blocksize;
 	} else {
 		pb.truncating = 0;
 		pb.truncate_block = 0;
@@ -330,9 +353,9 @@ static int release_inode_blocks(e2fsck_t ctx, ext2_ino_t ino,
 		ext2fs_iblk_sub_blocks(fs, inode, pb.truncated_blocks);
 
 	if (ext2fs_file_acl_block(fs, inode)) {
-		retval = ext2fs_adjust_ea_refcount2(fs,
-					ext2fs_file_acl_block(fs, inode),
-					block_buf, -1, &count);
+		retval = ext2fs_adjust_ea_refcount3(fs,
+				ext2fs_file_acl_block(fs, inode),
+				block_buf, -1, &count, ino);
 		if (retval == EXT2_ET_BAD_EA_BLOCK_NUM) {
 			retval = 0;
 			count = 1;
@@ -353,6 +376,104 @@ static int release_inode_blocks(e2fsck_t ctx, ext2_ino_t ino,
 	return 0;
 }
 
+static int load_quota_ctx(e2fsck_t ctx)
+{
+	ext2_filsys fs = ctx->fs;
+	struct problem_context pctx;
+	enum quota_type qtype;
+	unsigned int qtype_bits = 0;
+
+	/* Do quota accounting during release orphan inodes. */
+	for (qtype = 0; qtype < MAXQUOTAS; qtype++) {
+		if (*quota_sb_inump(fs->super, qtype) != 0)
+			qtype_bits |= 1 << qtype;
+	}
+	clear_problem_context(&pctx);
+	pctx.errcode = quota_init_context(&ctx->qctx, ctx->fs,
+					  qtype_bits);
+	if (pctx.errcode) {
+		fix_problem(ctx, PR_0_QUOTA_INIT_CTX, &pctx);
+		fatal_error(ctx, 0);
+	}
+
+	for (qtype = 0; qtype < MAXQUOTAS; qtype++) {
+		if (*quota_sb_inump(fs->super, qtype) == 0)
+			continue;
+		quota_file_open(ctx->qctx, NULL, 0, qtype, -1, EXT2_FILE_WRITE);
+	}
+
+	return 0;
+}
+
+static inline qid_t get_qid(struct ext2_inode_large *inode, enum quota_type qtype)
+{
+	unsigned int inode_size;
+
+	switch (qtype) {
+	case USRQUOTA:
+		return inode_uid(*inode);
+	case GRPQUOTA:
+		return inode_gid(*inode);
+	case PRJQUOTA:
+		inode_size = EXT2_GOOD_OLD_INODE_SIZE +
+			inode->i_extra_isize;
+		if (inode_includes(inode_size, i_projid))
+			return inode_projid(*inode);
+	default:
+		return 0;
+	}
+
+	return 0;
+}
+
+static int update_orphan_quota(e2fsck_t ctx, struct ext2_inode_large *inode)
+{
+	ext2_filsys fs = ctx->fs;
+	enum quota_type qtype;
+	long long diff = ext2fs_free_blocks_count(fs->super)
+				- ctx->qctx->before_orphan_blocks;
+
+	for (qtype = 0; qtype < MAXQUOTAS; qtype++) {
+		struct quota_handle *qh;
+		struct dquot	*dq;
+
+		if (ctx->qctx->quota_file[qtype] == NULL)
+			continue;
+
+		qh = ctx->qctx->quota_file[qtype];
+		dq = qh->qh_ops->read_dquot(qh, get_qid(inode, qtype));
+		if (!dq) {
+			log_out(ctx, _("Couldn't read quota record"));
+			continue;
+		}
+
+		dq->dq_dqb.dqb_curspace -= diff * fs->blocksize;
+		if (!inode->i_links_count)
+			dq->dq_dqb.dqb_curinodes--;
+
+		if (dq->dq_dqb.dqb_curspace < 0)
+			dq->dq_dqb.dqb_curspace = 0;
+		if (dq->dq_dqb.dqb_curinodes < 0)
+			dq->dq_dqb.dqb_curinodes = 0;
+
+		qh->qh_ops->commit_dquot(dq);
+		ext2fs_free_mem(&dq);
+	}
+
+	return 0;
+}
+
+static int cleanup_quota_ctx(e2fsck_t ctx)
+{
+	enum quota_type qtype;
+
+	for (qtype = 0; qtype < MAXQUOTAS; qtype++) {
+		if (ctx->qctx->quota_file[qtype])
+			quota_file_close(ctx->qctx, ctx->qctx->quota_file[qtype]);
+	}
+	quota_release_context(&ctx->qctx);
+	return 0;
+}
 /*
  * This function releases all of the orphan inodes.  It returns 1 if
  * it hit some error, and 0 on success.
@@ -361,7 +482,7 @@ static int release_orphan_inodes(e2fsck_t ctx)
 {
 	ext2_filsys fs = ctx->fs;
 	ext2_ino_t	ino, next_ino;
-	struct ext2_inode inode;
+	struct ext2_inode *inode;
 	struct problem_context pctx;
 	char *block_buf;
 	unsigned long fs_state;
@@ -413,19 +534,30 @@ static int release_orphan_inodes(e2fsck_t ctx)
 
 	block_buf = (char *) e2fsck_allocate_memory(ctx, fs->blocksize * 4,
 						    "block iterate buffer");
+	inode = (struct ext2_inode *)
+		e2fsck_allocate_memory(ctx, EXT2_INODE_SIZE(fs->super),
+			"orphan inode");
+
+	if (ext2fs_has_feature_quota(fs->super))
+		load_quota_ctx(ctx);
 	e2fsck_read_bitmaps(ctx);
 
 	while (ino) {
-		e2fsck_read_inode(ctx, ino, &inode, "release_orphan_inodes");
+		e2fsck_read_inode_full(ctx, ino, inode,
+			EXT2_INODE_SIZE(fs->super), "release_orphan_inodes");
 		clear_problem_context(&pctx);
 		pctx.ino = ino;
-		pctx.inode = &inode;
-		pctx.str = inode.i_links_count ? _("Truncating") :
+		pctx.inode = inode;
+		pctx.str = inode->i_links_count ? _("Truncating") :
 			_("Clearing");
 
-		fix_problem(ctx, PR_0_ORPHAN_CLEAR_INODE, &pctx);
+		if (LINUX_S_ISREG(inode->i_mode) &&
+			EXT2_INODE_SIZE(fs->super) > EXT2_GOOD_OLD_INODE_SIZE)
+			fix_problem(ctx, PR_0_ORPHAN_CLEAR_LARGE_INODE, &pctx);
+		else
+			fix_problem(ctx, PR_0_ORPHAN_CLEAR_INODE, &pctx);
 
-		next_ino = inode.i_dtime;
+		next_ino = inode->i_dtime;
 		if (next_ino &&
 		    ((next_ino < EXT2_FIRST_INODE(fs->super)) ||
 		     (next_ino > fs->super->s_inodes_count))) {
@@ -434,20 +566,31 @@ static int release_orphan_inodes(e2fsck_t ctx)
 			goto return_abort;
 		}
 
-		if (release_inode_blocks(ctx, ino, &inode, block_buf, &pctx))
+		if (ctx->qctx)
+			ctx->qctx->before_orphan_blocks = ext2fs_free_blocks_count(fs->super);
+
+		if (release_inode_blocks(ctx, ino, inode, block_buf, &pctx))
 			goto return_abort;
 
-		if (!inode.i_links_count) {
+		if (!inode->i_links_count) {
 			ext2fs_inode_alloc_stats2(fs, ino, -1,
-						  LINUX_S_ISDIR(inode.i_mode));
+						  LINUX_S_ISDIR(inode->i_mode));
 			ctx->free_inodes++;
-			inode.i_dtime = ctx->now;
+			inode->i_dtime = ctx->now;
 		} else {
-			inode.i_dtime = 0;
+			inode->i_dtime = 0;
 		}
-		e2fsck_write_inode(ctx, ino, &inode, "delete_file");
+
+		if (ctx->qctx && !ctx->invalid_bitmaps)
+			update_orphan_quota(ctx, (struct ext2_inode_large *)inode);
+
+		e2fsck_write_inode_full(ctx, ino, inode,
+			EXT2_INODE_SIZE(fs->super), "delete_file");
 		ino = next_ino;
 	}
+
+	if (ctx->qctx)
+		cleanup_quota_ctx(ctx);
 
 	log_out(ctx, _("flush all filesystem after orphan cleanup!\n"));
 	retval = ext2fs_flush(fs);
@@ -473,13 +616,14 @@ static int release_orphan_inodes(e2fsck_t ctx)
 	}
 
 	ext2fs_free_mem(&block_buf);
-
+	ext2fs_free_mem(&inode);
 	log_out(ctx, _("check whether gdt & bitmap free count is vaild after release orphan inode\n"));
 	check_free_count(ctx);
 
 	return 0;
 return_abort:
 	ext2fs_free_mem(&block_buf);
+	ext2fs_free_mem(&inode);
 	return 1;
 }
 
@@ -507,8 +651,7 @@ void check_resize_inode(e2fsck_t ctx)
 	 * If the resize inode feature isn't set, then
 	 * s_reserved_gdt_blocks must be zero.
 	 */
-	if (!(fs->super->s_feature_compat &
-	      EXT2_FEATURE_COMPAT_RESIZE_INODE)) {
+	if (!ext2fs_has_feature_resize_inode(fs->super)) {
 		if (fs->super->s_reserved_gdt_blocks) {
 			pctx.num = fs->super->s_reserved_gdt_blocks;
 			if (fix_problem(ctx, PR_0_NONZERO_RESERVED_GDT_BLOCKS,
@@ -523,8 +666,7 @@ void check_resize_inode(e2fsck_t ctx)
 	pctx.ino = EXT2_RESIZE_INO;
 	retval = ext2fs_read_inode(fs, EXT2_RESIZE_INO, &inode);
 	if (retval) {
-		if (fs->super->s_feature_compat &
-		    EXT2_FEATURE_COMPAT_RESIZE_INODE)
+		if (ext2fs_has_feature_resize_inode(fs->super))
 			ctx->flags |= E2F_FLAG_RESIZE_INODE;
 		return;
 	}
@@ -533,8 +675,7 @@ void check_resize_inode(e2fsck_t ctx)
 	 * If the resize inode feature isn't set, check to make sure
 	 * the resize inode is cleared; then we're done.
 	 */
-	if (!(fs->super->s_feature_compat &
-	      EXT2_FEATURE_COMPAT_RESIZE_INODE)) {
+	if (!ext2fs_has_feature_resize_inode(fs->super)) {
 		for (i=0; i < EXT2_N_BLOCKS; i++) {
 			if (inode.i_block[i])
 				break;
@@ -598,7 +739,7 @@ void check_resize_inode(e2fsck_t ctx)
 		for (j = 1; j < fs->group_desc_count; j++) {
 			if (!ext2fs_bg_has_super(fs, j))
 				continue;
-			expect = pblk + (j * fs->super->s_blocks_per_group);
+			expect = pblk + EXT2_GROUPS_TO_BLOCKS(fs->super, j);
 			if (ind_buf[ind_off] != expect)
 				goto resize_inode_invalid;
 			ind_off++;
@@ -621,7 +762,7 @@ static void e2fsck_fix_dirhash_hint(e2fsck_t ctx)
 	char	c;
 
 	if ((ctx->options & E2F_OPT_READONLY) ||
-	    !(sb->s_feature_compat & EXT2_FEATURE_COMPAT_DIR_INDEX) ||
+	    !ext2fs_has_feature_dir_index(sb) ||
 	    (sb->s_flags & (EXT2_FLAGS_SIGNED_HASH|EXT2_FLAGS_UNSIGNED_HASH)))
 		return;
 
@@ -704,6 +845,11 @@ void check_super_block(e2fsck_t ctx)
 			  MIN_CHECK | MAX_CHECK, inodes_per_block, ipg_max);
 	check_super_value(ctx, "r_blocks_count", ext2fs_r_blocks_count(sb),
 			  MAX_CHECK, 0, ext2fs_blocks_count(sb) / 2);
+	check_super_value(ctx, "sec_r_blocks_count", sb->s_sec_r_blocks_count,
+			  MAX_CHECK, 0, ext2fs_blocks_count(sb) / 2);
+	check_super_value(ctx, "r_blocks_count + sec_r_blocks_count",
+			  ext2fs_r_blocks_count(sb) + sb->s_sec_r_blocks_count,
+			  MAX_CHECK, 0, ext2fs_blocks_count(sb) / 2);
 	check_super_value(ctx, "reserved_gdt_blocks",
 			  sb->s_reserved_gdt_blocks, MAX_CHECK, 0,
 			  fs->blocksize / sizeof(__u32));
@@ -747,7 +893,9 @@ void check_super_block(e2fsck_t ctx)
 		return;
 	}
 
-	should_be = sb->s_inodes_per_group * fs->group_desc_count;
+	should_be = (blk64_t)sb->s_inodes_per_group * fs->group_desc_count;
+	if (should_be > UINT_MAX)
+		should_be = UINT_MAX;
 	if (sb->s_inodes_count != should_be) {
 		pctx.ino = sb->s_inodes_count;
 		pctx.ino2 = should_be;
@@ -756,20 +904,80 @@ void check_super_block(e2fsck_t ctx)
 			ext2fs_mark_super_dirty(fs);
 		}
 	}
+	if (EXT2_INODE_SIZE(sb) > EXT2_GOOD_OLD_INODE_SIZE) {
+		unsigned min =
+			sizeof(((struct ext2_inode_large *) 0)->i_extra_isize) +
+			sizeof(((struct ext2_inode_large *) 0)->i_checksum_hi);
+		unsigned max = EXT2_INODE_SIZE(sb) - EXT2_GOOD_OLD_INODE_SIZE;
+		pctx.num = sb->s_min_extra_isize;
+		if (sb->s_min_extra_isize &&
+		    (sb->s_min_extra_isize < min ||
+		     sb->s_min_extra_isize > max ||
+		     sb->s_min_extra_isize & 3) &&
+		    fix_problem(ctx, PR_0_BAD_MIN_EXTRA_ISIZE, &pctx)) {
+			sb->s_min_extra_isize =
+				(sizeof(struct ext2_inode_large) -
+				 EXT2_GOOD_OLD_INODE_SIZE);
+			ext2fs_mark_super_dirty(fs);
+		}
+		pctx.num = sb->s_want_extra_isize;
+		if (sb->s_want_extra_isize &&
+		    (sb->s_want_extra_isize < min ||
+		     sb->s_want_extra_isize > max ||
+		     sb->s_want_extra_isize & 3) &&
+		    fix_problem(ctx, PR_0_BAD_WANT_EXTRA_ISIZE, &pctx)) {
+			sb->s_want_extra_isize =
+				(sizeof(struct ext2_inode_large) -
+				 EXT2_GOOD_OLD_INODE_SIZE);
+			ext2fs_mark_super_dirty(fs);
+		}
+	}
+		    
+	/* Are metadata_csum and uninit_bg both set? */
+	if (ext2fs_has_feature_metadata_csum(fs->super) &&
+	    ext2fs_has_feature_gdt_csum(fs->super) &&
+	    fix_problem(ctx, PR_0_META_AND_GDT_CSUM_SET, &pctx)) {
+		ext2fs_clear_feature_gdt_csum(fs->super);
+		ext2fs_mark_super_dirty(fs);
+		for (i = 0; i < fs->group_desc_count; i++)
+			ext2fs_group_desc_csum_set(fs, i);
+	}
 
-	/* Is 64bit set and extents unset? */
-	if (EXT2_HAS_INCOMPAT_FEATURE(fs->super,
-				      EXT4_FEATURE_INCOMPAT_64BIT) &&
-	    !EXT2_HAS_INCOMPAT_FEATURE(fs->super,
-				       EXT3_FEATURE_INCOMPAT_EXTENTS) &&
-	    fix_problem(ctx, PR_0_64BIT_WITHOUT_EXTENTS, &pctx)) {
-		fs->super->s_feature_incompat |=
-			EXT3_FEATURE_INCOMPAT_EXTENTS;
+	/* We can't have ^metadata_csum,metadata_csum_seed */
+	if (!ext2fs_has_feature_metadata_csum(fs->super) &&
+	    ext2fs_has_feature_csum_seed(fs->super) &&
+	    fix_problem(ctx, PR_0_CSUM_SEED_WITHOUT_META_CSUM, &pctx)) {
+		ext2fs_clear_feature_csum_seed(fs->super);
+		fs->super->s_checksum_seed = 0;
 		ext2fs_mark_super_dirty(fs);
 	}
 
-	if (!EXT2_HAS_INCOMPAT_FEATURE(fs->super,
-					 EXT4_FEATURE_INCOMPAT_64BIT) &&
+	/* Is 64bit set and extents unset? */
+	if (ext2fs_has_feature_64bit(fs->super) &&
+	    !ext2fs_has_feature_extents(fs->super) &&
+	    fix_problem(ctx, PR_0_64BIT_WITHOUT_EXTENTS, &pctx)) {
+		ext2fs_set_feature_extents(fs->super);
+		ext2fs_mark_super_dirty(fs);
+	}
+
+	/* Did user ask us to convert files to extents? */
+	if (ctx->options & E2F_OPT_CONVERT_BMAP) {
+		ext2fs_set_feature_extents(fs->super);
+		ext2fs_mark_super_dirty(fs);
+	}
+
+	if (ext2fs_has_feature_meta_bg(fs->super) &&
+	    (fs->super->s_first_meta_bg > fs->desc_blocks)) {
+		pctx.group = fs->desc_blocks;
+		pctx.num = fs->super->s_first_meta_bg;
+		if (fix_problem(ctx, PR_0_FIRST_META_BG_TOO_BIG, &pctx)) {
+			ext2fs_clear_feature_meta_bg(fs->super);
+			fs->super->s_first_meta_bg = 0;
+			ext2fs_mark_super_dirty(fs);
+		}
+	}
+
+	if (!ext2fs_has_feature_64bit(fs->super) &&
 			(fs->super->s_blocks_count_hi   ||
 			 fs->super->s_r_blocks_count_hi ||
 			 fs->super->s_free_blocks_hi)) {
@@ -787,13 +995,11 @@ void check_super_block(e2fsck_t ctx)
 	first_block = sb->s_first_data_block;
 	last_block = ext2fs_blocks_count(sb)-1;
 
-	csum_flag = EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
-					       EXT4_FEATURE_RO_COMPAT_GDT_CSUM);
+	csum_flag = ext2fs_has_group_desc_csum(fs);
 	for (i = 0; i < fs->group_desc_count; i++) {
 		pctx.group = i;
 
-		if (!EXT2_HAS_INCOMPAT_FEATURE(fs->super,
-					       EXT4_FEATURE_INCOMPAT_FLEX_BG)) {
+		if (!ext2fs_has_feature_flex_bg(fs->super)) {
 			first_block = ext2fs_group_first_block2(fs, i);
 			last_block = ext2fs_group_last_block2(fs, i);
 		}
@@ -912,13 +1118,21 @@ void check_super_block(e2fsck_t ctx)
 	log_out(ctx, _("check whether gdt & bitmap free count is vaild\n"));
 	check_free_count(ctx);
 
+	if (ctx->mount_point)
+		check_sec_magic(ctx);
+
 #ifndef EXT2_SKIP_UUID
 	/*
 	 * If the UUID field isn't assigned, assign it.
+	 * Skip if checksums are enabled and the filesystem is mounted,
+	 * if the id changes under the kernel remounting rw may fail.
 	 */
-	if (!(ctx->options & E2F_OPT_READONLY) && uuid_is_null(sb->s_uuid)) {
+	if (!(ctx->options & E2F_OPT_READONLY) && uuid_is_null(sb->s_uuid) &&
+	    !ext2fs_has_feature_metadata_csum(ctx->fs->super) &&
+	    (!csum_flag || !(ctx->mount_flags & EXT2_MF_MOUNTED))) {
 		if (fix_problem(ctx, PR_0_ADD_UUID, &pctx)) {
 			uuid_generate(sb->s_uuid);
+			ext2fs_init_csum_seed(fs);
 			fs->flags |= EXT2_FLAG_DIRTY;
 			fs->flags &= ~EXT2_FLAG_MASTER_SB_ONLY;
 		}
@@ -948,11 +1162,9 @@ void check_super_block(e2fsck_t ctx)
 	 */
 	if (!(ctx->options & E2F_OPT_READONLY) &&
 	    fs->super->s_creator_os == EXT2_OS_HURD &&
-	    (fs->super->s_feature_incompat &
-	     EXT2_FEATURE_INCOMPAT_FILETYPE)) {
+	    ext2fs_has_feature_filetype(fs->super)) {
 		if (fix_problem(ctx, PR_0_HURD_CLEAR_FILETYPE, &pctx)) {
-			fs->super->s_feature_incompat &=
-				~EXT2_FEATURE_INCOMPAT_FILETYPE;
+			ext2fs_clear_feature_filetype(fs->super);
 			ext2fs_mark_super_dirty(fs);
 			fs->flags &= ~EXT2_FLAG_MASTER_SB_ONLY;
 		}

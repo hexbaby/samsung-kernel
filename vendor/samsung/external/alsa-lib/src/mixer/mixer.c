@@ -204,10 +204,8 @@ int snd_mixer_attach(snd_mixer_t *mixer, const char *name)
 	if (err < 0)
 		return err;
 	err = snd_mixer_attach_hctl(mixer, hctl);
-	if (err < 0) {
-		snd_hctl_close(hctl);
+	if (err < 0)
 		return err;
-	}
 	return 0;
 }
 
@@ -216,6 +214,8 @@ int snd_mixer_attach(snd_mixer_t *mixer, const char *name)
  * \param mixer Mixer handle
  * \param hctl the HCTL to be attached
  * \return 0 on success otherwise a negative error code
+ *
+ * Upon error, this function closes the given hctl handle automatically.
  */
 int snd_mixer_attach_hctl(snd_mixer_t *mixer, snd_hctl_t *hctl)
 {
@@ -224,8 +224,10 @@ int snd_mixer_attach_hctl(snd_mixer_t *mixer, snd_hctl_t *hctl)
 
 	assert(hctl);
 	slave = calloc(1, sizeof(*slave));
-	if (slave == NULL)
+	if (slave == NULL) {
+		snd_hctl_close(hctl);
 		return -ENOMEM;
+	}
 	err = snd_hctl_nonblock(hctl, 1);
 	if (err < 0) {
 		snd_hctl_close(hctl);
@@ -743,7 +745,7 @@ int snd_mixer_poll_descriptors_revents(snd_mixer_t *mixer, struct pollfd *pfds, 
 	if (nfds == 0)
 		return -EINVAL;
 	res = 0;
-	for (idx = 0; idx < nfds; idx++)
+	for (idx = 0; idx < nfds; idx++, pfds++)
 		res |= pfds->revents & (POLLIN|POLLERR|POLLNVAL);
 	*revents = res;
 	return 0;
@@ -1062,7 +1064,7 @@ int snd_mixer_class_set_private(snd_mixer_class_t *obj, void *private_data)
  * \param private_free Mixer class private data free callback
  * \return zero if success, otherwise a negative error code
  */
-int snd_mixer_class_set_private_free(snd_mixer_class_t *obj, void (*private_free)(snd_mixer_class_t *class))
+int snd_mixer_class_set_private_free(snd_mixer_class_t *obj, void (*private_free)(snd_mixer_class_t *))
 {
 	assert(obj);
 	obj->private_free = private_free;

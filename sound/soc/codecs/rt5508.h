@@ -18,7 +18,7 @@
 #include <linux/rt-regmap.h>
 
 #define RT5508_DEVICE_NAME		"rt5508"
-#define RT5508_DRV_VER			"1.1.7_SP"
+#define RT5508_DRV_VER			"1.1.12_SP"
 
 #ifdef CONFIG_RT_REGMAP
 #define RT5508_SIMULATE_DEVICE	0
@@ -61,6 +61,9 @@ struct rt5508_proprietary_param {
 struct rt5508_pdata {
 	u32 chan_sel;
 	bool do_enable;
+	u32 tdm_dac_slot;
+	u32 tdm_adc_slot;
+	bool tdm_mode;
 	struct rt5508_proprietary_param *p_param;
 };
 
@@ -93,12 +96,12 @@ struct rt5508_chip {
 	u8 mode_store;
 	u8 func_en;
 	u8 spk_prot_en;
+	u8 alc_gain;
 	u8 recv_spec_set:1;
 	u8 bypass_dsp:1;
 	u8 calib_times:7;
 	u8 tdm_mode:1;
 	u8 rlr_func:1;
-	u8 playback_active:1;
 };
 
 /* RT5508_REGISTER_LIST */

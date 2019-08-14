@@ -26,7 +26,7 @@
  *
  */
   
-#include <byteswap.h>
+#include "bswap.h"
 #include "pcm_local.h"
 #include "pcm_plugin.h"
 
@@ -62,6 +62,7 @@ struct snd_pcm_iec958 {
 	unsigned char status[24];
 	unsigned int byteswap;
 	unsigned char preamble[3];	/* B/M/W or Z/X/Y */
+	snd_pcm_fast_ops_t fops;
 };
 
 enum { PREAMBLE_Z, PREAMBLE_X, PREAMBLE_Y };
@@ -416,6 +417,35 @@ static void snd_pcm_iec958_dump(snd_pcm_t *pcm, snd_output_t *out)
 	snd_pcm_dump(iec->plug.gen.slave, out);
 }
 
+static snd_pcm_sframes_t snd_pcm_iec958_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
+{
+	unsigned int counter_decrement;
+	snd_pcm_iec958_t *iec = pcm->private_data;
+	snd_pcm_sframes_t result = snd_pcm_plugin_rewind(pcm, frames);
+	if (result <= 0)
+		return result;
+
+	counter_decrement = result % 192;
+	iec->counter += 192 - counter_decrement;
+	iec->counter %= 192;
+	return result;
+}
+
+static snd_pcm_sframes_t snd_pcm_iec958_forward(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
+
+{
+	unsigned int counter_increment;
+	snd_pcm_iec958_t *iec = pcm->private_data;
+	snd_pcm_sframes_t result = snd_pcm_plugin_rewind(pcm, frames);
+	if (result <= 0)
+		return result;
+
+	counter_increment = result % 192;
+	iec->counter += counter_increment;
+	iec->counter %= 192;
+	return result;
+}
+
 static const snd_pcm_ops_t snd_pcm_iec958_ops = {
 	.close = snd_pcm_generic_close,
 	.info = snd_pcm_generic_info,
@@ -429,6 +459,9 @@ static const snd_pcm_ops_t snd_pcm_iec958_ops = {
 	.async = snd_pcm_generic_async,
 	.mmap = snd_pcm_generic_mmap,
 	.munmap = snd_pcm_generic_munmap,
+	.query_chmaps = snd_pcm_generic_query_chmaps,
+	.get_chmap = snd_pcm_generic_get_chmap,
+	.set_chmap = snd_pcm_generic_set_chmap,
 };
 
 /**
@@ -492,11 +525,16 @@ int snd_pcm_iec958_open(snd_pcm_t **pcmp, const char *name, snd_pcm_format_t sfo
 		return err;
 	}
 	pcm->ops = &snd_pcm_iec958_ops;
-	pcm->fast_ops = &snd_pcm_plugin_fast_ops;
+
+	iec->fops = snd_pcm_plugin_fast_ops;
+	iec->fops.rewind = snd_pcm_iec958_rewind;
+	iec->fops.forward = snd_pcm_iec958_forward;
+	pcm->fast_ops = &iec->fops;
+
 	pcm->private_data = iec;
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;
-	pcm->monotonic = slave->monotonic;
+	pcm->tstamp_type = slave->tstamp_type;
 	snd_pcm_set_hw_ptr(pcm, &iec->plug.hw_ptr, -1, 0);
 	snd_pcm_set_appl_ptr(pcm, &iec->plug.appl_ptr, -1, 0);
 	*pcmp = pcm;

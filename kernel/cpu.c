@@ -395,7 +395,6 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen)
 		cpu_relax();
 
 	hotplug_cpu__broadcast_tick_pull(cpu);
-	save_pcpu_tick(cpu);
 
 	/* This actually kills the CPU. */
 	__cpu_die(cpu);
@@ -503,8 +502,6 @@ static int _cpu_up(unsigned int cpu, int tasks_frozen)
 		goto out_notify;
 	BUG_ON(!cpu_online(cpu));
 
-	restore_pcpu_tick(cpu);
-
 	/* Now call notifier in preparation. */
 	cpu_notify(CPU_ONLINE | mod, hcpu);
 
@@ -602,6 +599,7 @@ void __weak arch_enable_nonboot_cpus_end(void)
 void __ref enable_nonboot_cpus(void)
 {
 	int cpu, error;
+	struct device *cpu_device;
 
 	/* Allow everyone to use the CPU hotplug again */
 	cpu_maps_update_begin();
@@ -619,6 +617,12 @@ void __ref enable_nonboot_cpus(void)
 		trace_suspend_resume(TPS("CPU_ON"), cpu, false);
 		if (!error) {
 			pr_info("CPU%d is up\n", cpu);
+			cpu_device = get_cpu_device(cpu);
+			if (!cpu_device)
+				pr_err("%s: failed to get cpu%d device\n",
+				       __func__, cpu);
+			else
+				kobject_uevent(&cpu_device->kobj, KOBJ_ONLINE);
 			continue;
 		}
 		pr_warn("Error taking CPU%d up: %d\n", cpu, error);

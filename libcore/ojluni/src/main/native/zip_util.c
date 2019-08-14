@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2013, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -142,7 +142,7 @@ ZFILE_Close(ZFILE zfd) {
 }
 
 static int
-ZFILE_read(ZFILE zfd, char *buf, jint nbytes) {
+ZFILE_read(ZFILE zfd, char *buf, jint nbytes, jlong offset) {
 #ifdef WIN32
     return (int) IO_Read(zfd, buf, nbytes);
 #else
@@ -154,7 +154,7 @@ ZFILE_read(ZFILE zfd, char *buf, jint nbytes) {
      * JVM_IO_INTR is tricky and could cause undesired side effect. So we decided
      * to simply call "read" on Solaris/Linux. See details in bug 6304463.
      */
-    return read(zfd, buf, nbytes);
+    return pread(zfd, buf, nbytes, offset);
 #endif
 }
 
@@ -183,11 +183,11 @@ InitializeZip()
 }
 
 /*
- * Reads len bytes of data into buf.
+ * Reads len bytes of data from the specified offset into buf.
  * Returns 0 if all bytes could be read, otherwise returns -1.
  */
 static int
-readFully(ZFILE zfd, void *buf, jlong len) {
+readFullyAt(ZFILE zfd, void *buf, jlong len, jlong offset) {
   char *bp = (char *) buf;
 
   while (len > 0) {
@@ -195,9 +195,10 @@ readFully(ZFILE zfd, void *buf, jlong len) {
         jint count = (len < limit) ?
             (jint) len :
             (jint) limit;
-        jint n = ZFILE_read(zfd, bp, count);
+        jint n = ZFILE_read(zfd, bp, count, offset);
         if (n > 0) {
             bp += n;
+            offset += n;
             len -= n;
         } else if (n == JVM_IO_ERR && errno == EINTR) {
           /* Retry after EINTR (interrupted by signal).
@@ -210,19 +211,6 @@ readFully(ZFILE zfd, void *buf, jlong len) {
     return 0;
 }
 
-/*
- * Reads len bytes of data from the specified offset into buf.
- * Returns 0 if all bytes could be read, otherwise returns -1.
- */
-static int
-readFullyAt(ZFILE zfd, void *buf, jlong len, jlong offset)
-{
-    if (IO_Lseek(zfd, offset, SEEK_SET) == -1) {
-        return -1; /* lseek failure. */
-    }
-
-    return readFully(zfd, buf, len);
-}
 
 /*
  * Allocates a new zip file object for the specified file name.
@@ -310,7 +298,8 @@ findEND(jzfile *zip, void *endbuf)
     const jlong len = zip->len;
     const ZFILE zfd = zip->zfd;
     const jlong minHDR = len - END_MAXLEN > 0 ? len - END_MAXLEN : 0;
-    const jlong minPos = minHDR - (sizeof(buf)-ENDHDR);
+    // Android-changed: explicitly cast sizeof result fo prevent sanitizer error.
+    const jlong minPos = minHDR - ((jlong)sizeof(buf)-ENDHDR);
     jint clen;
 
     for (pos = len - sizeof(buf); pos >= minPos; pos -= (sizeof(buf)-ENDHDR)) {
@@ -394,17 +383,18 @@ findEND64(jzfile *zip, void *end64buf, jlong endpos)
     return end64pos;
 }
 
+// Android-changed: Commented-out an unused function
 /*
  * Returns a hash code value for a C-style NUL-terminated string.
  */
-static unsigned int
-hash(const char *s)
-{
-    int h = 0;
-    while (*s != '\0')
-        h = 31*h + *s++;
-    return h;
-}
+// static unsigned int
+// hash(const char *s)
+// {
+//     int h = 0;
+//     while (*s != '\0')
+//         h = 31*h + *s++;
+//     return h;
+// }
 
 /*
  * Returns a hash code value for a string of a specified length.
@@ -548,7 +538,7 @@ if (1) { zip->msg = message; goto Catch; } else ((void)0)
 
 /*
  * Reads zip file central directory. Returns the file position of first
- * CEN header, otherwise returns -1 if an error occured. If zip->msg != NULL
+ * CEN header, otherwise returns -1 if an error occurred. If zip->msg != NULL
  * then the error was a zip format error and zip->msg has the error text.
  * Always pass in -1 for knownTotal; it's used for a recursive call.
  */
@@ -673,7 +663,10 @@ readCEN(jzfile *zip, jint knownTotal)
     entries  = zip->entries  = calloc(total, sizeof(entries[0]));
     tablelen = zip->tablelen = ((total/2) | 1); // Odd -> fewer collisions
     table    = zip->table    = malloc(tablelen * sizeof(table[0]));
-    if (entries == NULL || table == NULL) goto Catch;
+    /* According to ISO C it is perfectly legal for malloc to return zero
+     * if called with a zero argument. We check this for 'entries' but not
+     * for 'table' because 'tablelen' can't be zero (see computation above). */
+    if ((entries == NULL && total != 0) || table == NULL) goto Catch;
     for (j = 0; j < tablelen; j++)
         table[j] = ZIP_ENDCHAIN;
 
@@ -877,14 +870,17 @@ ZIP_Put_In_Cache0(const char *name, ZFILE zfd, char **pmsg, jlong lastModified,
         return NULL;
     }
 
-    // Assumption, zfd refers to start of file. Trivially, reuse errbuf.
-    if (readFully(zfd, errbuf, 4) != -1) {  // errors will be handled later
+    // Trivially, reuse errbuf.
+    if (readFullyAt(zfd, errbuf, 4, 0 /* offset */) != -1) {  // errors will be handled later
         if (GETSIG(errbuf) == LOCSIG)
             zip->locsig = JNI_TRUE;
         else
             zip->locsig = JNI_FALSE;
     }
 
+    // This lseek is safe because it happens during construction of the ZipFile
+    // object. We must take care not to perform any operations that change the
+    // offset after (see b/30407219).
     len = zip->len = IO_Lseek(zfd, 0, SEEK_END);
     if (len <= 0) {
         if (len == 0) { /* zip file is empty */
@@ -984,7 +980,7 @@ readCENHeader(jzfile *zip, jlong cenpos, jint bufsize)
     censize = CENSIZE(cen);
     if (censize <= bufsize) return cen;
     if ((cen = realloc(cen, censize)) == NULL)              goto Catch;
-    if (readFully(zfd, cen+bufsize, censize-bufsize) == -1) goto Catch;
+    if (readFullyAt(zfd, cen+bufsize, censize-bufsize, cenpos + bufsize) == -1) goto Catch;
     return cen;
 
  Catch:
@@ -1064,6 +1060,7 @@ newEntry(jzfile *zip, jzcell *zc, AccessHint accessHint)
     if ((ze->name = malloc(nlen + 1)) == NULL) goto Catch;
     memcpy(ze->name, cen + CENHDR, nlen);
     ze->name[nlen] = '\0';
+    ze->nlen = nlen;
     if (elen > 0) {
         char *extra = cen + CENHDR + nlen;
 
@@ -1161,7 +1158,34 @@ ZIP_FreeEntry(jzfile *jz, jzentry *ze)
 jzentry *
 ZIP_GetEntry(jzfile *zip, char *name, jint ulen)
 {
-    unsigned int hsh = hash(name);
+    if (ulen == 0) {
+        return ZIP_GetEntry2(zip, name, strlen(name), JNI_FALSE);
+    }
+    return ZIP_GetEntry2(zip, name, ulen, JNI_TRUE);
+}
+
+jboolean equals(char* name1, int len1, char* name2, int len2) {
+    if (len1 != len2) {
+        return JNI_FALSE;
+    }
+    while (len1-- > 0) {
+        if (*name1++ != *name2++) {
+            return JNI_FALSE;
+        }
+    }
+    return JNI_TRUE;
+}
+
+/*
+ * Returns the zip entry corresponding to the specified name, or
+ * NULL if not found.
+ * This method supports embedded null character in "name", use ulen
+ * for the length of "name".
+ */
+jzentry *
+ZIP_GetEntry2(jzfile *zip, char *name, jint ulen, jboolean addSlash)
+{
+    unsigned int hsh = hashN(name, ulen);
     jint idx;
     jzentry *ze = 0;
 
@@ -1182,7 +1206,7 @@ ZIP_GetEntry(jzfile *zip, char *name, jint ulen)
 
         /* Check the cached entry first */
         ze = zip->cache;
-        if (ze && strcmp(ze->name,name) == 0) {
+        if (ze && equals(ze->name, ze->nlen, name, ulen)) {
             /* Cache hit!  Remove and return the cached entry. */
             zip->cache = 0;
             ZIP_Unlock(zip);
@@ -1208,7 +1232,7 @@ ZIP_GetEntry(jzfile *zip, char *name, jint ulen)
                  * we keep searching.
                  */
                 ze = newEntry(zip, zc, ACCESS_RANDOM);
-                if (ze && strcmp(ze->name, name)==0) {
+                if (ze && equals(ze->name, ze->nlen, name, ulen)) {
                     break;
                 }
                 if (ze != 0) {
@@ -1227,8 +1251,8 @@ ZIP_GetEntry(jzfile *zip, char *name, jint ulen)
             break;
         }
 
-        /* If no real length was passed in, we are done */
-        if (ulen == 0) {
+        /* If no need to try appending slash, we are done */
+        if (!addSlash) {
             break;
         }
 
@@ -1238,11 +1262,11 @@ ZIP_GetEntry(jzfile *zip, char *name, jint ulen)
         }
 
         /* Add slash and try once more */
-        name[ulen] = '/';
-        name[ulen+1] = '\0';
+        name[ulen++] = '/';
+        name[ulen] = '\0';
         hsh = hash_append(hsh, '/');
         idx = zip->table[hsh % zip->tablelen];
-        ulen = 0;
+        addSlash = JNI_FALSE;
     }
 
 Finally:
@@ -1329,11 +1353,22 @@ ZIP_GetEntryDataOffset(jzfile *zip, jzentry *entry)
 jint
 ZIP_Read(jzfile *zip, jzentry *entry, jlong pos, void *buf, jint len)
 {
-    jlong entry_size = (entry->csize != 0) ? entry->csize : entry->size;
+    jlong entry_size;
     jlong start;
+
+    if (zip == 0) {
+        return -1;
+    }
 
     /* Clear previous zip error */
     zip->msg = NULL;
+
+    if (entry == 0) {
+        zip->msg = "ZIP_Read: jzentry is NULL";
+        return -1;
+    }
+
+    entry_size = (entry->csize != 0) ? entry->csize : entry->size;
 
     /* Check specified position */
     if (pos < 0 || pos > entry_size - 1) {
@@ -1464,6 +1499,12 @@ jboolean JNICALL
 ZIP_ReadEntry(jzfile *zip, jzentry *entry, unsigned char *buf, char *entryname)
 {
     char *msg;
+    char tmpbuf[1024];
+
+    if (entry == 0) {
+        jio_fprintf(stderr, "jzentry was invalid");
+        return JNI_FALSE;
+    }
 
     strcpy(entryname, entry->name);
     if (entry->csize == 0) {
@@ -1482,8 +1523,11 @@ ZIP_ReadEntry(jzfile *zip, jzentry *entry, unsigned char *buf, char *entryname)
             msg = zip->msg;
             ZIP_Unlock(zip);
             if (n == -1) {
-                jio_fprintf(stderr, "%s: %s\n", zip->name,
-                            msg != 0 ? msg : strerror(errno));
+                if (msg == 0) {
+                    getErrorString(errno, tmpbuf, sizeof(tmpbuf));
+                    msg = tmpbuf;
+                }
+                jio_fprintf(stderr, "%s: %s\n", zip->name, msg);
                 return JNI_FALSE;
             }
             buf += n;
@@ -1496,8 +1540,11 @@ ZIP_ReadEntry(jzfile *zip, jzentry *entry, unsigned char *buf, char *entryname)
             if ((msg == NULL) || (*msg == 0)) {
                 msg = zip->msg;
             }
-            jio_fprintf(stderr, "%s: %s\n", zip->name,
-                        msg != 0 ? msg : strerror(errno));
+            if (msg == 0) {
+                getErrorString(errno, tmpbuf, sizeof(tmpbuf));
+                msg = tmpbuf;
+            }
+            jio_fprintf(stderr, "%s: %s\n", zip->name, msg);
             return JNI_FALSE;
         }
     }

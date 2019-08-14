@@ -456,7 +456,11 @@ retry:
     // Has to be done before read
     JackDriver::CycleIncTime();
 
+#ifdef ENABLE_POLL_IN_READ_IMMEDIATELY
+	return 0;
+#else
     return alsa_driver_read((alsa_driver_t *)fDriver, fBufferSize);
+#endif
 }
 
 int JackAlsaDriver::Write()
@@ -508,6 +512,13 @@ void JackAlsaDriver::SetTimetAux(jack_time_t time)
 
 void JackAlsaDriver::WriteOutputAux(jack_nframes_t orig_nframes, snd_pcm_sframes_t contiguous, snd_pcm_sframes_t nwritten)
 {
+#ifdef __ANDROID__
+	if( fPlaybackChannels >= 4 ){
+		WriteOutputAux_4ch(orig_nframes, contiguous, nwritten);
+		return;
+	}
+#endif
+
     for (int chn = 0; chn < fPlaybackChannels; chn++) {
         // Output ports
         if (fGraphManager->GetConnectionsNum(fPlaybackPortList[chn]) > 0) {
@@ -531,7 +542,7 @@ void JackAlsaDriver::WriteOutputAux(jack_nframes_t orig_nframes, snd_pcm_sframes
             }
         }
     }
-    
+
 #if defined (__ANDROID__) && defined (ENABLE_JACK_LOGGER)
     if(mJackLogger){
         if(mJackLogger->isStartedPcmDump()) {
@@ -553,7 +564,34 @@ void JackAlsaDriver::WriteOutputAux_2nd(jack_nframes_t orig_nframes, snd_pcm_sfr
         }
     }
 }
+
+
+void JackAlsaDriver::WriteOutputAux_4ch(jack_nframes_t orig_nframes, snd_pcm_sframes_t contiguous, snd_pcm_sframes_t nwritten){
+
+	for (int chn = 0; chn < fPlaybackChannels; chn++) {
+		jack_default_audio_sample_t* buf;
+
+		if( chn == 0 || chn == 1){
+			buf = (jack_default_audio_sample_t*)fGraphManager->GetBuffer(fPlaybackPortList[1], orig_nframes);
+		} else {
+			buf = (jack_default_audio_sample_t*)fGraphManager->GetBuffer(fPlaybackPortList[0], orig_nframes);
+		}
+
+		alsa_driver_write_to_channel(((alsa_driver_t *)fDriver), chn, buf + nwritten, contiguous);
+	}
+
+#if defined (ENABLE_JACK_LOGGER)
+    if(mJackLogger){
+        if(mJackLogger->isStartedPcmDump()) {
+            jack_default_audio_sample_t* buf = (jack_default_audio_sample_t*)fGraphManager->GetBuffer(fPlaybackPortList[0], orig_nframes);
+            mJackLogger->dumpWriteData((float*)((alsa_driver_t *)fDriver)->playback_addr[0],contiguous);
+        }
+    }
 #endif
+
+}
+#endif
+
 
 int JackAlsaDriver::is_realtime() const
 {

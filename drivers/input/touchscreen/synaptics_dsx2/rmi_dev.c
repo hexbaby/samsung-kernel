@@ -19,7 +19,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <asm/unaligned.h>
-//#include <mach/cpufreq.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
@@ -206,7 +205,7 @@ static ssize_t rmidev_sysfs_open_store(struct kobject *kobj,
 	unsigned int input;
 	struct synaptics_rmi4_data *rmi4_data = rmi_attr_kobj_to_drvdata(kobj);
 
-	if (sscanf(buf, "%u", &input) != 1)
+	if (kstrtouint(buf, 10, &input))
 		return -EINVAL;
 
 	if (input != 1)
@@ -228,7 +227,7 @@ static ssize_t rmidev_sysfs_release_store(struct kobject *kobj,
 	unsigned int input;
 	struct synaptics_rmi4_data *rmi4_data = rmi_attr_kobj_to_drvdata(kobj);
 
-	if (sscanf(buf, "%u", &input) != 1)
+	if (kstrtouint(buf, 10, &input))
 		return -EINVAL;
 
 	if (input != 1)
@@ -532,17 +531,7 @@ static void rmidev_device_cleanup(struct rmidev_data *dev_data)
 
 	return;
 }
-#if 0 // jjlee_temp
-static char *rmi_char_devnode(struct device *dev, mode_t *mode)
-{
-	if (!mode)
-		return NULL;
 
-	*mode = (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-
-	return kasprintf(GFP_KERNEL, "rmi/%s", dev_name(dev));
-}
-#endif
 static int rmidev_create_device_class(struct synaptics_rmi4_data *rmi4_data)
 {
 	/* If class is not created, create first it. */
@@ -554,9 +543,6 @@ static int rmidev_create_device_class(struct synaptics_rmi4_data *rmi4_data)
 					__func__, CHAR_DEVICE_NAME);
 			return -ENODEV;
 		}
-
-		// jjlee_temp
-		//rmidev_device_class->devnode = rmi_char_devnode;
 	}
 
 	return 0;

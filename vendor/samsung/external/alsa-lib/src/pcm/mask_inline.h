@@ -20,7 +20,6 @@
  */
   
 #include <sys/types.h>
-#include <strings.h>
 
 #define MASK_INLINE static inline
 

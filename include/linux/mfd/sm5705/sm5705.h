@@ -50,6 +50,7 @@ enum sm5705_muic_reg {
     SM5705_MUIC_REG_INTMASK1		= 0x06,
     SM5705_MUIC_REG_INTMASK2		= 0x07,
     SM5705_MUIC_REG_INTMASK3_AFC	= 0x08,
+    SM5705_MUIC_REG_HIDDEN_3A		= 0x3A,
 
     SM5705_MUIC_REG_END,
 };
@@ -58,6 +59,8 @@ enum sm5705_irq_source {
     MUIC_INT1 = 0,
     MUIC_INT2,
     MUIC_INT3_AFC,
+
+    MUIC_RESET,
 
     SM5705_IRQ_GROUP_NR,
 };
@@ -92,6 +95,8 @@ enum sm5705_muic_irq {
     SM5705_MUIC_IRQ_INT3_VBUS_UPDATE,      /* 18 */
     SM5705_MUIC_IRQ_INT3_AFC_ACCEPTED,     /* 19 */
     SM5705_MUIC_IRQ_INT3_AFC_TA_ATTACHED,  /* 20 */
+
+    SM5705_MUIC_IRQ_RESET,  /* 21 */
 
     SM5705_IRQ_NR,
 };

@@ -95,6 +95,7 @@ typedef enum {
 	ADC_SMARTDOCK		= 0x10, /* 0x10000 40.2K ohm */
 	ADC_RDU_TA		= 0x10, /* 0x10000 40.2K ohm */
 	ADC_HMT			= 0x11, /* 0x10001 49.9K ohm */
+	ADC_KEYBOARDDOCK	= 0x11, /* 0x10001 49.9K ohm */
 	ADC_AUDIODOCK		= 0x12, /* 0x10010 64.9K ohm */
 	ADC_USB_LANHUB		= 0x13, /* 0x10011 80.07K ohm */
 	ADC_CHARGING_CABLE	= 0x14,	/* 0x10100 102K ohm */

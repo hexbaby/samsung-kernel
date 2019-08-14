@@ -8,6 +8,22 @@
  * published by the Free Software Foundation.
  */
 
+#define MAX_DDR_ERR_ADDR_CNT 10
+
+#ifdef CONFIG_SEC_NAD
+struct param_qnad {
+	unsigned int magic;
+	unsigned int qmvs_remain_count;
+	unsigned int ddrtest_remain_count;
+	unsigned int ddrtest_result;
+};
+
+struct param_qnad_ddr_result {
+	unsigned int ddr_err_addr_total;
+	unsigned long long ddr_err_addr[MAX_DDR_ERR_ADDR_CNT];
+};
+#endif
+
 struct sec_param_data {
 	unsigned int debuglevel;
 	unsigned int uartsel;
@@ -57,6 +73,13 @@ struct sec_param_data {
 	char param_carrierid[4]; //only use 3digits, 1 for null
 	char param_sales[4]; //only use 3digits, 1 for null
 	char param_lcd_resolution[8]; // Variable LCD resolution
+#ifdef CONFIG_SEC_NAD
+	struct param_qnad param_qnad_data;
+	struct param_qnad_ddr_result param_qnad_ddr_result_data;
+#else
+	unsigned int reserved7[5];
+	unsigned long long reserved8[MAX_DDR_ERR_ADDR_CNT];
+#endif
 };
 
 struct sec_param_data_s {
@@ -97,6 +120,10 @@ enum sec_param_index {
 #endif	
 	param_index_cp_reserved_mem,
 	param_index_lcd_resolution,
+#ifdef CONFIG_SEC_NAD
+	param_index_qnad,
+	param_index_qnad_ddr_result,
+#endif	
 	param_index_max_sec_param_data,
 #ifdef CONFIG_USER_RESET_DEBUG
 	param_index_reset_ex_info,
@@ -111,8 +138,13 @@ extern bool sec_get_param(enum sec_param_index index, void *value);
 extern bool sec_set_param(enum sec_param_index index, void *value);
 
 #define SEC_PARAM_FILE_SIZE	(0xA00000)		/* 10MB */
-#define SEC_PARAM_FILE_OFFSET (SEC_PARAM_FILE_SIZE - 0x100000)
+#ifdef CONFIG_SCSI_UFSHCD //using UFS
 #define SECTOR_UNIT_SIZE (4096) /* UFS */
+#else
+#define SECTOR_UNIT_SIZE (512) /* eMMC */
+#endif
+#define SEC_PARAM_FILE_OFFSET (SEC_PARAM_FILE_SIZE - (256*SECTOR_UNIT_SIZE))
+
 
 #ifdef CONFIG_USER_RESET_DEBUG 
 #define SEC_PARAM_DEBUG_HEADER_OFFSET	(4*1024*1024 - 4*1024)

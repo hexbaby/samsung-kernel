@@ -53,10 +53,12 @@ JackConnectionManager::~JackConnectionManager()
 // Internal API
 //--------------
 
-bool JackConnectionManager::IsLoopPathAux(int ref1, int ref2) const
+bool JackConnectionManager::IsLoopPathAux(int ref1, int ref2, JackFixedArray<CLIENT_NUM>& visit) const
 {
     jack_log("JackConnectionManager::IsLoopPathAux ref1 = %ld ref2 = %ld", ref1, ref2);
 
+	visit.AddItem(ref1);
+	
     if (ref1 < GetEngineControl()->fDriverNum || ref2 < GetEngineControl()->fDriverNum) {
         return false;
     } else if (ref1 == ref2) {	// Same refnum
@@ -69,7 +71,9 @@ bool JackConnectionManager::IsLoopPathAux(int ref1, int ref2) const
             return true;
         } else {
             for (int i = 0; i < CLIENT_NUM && output[i] != EMPTY; i++) { // Otherwise recurse for all ref1 outputs
-                if (IsLoopPathAux(output[i], ref2))
+                if (visit.CheckItem(output[i]) == true) // if exist, skip the recursive. because of it is already visited.
+					continue;
+                if (IsLoopPathAux(output[i], ref2, visit))
                     return true; // Stop when a path is found
             }
             return false;
@@ -421,7 +425,8 @@ int JackConnectionManager::GetOutputRefNum(jack_port_id_t port_index) const
 */
 bool JackConnectionManager::IsLoopPath(jack_port_id_t port_src, jack_port_id_t port_dst) const
 {
-    return IsLoopPathAux(GetInputRefNum(port_dst), GetOutputRefNum(port_src));
+	JackFixedArray<CLIENT_NUM> visit;
+    return IsLoopPathAux(GetInputRefNum(port_dst), GetOutputRefNum(port_src), visit);
 }
 
 bool JackConnectionManager::IsFeedbackConnection(jack_port_id_t port_src, jack_port_id_t port_dst) const

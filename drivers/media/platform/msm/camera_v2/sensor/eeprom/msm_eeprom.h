@@ -32,15 +32,14 @@ struct msm_eeprom_ctrl_t;
 #define REAR_CAM_MAP_VERSION_ADDR   0x0040
 #define FROM_AF_CAL_PAN_ADDR        0x0110
 #define FROM_AF_CAL_MACRO_ADDR      0x010C
-/* Module ID : 0x00A8~0x00B7(16Byte) for EEPROM (Don't support OTP)*/
-#define FROM_MODULE_ID_ADDR         0x00A8
 #else
 #define REAR_CAM_MAP_VERSION_ADDR   0x0063
 #define FROM_AF_CAL_PAN_ADDR        0x3C30
 #define FROM_AF_CAL_MACRO_ADDR      0x3C28
+#endif
+
 /* Module ID : 0x00A8~0x00B7(16Byte) for FROM, EEPROM (Don't support OTP)*/
 #define FROM_MODULE_ID_ADDR         0x00AE
-#endif
 
 #define FRONT_CAM_MAP_VERSION_ADDR  0x0043
 #define FROM_FRONT_SENSOR_ID_ADDR   0x0054

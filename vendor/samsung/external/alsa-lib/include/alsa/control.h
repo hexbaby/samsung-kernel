@@ -182,6 +182,13 @@ typedef enum _snd_ctl_event_type {
 /** Mute state */
 #define SND_CTL_TLV_DB_GAIN_MUTE	-9999999
 
+/** TLV type - fixed channel map positions */
+#define SND_CTL_TLVT_CHMAP_FIXED	0x00101
+/** TLV type - freely swappable channel map positions */
+#define SND_CTL_TLVT_CHMAP_VAR		0x00102
+/** TLV type - pair-wise swappable channel map positions */
+#define SND_CTL_TLVT_CHMAP_PAIRED	0x00103
+
 /** CTL type */
 typedef enum _snd_ctl_type {
 	/** Kernel level CTL */
@@ -224,8 +231,10 @@ char *snd_device_name_get_hint(const void *hint, const char *id);
 
 int snd_ctl_open(snd_ctl_t **ctl, const char *name, int mode);
 int snd_ctl_open_lconf(snd_ctl_t **ctl, const char *name, int mode, snd_config_t *lconf);
+int snd_ctl_open_fallback(snd_ctl_t **ctl, snd_config_t *root, const char *name, const char *orig_name, int mode);
 int snd_ctl_close(snd_ctl_t *ctl);
 int snd_ctl_nonblock(snd_ctl_t *ctl, int nonblock);
+static __inline__ int snd_ctl_abort(snd_ctl_t *ctl) { return snd_ctl_nonblock(ctl, 2); }
 int snd_async_add_ctl_handler(snd_async_handler_t **handler, snd_ctl_t *ctl, 
 			      snd_async_callback_t callback, void *private_data);
 snd_ctl_t *snd_async_handler_get_ctl(snd_async_handler_t *handler);
@@ -236,8 +245,8 @@ int snd_ctl_subscribe_events(snd_ctl_t *ctl, int subscribe);
 int snd_ctl_card_info(snd_ctl_t *ctl, snd_ctl_card_info_t *info);
 int snd_ctl_elem_list(snd_ctl_t *ctl, snd_ctl_elem_list_t *list);
 int snd_ctl_elem_info(snd_ctl_t *ctl, snd_ctl_elem_info_t *info);
-int snd_ctl_elem_read(snd_ctl_t *ctl, snd_ctl_elem_value_t *value);
-int snd_ctl_elem_write(snd_ctl_t *ctl, snd_ctl_elem_value_t *value);
+int snd_ctl_elem_read(snd_ctl_t *ctl, snd_ctl_elem_value_t *data);
+int snd_ctl_elem_write(snd_ctl_t *ctl, snd_ctl_elem_value_t *data);
 int snd_ctl_elem_lock(snd_ctl_t *ctl, snd_ctl_elem_id_t *id);
 int snd_ctl_elem_unlock(snd_ctl_t *ctl, snd_ctl_elem_id_t *id);
 int snd_ctl_elem_tlv_read(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
@@ -399,6 +408,8 @@ void snd_ctl_elem_info_set_item(snd_ctl_elem_info_t *obj, unsigned int val);
 const char *snd_ctl_elem_info_get_item_name(const snd_ctl_elem_info_t *obj);
 int snd_ctl_elem_info_get_dimensions(const snd_ctl_elem_info_t *obj);
 int snd_ctl_elem_info_get_dimension(const snd_ctl_elem_info_t *obj, unsigned int idx);
+int snd_ctl_elem_info_set_dimension(snd_ctl_elem_info_t *info,
+				    const int dimension[4]);
 void snd_ctl_elem_info_get_id(const snd_ctl_elem_info_t *obj, snd_ctl_elem_id_t *ptr);
 unsigned int snd_ctl_elem_info_get_numid(const snd_ctl_elem_info_t *obj);
 snd_ctl_elem_iface_t snd_ctl_elem_info_get_interface(const snd_ctl_elem_info_t *obj);
@@ -414,9 +425,31 @@ void snd_ctl_elem_info_set_subdevice(snd_ctl_elem_info_t *obj, unsigned int val)
 void snd_ctl_elem_info_set_name(snd_ctl_elem_info_t *obj, const char *val);
 void snd_ctl_elem_info_set_index(snd_ctl_elem_info_t *obj, unsigned int val);
 
+int snd_ctl_add_integer_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+				 unsigned int element_count,
+				 unsigned int member_count,
+				 long min, long max, long step);
+int snd_ctl_add_integer64_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+				   unsigned int element_count,
+				   unsigned int member_count,
+				   long long min, long long max,
+				   long long step);
+int snd_ctl_add_boolean_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+				 unsigned int element_count,
+				 unsigned int member_count);
+int snd_ctl_add_enumerated_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+				    unsigned int element_count,
+				    unsigned int member_count,
+				    unsigned int items,
+				    const char *const labels[]);
+int snd_ctl_add_bytes_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+			       unsigned int element_count,
+			       unsigned int member_count);
+
 int snd_ctl_elem_add_integer(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id, unsigned int count, long imin, long imax, long istep);
 int snd_ctl_elem_add_integer64(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id, unsigned int count, long long imin, long long imax, long long istep);
 int snd_ctl_elem_add_boolean(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id, unsigned int count);
+int snd_ctl_elem_add_enumerated(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id, unsigned int count, unsigned int items, const char *const names[]);
 int snd_ctl_elem_add_iec958(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id);
 int snd_ctl_elem_remove(snd_ctl_t *ctl, snd_ctl_elem_id_t *id);
 
@@ -522,6 +555,7 @@ int snd_hctl_open(snd_hctl_t **hctl, const char *name, int mode);
 int snd_hctl_open_ctl(snd_hctl_t **hctlp, snd_ctl_t *ctl);
 int snd_hctl_close(snd_hctl_t *hctl);
 int snd_hctl_nonblock(snd_hctl_t *hctl, int nonblock);
+static __inline__ int snd_hctl_abort(snd_hctl_t *hctl) { return snd_hctl_nonblock(hctl, 2); }
 int snd_hctl_poll_descriptors_count(snd_hctl_t *hctl);
 int snd_hctl_poll_descriptors(snd_hctl_t *hctl, struct pollfd *pfds, unsigned int space);
 int snd_hctl_poll_descriptors_revents(snd_hctl_t *ctl, struct pollfd *pfds, unsigned int nfds, unsigned short *revents);

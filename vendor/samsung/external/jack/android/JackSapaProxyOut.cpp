@@ -42,7 +42,7 @@ extern "C"
         jack_driver_desc_filler_t filler;
         jack_driver_param_value_t value;
 
-        desc = jack_driver_descriptor_construct("out", JackDriverNone, "sapaproxy client", &filler);
+        desc = jack_driver_descriptor_construct("out", JackDriverNone, "sapaproxy out client", &filler);
 
         value.ui = 0U;
         jack_driver_descriptor_add_parameter(desc, &filler, "capture", 'C', JackDriverParamUInt, &value, NULL, "Number of capture ports", NULL);
@@ -54,18 +54,24 @@ extern "C"
     SERVER_EXPORT int jack_internal_initialize(jack_client_t* jack_client, const JSList* params)
     {
         if (sapaproxy) {
-            jack_info("sapaproxy already loaded");
+            jack_info("sapaproxy out already loaded");
             return 1;
         }
 
-        jack_log("Loading sapaproxy");
-        sapaproxy = new Jack::JackSapaProxy(jack_client, params);
+        jack_log("Loading sapaproxy out");
+        try {
+            sapaproxy = new Jack::JackSapaProxy(jack_client, params);
+        } catch (...) {
+            jack_error("Failed to allocate sapaproxy out");
+            sapaproxy = NULL;
+            return -1;
+        }
+        assert(sapaproxy);
         if (!params) {
             sapaproxy->fCapturePorts  = 0U;
             sapaproxy->fPlaybackPorts = 2U;
         }
         sapaproxy->Setup(jack_client);
-        assert(sapaproxy);
         return 0;
     }
 
@@ -89,11 +95,13 @@ extern "C"
 
     SERVER_EXPORT void jack_finish(void* arg)
     {
-        Jack::JackSapaProxy* sapaproxy = static_cast<Jack::JackSapaProxy*>(arg);
+        Jack::JackSapaProxy* proxy = static_cast<Jack::JackSapaProxy*>(arg);
 
+		assert(proxy == sapaproxy);
         if (sapaproxy) {
-            jack_log("Unloading sapaproxy");
-            delete sapaproxy;
+            jack_log("Unloading sapaproxy out");
+            sapaproxy = NULL;
+            delete proxy;
         }
     }
 

@@ -102,7 +102,7 @@ struct vendor_ops {
 	int (*get_vbus_value)(struct regmap_desc *, int);
 	int (*get_vbus_rawdata)(struct regmap_desc *);
 	bool (*get_dcdtmr_irq)(struct regmap_desc *);
-#if defined(CONFIG_MUIC_UNIVERSAL_SM5703) || defined(CONFIG_MUIC_UNIVERSAL_SM5705)
+#if defined(CONFIG_MUIC_UNIVERSAL_SM5703)
 	int (*rescan)(struct regmap_desc *, int);
 #endif
 #if defined(CONFIG_SEC_DEBUG)

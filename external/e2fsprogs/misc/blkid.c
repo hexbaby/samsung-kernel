@@ -9,6 +9,7 @@
  * %End-Header%
  */
 
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -37,7 +38,7 @@ extern int optind;
 #include "ext2fs/ext2fs.h"
 #include "blkid/blkid.h"
 
-const char *progname = "blkid";
+static const char *progname = "blkid";
 
 static void print_version(FILE *out)
 {
@@ -65,7 +66,8 @@ static void usage(int error)
 	exit(error);
 }
 
-// [@VOLD took code from ./android/dalvik/vm/CheckJni.cpp for supporting non UTF8 strings
+//@VOLD[
+// Samsung: took code from ./android/dalvik/vm/CheckJni.cpp
 typedef unsigned char u1;
 typedef unsigned short u2;
 typedef unsigned int u4;
@@ -76,52 +78,51 @@ static u1 checkUtfBytes(const char* bytes, int len, const char** errorKind) {
         u1 utf8 = *(bytes++);
         // Switch on the high four bits.
         switch (utf8 >> 4) {
-        case 0x00:
-        case 0x01:
-        case 0x02:
-        case 0x03:
-        case 0x04:
-        case 0x05:
-        case 0x06:
-        case 0x07:
-            // Bit pattern 0xxx. No need for any extra bytes.
-            break;
-        case 0x08:
-        case 0x09:
-        case 0x0a:
-        case 0x0b:
-        case 0x0f:
-            /*
-             * Bit pattern 10xx or 1111, which are illegal start bytes.
-             * Note: 1111 is valid for normal UTF-8, but not the
-             * modified UTF-8 used here.
-             */
-            *errorKind = "start";
-            return utf8;
-        case 0x0e:
-            // Bit pattern 1110, so there are two additional bytes.
-            utf8 = *(bytes++);
-            if ((utf8 & 0xc0) != 0x80) {
-                *errorKind = "continuation";
+            case 0x00:
+            case 0x01:
+            case 0x02:
+            case 0x03:
+            case 0x04:
+            case 0x05:
+            case 0x06:
+            case 0x07:
+                // Bit pattern 0xxx. No need for any extra bytes.
+                break;
+            case 0x08:
+            case 0x09:
+            case 0x0a:
+            case 0x0b:
+            case 0x0f:
+                /*
+                 * Bit pattern 10xx or 1111, which are illegal start bytes.
+                 * Note: 1111 is valid for normal UTF-8, but not the
+                 * modified UTF-8 used here.
+                 */
+                *errorKind = "start";
                 return utf8;
-            }
-            // Fall through to take care of the final byte.
-        case 0x0c:
-        case 0x0d:
-            // Bit pattern 110x, so there is one additional byte.
-            utf8 = *(bytes++);
-            if ((utf8 & 0xc0) != 0x80) {
-                *errorKind = "continuation";
-                return utf8;
-            }
-            break;
+            case 0x0e:
+                // Bit pattern 1110, so there are two additional bytes.
+                utf8 = *(bytes++);
+                if ((utf8 & 0xc0) != 0x80) {
+                    *errorKind = "continuation";
+                    return utf8;
+                }
+                // Fall through to take care of the final byte.
+            case 0x0c:
+            case 0x0d:
+                // Bit pattern 110x, so there is one additional byte.
+                utf8 = *(bytes++);
+                if ((utf8 & 0xc0) != 0x80) {
+                    *errorKind = "continuation";
+                    return utf8;
+                }
+                break;
         }
         len--;
     }
     return 0;
 }
-// @VOLD]
-
+//]
 /*
  * This function does "safe" printing.  It will convert non-printable
  * ASCII characters using '^' and M- notation.
@@ -129,7 +130,7 @@ static u1 checkUtfBytes(const char* bytes, int len, const char** errorKind) {
 static void safe_print(const char *cp, int len)
 {
 	unsigned char	ch;
-// [@VOLD Supporting non UTF8 strings
+//@VOLD[    
     const char* errorKind = NULL;
     checkUtfBytes(cp,len, &errorKind);
     //Android do not accept non utf8 strings
@@ -137,8 +138,7 @@ static void safe_print(const char *cp, int len)
     if (errorKind != NULL) {
         return;
     }
-// @VOLD]
-
+//]
 	if (len < 0)
 		len = strlen(cp);
 
@@ -165,19 +165,27 @@ static int get_terminal_width(void)
 	struct winsize	w_win;
 #endif
         const char	*cp;
+	int width = 80;
 
 #ifdef TIOCGSIZE
-	if (ioctl (0, TIOCGSIZE, &t_win) == 0)
-		return (t_win.ts_cols);
+	if (ioctl (0, TIOCGSIZE, &t_win) == 0) {
+		width = t_win.ts_cols;
+		goto got_it;
+	}
 #endif
 #ifdef TIOCGWINSZ
-	if (ioctl (0, TIOCGWINSZ, &w_win) == 0)
-		return (w_win.ws_col);
+	if (ioctl (0, TIOCGWINSZ, &w_win) == 0) {
+		width = w_win.ws_col;
+		goto got_it;
+	}
 #endif
         cp = getenv("COLUMNS");
 	if (cp)
-		return strtol(cp, NULL, 10);
-	return 80;
+		width = atoi(cp);
+got_it:
+	if (width > 4096)
+		return 4096;	/* sanity check */
+	return width;
 }
 
 static int pretty_print_word(const char *str, int max_len,
@@ -192,9 +200,9 @@ static int pretty_print_word(const char *str, int max_len,
 		len = 0;
 	} else if (len > max_len)
 		ret = len - max_len;
-	do
+	do {
 		fputc(' ', stdout);
-	while (len++ < max_len);
+	} while (len++ < max_len);
 	return ret;
 }
 
@@ -207,20 +215,21 @@ static void pretty_print_line(const char *device, const char *fs_type,
 	static int term_width = -1;
 	int len, w;
 
-	if (term_width < 0)
+	if (term_width < 0) {
 		term_width = get_terminal_width();
 
-	if (term_width > 80) {
-		term_width -= 80;
-		w = term_width / 10;
-		if (w > 8)
-			w = 8;
-		term_width -= 2*w;
-		label_len += w;
-		fs_type_len += w;
-		w = term_width/2;
-		device_len += w;
-		mtpt_len +=w;
+		if (term_width > 80) {
+			term_width -= 80;
+			w = term_width / 10;
+			if (w > 8)
+				w = 8;
+			term_width -= 2*w;
+			label_len += w;
+			fs_type_len += w;
+			w = term_width/2;
+			device_len += w;
+			mtpt_len +=w;
+		}
 	}
 
 	len = pretty_print_word(device, device_len, 0, 1);
@@ -349,10 +358,7 @@ int main(int argc, char **argv)
 	while ((c = getopt (argc, argv, "c:f:ghlLo:s:t:w:v")) != EOF)
 		switch (c) {
 		case 'c':
-			if (optarg && !*optarg)
-				read = NULL;
-			else
-				read = optarg;
+			read = optarg;
 			if (!write)
 				write = read;
 			break;
@@ -405,13 +411,11 @@ int main(int argc, char **argv)
 			version = 1;
 			break;
 		case 'w':
-			if (optarg && !*optarg)
-				write = NULL;
-			else
-				write = optarg;
+			write = optarg;
 			break;
 		case 'h':
 			err = 0;
+			/* fallthrough */
 		default:
 			usage(err);
 		}

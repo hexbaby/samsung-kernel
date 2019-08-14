@@ -102,6 +102,13 @@ int JackServer::Open(jack_driver_desc_t* driver_desc, JSList* driver_params)
         jack_error("Cannot initialize driver");
         goto fail_close1;
     }
+
+#ifdef __ANDROID__
+	if( NULL != driver_desc){
+		strncpy(fAudioDriverName, driver_desc->name, JACK_DRIVER_NAME_MAX + 1);
+	}
+#endif
+
     jack_info("JackServer ........");
 
     if (fChannel.Open(fEngineControl->fServerName, this) < 0) {
@@ -273,7 +280,8 @@ no graph state change can be done during freewheel mode.
 
 int JackServer::SetFreewheel(bool onoff)
 {
-    jack_log("JackServer::SetFreewheel is = %ld want = %ld", fFreewheel, onoff);
+    jack_info("JackServer::SetFreewheel is = %ld want = %ld", fFreewheel, onoff);
+    JackLock lock(this);
 
     if (fFreewheel) {
         if (onoff) {
@@ -285,7 +293,9 @@ int JackServer::SetFreewheel(bool onoff)
             fEngine->NotifyFreewheel(onoff);
             fFreewheelDriver->SetMaster(false);
             fAudioDriver->SetMaster(true);
-            return fAudioDriver->Start();
+			int ret = fAudioDriver->Start();
+			usleep(1000 * 1000);
+			return ret;
         }
     } else {
         if (onoff) {
@@ -366,6 +376,8 @@ void JackServer::RemoveSlave(JackDriverInfo* info)
 
 int JackServer::SwitchMaster(jack_driver_desc_t* driver_desc, JSList* driver_params)
 {
+    JackLock lock(this);
+
     /// Remove current master
     fAudioDriver->Stop();
     fAudioDriver->Detach();
@@ -399,6 +411,13 @@ int JackServer::SwitchMaster(jack_driver_desc_t* driver_desc, JSList* driver_par
     fAudioDriver->Attach();
     fAudioDriver->SetMaster(true);
     return fAudioDriver->Start();
+}
+
+void JackServer::RestartAudioDriver()
+{
+    jack_error("RestartAudioDriver");
+    fAudioDriver->Stop();
+    fAudioDriver->Start();
 }
 
 //----------------------

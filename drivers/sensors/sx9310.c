@@ -69,7 +69,8 @@
 #define TOUCH_STATE              1
 #define BODY_STATE               2
 
-#define HALLIC_PATH             "/sys/class/sec/sec_key/hall_detect"
+#define HALL_PATH              "/sys/class/sec/sec_key/hall_detect"
+#define HALL_CLOSE_STATE       1
 
 struct sx9310_p {
 	struct i2c_client *client;
@@ -89,6 +90,7 @@ struct sx9310_p {
 	bool check_usb;
 	u8 normal_th;
 	u8 normal_th_buf;
+	u8 ta_th;
 	int irq;
 	int gpio_nirq;
 	int state;
@@ -96,6 +98,10 @@ struct sx9310_p {
 	int diff_avg;
 	int diff_cnt;
 	int init_done;
+	int irq_cnt;
+	int abnormal_mode;
+
+	s32 max_diff;
 	s32 capmain;
 	s16 useful;
 	s16 avg;
@@ -106,40 +112,39 @@ struct sx9310_p {
 	int ch2_state;
 
 	atomic_t enable;
-
-	unsigned char hall_ic[5];
 };
 
-static int check_hallic_state(char *file_path, unsigned char hall_ic_status[])
+static int sx9310_get_hall_state(struct sx9310_p *data)
 {
-	int iRet = 0;
+	char hall_buf[6];
+	int ret = -ENODEV;
+	int hall_state = -1;
 	mm_segment_t old_fs;
 	struct file *filep;
-	u8 hall_sysfs[5];
 
+	memset(hall_buf, 0, sizeof(hall_buf));
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
-	filep = filp_open(file_path, O_RDONLY, 0666);
+	filep = filp_open(HALL_PATH, O_RDONLY, 0666);
 	if (IS_ERR(filep)) {
-		iRet = PTR_ERR(filep);
 		set_fs(old_fs);
-		goto exit;
+		return hall_state;
 	}
 
-	iRet = filep->f_op->read(filep, hall_sysfs,
-		(int)sizeof(u8) * 4, &filep->f_pos);
+	ret = filep->f_op->read(filep, hall_buf,
+		sizeof(hall_buf) - 1, &filep->f_pos);
+	if (ret != sizeof(hall_buf) - 1)
+		goto exit;
 
-	if (iRet == (int)sizeof(u8) * 4)
-		strncpy(hall_ic_status, hall_sysfs, sizeof(hall_sysfs));
-	else
-		iRet = -EIO;
+	if (strcmp(hall_buf, "CLOSE") == 0)
+		hall_state = HALL_CLOSE_STATE;
 
+exit:
 	filp_close(filep, current->files);
 	set_fs(old_fs);
 
-exit:
-	return iRet;
+	return hall_state;
 }
 
 static int sx9310_get_nirq_state(struct sx9310_p *data)
@@ -269,8 +274,6 @@ static int sx9310_set_offset_calibration(struct sx9310_p *data)
 
 static void send_event(struct sx9310_p *data, u8 state)
 {
-	data->normal_th = data->normal_th_buf;
-
 	if (state == ACTIVE) {
 		data->state = ACTIVE;
 #if (MAIN_SENSOR == 1)
@@ -443,7 +446,7 @@ static ssize_t sx9310_set_offset_calibration_store(struct device *dev,
 
 	if (kstrtoul(buf, 10, &val)) {
 		pr_err("[SX9310]: %s - Invalid Argument\n", __func__);
-		return -EINVAL;
+		return count;
 	}
 
 	if (val)
@@ -458,10 +461,10 @@ static ssize_t sx9310_register_write_store(struct device *dev,
 	int regist = 0, val = 0;
 	struct sx9310_p *data = dev_get_drvdata(dev);
 
-	if (sscanf(buf, "%d,%d", &regist, &val) != 2) {
+	if (sscanf(buf, "%2x,%2x", &regist, &val) != 2) {
 		pr_err("[SX9310]: %s - The number of data are wrong\n",
 			__func__);
-		return -EINVAL;
+		return count;
 	}
 
 	sx9310_i2c_write(data, (unsigned char)regist, (unsigned char)val);
@@ -640,14 +643,14 @@ static ssize_t sx9310_normal_threshold_store(struct device *dev,
 	/* It's for normal touch */
 	if (kstrtoul(buf, 10, &val)) {
 		pr_err("[SX9310]: %s - Invalid Argument\n", __func__);
-		return -EINVAL;
+		return count;
 	}
 
 	data->normal_th &= 0x07;
 	data->normal_th |= val;
 
 	pr_info("[SX9310]: %s - normal threshold %lu\n", __func__, val);
-	data->normal_th_buf = data->normal_th = (u8)(val);
+	data->normal_th = (u8)(val);
 
 	return count;
 }
@@ -670,7 +673,7 @@ static ssize_t sx9310_onoff_store(struct device *dev,
 	ret = kstrtou8(buf, 2, &val);
 	if (ret) {
 		pr_err("[SX9310]: %s - Invalid Argument\n", __func__);
-		return ret;
+		return count;
 	}
 
 	if (val == 0) {
@@ -817,20 +820,20 @@ static ssize_t sx9310_body_threshold_store(struct device *dev,
 
 	if (kstrtoul(buf, 10, &val)) {
 		pr_err("[SX9310]: %s - Invalid Argument\n", __func__);
-		return -EINVAL;
+		return count;
 	}
 
 	data->normal_th &= 0xf8;
 	data->normal_th |= val;
 
 	pr_info("[SX9310]: %s - body threshold %lu\n", __func__, val);
-	data->normal_th_buf = data->normal_th = (u8)(val);
+	data->normal_th = (u8)(val);
 
 	return count;
 }
 
 static ssize_t sx9310_grip_flush_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t size)
+	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct sx9310_p *data = dev_get_drvdata(dev);
 	int ret = 0;
@@ -839,14 +842,59 @@ static ssize_t sx9310_grip_flush_store(struct device *dev,
 	ret = kstrtou8(buf, 10, &handle);
 	if (ret < 0) {
 		pr_err("%s - kstrtou8 failed.(%d)\n", __func__, ret);
-		return ret;
+		return count;
 	}
 
 	pr_info("[SX9310]: %s - handle = %d\n", __func__, handle);
 
 	input_report_rel(data->input, REL_MAX, handle);
 	input_sync(data->input);
-	return size;
+	return count;
+}
+
+static ssize_t sx9310_irq_count_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct sx9310_p *data = dev_get_drvdata(dev);
+	int result = 0;
+
+	pr_info("[SX9310]: %s - irq_count = %d, max_diff = %d\n",
+		__func__, data->irq_cnt, data->max_diff);
+
+	if (data->irq_cnt)
+		result = -1;
+
+	return snprintf(buf, PAGE_SIZE, "%d,%d,%d\n",
+		result, data->irq_cnt, data->max_diff);
+}
+
+static ssize_t sx9310_irq_count_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct sx9310_p *data = dev_get_drvdata(dev);
+	u8 onoff;
+	int ret;
+
+	ret = kstrtou8(buf, 2, &onoff);
+	if (ret < 0) {
+		pr_err("[SX9310]: %s - Invalid Argument %d\n", __func__, ret);
+		return count;
+	}
+
+	pr_info("[SX9310]: %s - %u\n", __func__, onoff);
+	mutex_lock(&data->read_mutex);
+	if (onoff == 0) {
+		data->abnormal_mode = OFF;
+	} else if (onoff == 1) {
+		data->abnormal_mode = ON;
+		data->irq_cnt = 0;
+		data->max_diff = 0;
+	} else {
+		pr_err("%s - unknown value %u\n", __func__, onoff);
+	}
+	mutex_unlock(&data->read_mutex);
+
+	return count;
 }
 
 static DEVICE_ATTR(menual_calibrate, S_IRUGO | S_IWUSR | S_IWGRP,
@@ -878,10 +926,10 @@ static DEVICE_ATTR(freq, S_IRUGO | S_IWUSR | S_IWGRP,
 static DEVICE_ATTR(ch_state, S_IRUGO, sx9310_ch_state_show, NULL);
 static DEVICE_ATTR(body_threshold, S_IRUGO | S_IWUSR | S_IWGRP,
 		sx9310_body_threshold_show, sx9310_body_threshold_store);
-
 static DEVICE_ATTR(grip_flush, S_IWUSR | S_IWGRP,
-		NULL,
-		sx9310_grip_flush_store);
+		NULL, sx9310_grip_flush_store);
+static DEVICE_ATTR(irq_count, S_IRUGO | S_IWUSR | S_IWGRP,
+		sx9310_irq_count_show, sx9310_irq_count_store);
 
 static struct device_attribute *sensor_attrs[] = {
 	&dev_attr_menual_calibrate,
@@ -904,11 +952,12 @@ static struct device_attribute *sensor_attrs[] = {
 	&dev_attr_ch_state,
 	&dev_attr_body_threshold,
 	&dev_attr_grip_flush,
+	&dev_attr_irq_count,
 	NULL,
 };
 
 static ssize_t sx9310_enable_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	u8 enable;
 	int ret;
@@ -918,19 +967,19 @@ static ssize_t sx9310_enable_store(struct device *dev,
 	ret = kstrtou8(buf, 2, &enable);
 	if (ret) {
 		pr_err("[SX9310]: %s - Invalid Argument\n", __func__);
-		return ret;
+		return count;
 	}
 
 	pr_info("[SX9310]: %s - new_value = %u old_value = %d\n",
 		__func__, enable, pre_enable);
 
 	if (pre_enable == enable)
-		return size;
+		return count;
 
 	atomic_set(&data->enable, enable);
 	sx9310_set_enable(data, enable);
 
-	return size;
+	return count;
 }
 
 static ssize_t sx9310_enable_show(struct device *dev,
@@ -942,7 +991,7 @@ static ssize_t sx9310_enable_show(struct device *dev,
 }
 
 static ssize_t sx9310_flush_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	u8 enable;
 	int ret;
@@ -951,7 +1000,7 @@ static ssize_t sx9310_flush_store(struct device *dev,
 	ret = kstrtou8(buf, 2, &enable);
 	if (ret) {
 		pr_err("[SX9310]: %s - Invalid Argument\n", __func__);
-		return ret;
+		return count;
 	}
 
 	if (enable == 1) {
@@ -959,7 +1008,7 @@ static ssize_t sx9310_flush_store(struct device *dev,
 		input_sync(data->input);
 	}
 
-	return size;
+	return count;
 }
 
 static DEVICE_ATTR(enable, S_IRUGO | S_IWUSR | S_IWGRP,
@@ -997,9 +1046,15 @@ static void sx9310_touch_process(struct sx9310_p *data, u8 flag)
 
 	sx9310_i2c_read(data, SX9310_STAT0_REG, &status);
 	pr_info("[SX9310]: %s - (status: 0x%x)\n", __func__, status);
-	sx9310_get_data(data);
-	sx9310_ch_interrupt_read(data, status);
 
+	sx9310_get_data(data);
+	if (data->abnormal_mode && status) {
+		if (data->max_diff < data->diff)
+			data->max_diff = data->diff;
+		data->irq_cnt++;
+	}
+
+	sx9310_ch_interrupt_read(data, status);
 	if (data->state == IDLE) {
 		if (status & (CSX_STATUS_REG << MAIN_SENSOR))
 			send_event(data, ACTIVE);
@@ -1063,8 +1118,8 @@ static void sx9310_debug_work_func(struct work_struct *work)
 {
 	struct sx9310_p *data = container_of((struct delayed_work *)work,
 		struct sx9310_p, debug_work);
-	static int hall_flag = 1;
-	static int size_char = sizeof(u8) * 4;
+	static int hall_prev_state;
+	int hall_state;
 
 	if (atomic_read(&data->enable) == ON) {
 		if (data->debug_count >= GRIP_LOG_TIME) {
@@ -1075,17 +1130,13 @@ static void sx9310_debug_work_func(struct work_struct *work)
 		}
 	}
 
-	if (hall_flag) {
-		check_hallic_state(HALLIC_PATH, data->hall_ic);
-
-		/* Hall IC closed : offset cal (once)*/
-		if (strncmp(data->hall_ic, "CLOSE", size_char) == 0) {
-			pr_info("[SX9310]: %s - hall IC is closed\n",
-				__func__);
-			sx9310_set_offset_calibration(data);
-			hall_flag = 0;
-		}
+	hall_state = sx9310_get_hall_state(data);
+	if (hall_state == HALL_CLOSE_STATE && hall_prev_state != hall_state) {
+		pr_info("[SX9310]: %s - hall is closed\n", __func__);
+		sx9310_set_offset_calibration(data);
 	}
+	hall_prev_state = hall_state;
+
 	schedule_delayed_work(&data->debug_work, msecs_to_jiffies(1000));
 }
 
@@ -1208,6 +1259,16 @@ static int sx9310_parse_dt(struct sx9310_p *data, struct device *dev)
 		pr_err("[SX9310]: %s - Can't get normal_th: default is %d\n",
 			__func__, data->normal_th);
 	}
+	ret = of_property_read_u32(node, "sx9310-i2c,ta_th", &temp_val);
+	if (!ret) {
+		data->ta_th = (u8)temp_val;
+		pr_info("[SX9310]: %s - Ta Touch Threshold : %u\n",
+			__func__, data->ta_th);
+	} else {
+		data->ta_th = data->normal_th;
+		pr_info("[SX9310]: %s - Can't get ta_th: default is %d\n",
+			__func__, data->ta_th);
+	}
 
 	return 0;
 }
@@ -1236,10 +1297,17 @@ static int ccic_sx9310_handle_notification(struct notifier_block *nb,
 		case USB_STATUS_NOTIFY_ATTACH_UFP:
 		case USB_STATUS_NOTIFY_ATTACH_DFP:
 		case USB_STATUS_NOTIFY_DETACH:
-			pr_info("[SX9310]: %s - drp = %d attat = %d\n",
-				__func__, usb_status.drp,
-				usb_status.attach);
+			if (usb_status.attach)
+				pdata->normal_th = pdata->ta_th;
+			else
+				pdata->normal_th = pdata->normal_th_buf;
+
+			sx9310_i2c_write(pdata, SX9310_CPS_CTRL9_REG,
+				pdata->normal_th);
 			sx9310_set_offset_calibration(pdata);
+			pr_info("[SX9310]: %s - drp = %d attat = %d th = %u\n",
+				__func__, usb_status.drp,
+				usb_status.attach, pdata->normal_th);
 			break;
 		default:
 			pr_info("[SX9310]: %s - DRP type : %d\n",

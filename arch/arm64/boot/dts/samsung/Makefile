@@ -69,13 +69,34 @@ dtb-$(CONFIG_SEC_VEYRONLTE_PROJECT) += msm8996-sec-veyronlte-ctc-r00.dtb \
 
 dtb-$(CONFIG_SEC_GTS2LLTE_PROJECT) += msm8996-sec-gts2llte-r00.dtb
 
-dtb-$(CONFIG_SEC_GTS3LLTE_PROJECT) += msm8996-sec-gts3llte-r00.dtb \
-			 msm8996-sec-gts3llte-r02.dtb \
-			 msm8996-sec-gts3llte-r04.dtb
+ifeq ($(filter y,$(CONFIG_SEC_GTS3LLTE_PROJECT)),y)
+ifeq ($(filter y,$(CONFIG_MACH_GTS3LLTE_USA)),y)
+dtb-y = msm8996-sec-gts3llte-usa-r00.dtb \
+			 msm8996-sec-gts3llte-usa-r02.dtb \
+			 msm8996-sec-gts3llte-usa-r04.dtb \
+			 msm8996-sec-gts3llte-usa-r05.dtb
+else ifeq ($(filter y,$(CONFIG_MACH_GTS3LLTE_ZC)),y)
+dtb-y = msm8996-sec-gts3llte-chn-r00.dtb \
+			 msm8996-sec-gts3llte-chn-r02.dtb \
+			 msm8996-sec-gts3llte-chn-r04.dtb \
+			 msm8996-sec-gts3llte-chn-r05.dtb
+else ifeq ($(filter y,$(CONFIG_MACH_GTS3LLTE_ZH)),y)
+dtb-y = msm8996-sec-gts3llte-chn-r00.dtb \
+			 msm8996-sec-gts3llte-chn-r02.dtb \
+			 msm8996-sec-gts3llte-chn-r04.dtb \
+			 msm8996-sec-gts3llte-hk-r05.dtb		
+else
+dtb-y = msm8996-sec-gts3llte-eur-kor-r00.dtb \
+			 msm8996-sec-gts3llte-eur-kor-r02.dtb \
+			 msm8996-sec-gts3llte-eur-kor-r04.dtb \
+			 msm8996-sec-gts3llte-eur-kor-r05.dtb
+endif
+endif
 
 dtb-$(CONFIG_SEC_GTS3LWIFI_PROJECT) += msm8996-sec-gts3lwifi-r00.dtb \
 			 msm8996-sec-gts3lwifi-r02.dtb \
-			 msm8996-sec-gts3lwifi-r04.dtb
+			 msm8996-sec-gts3lwifi-r04.dtb \
+			 msm8996-sec-gts3lwifi-r05.dtb
 
 ifeq ($(filter y,$(CONFIG_MACH_HEROQLTE_DCM) $(CONFIG_MACH_HEROQLTE_KDI)),y)
 dtb-y = msm8996-sec-heroqlte-jpn-r00.dtb \
@@ -90,7 +111,7 @@ dtb-y = msm8996-sec-heroqlte-jpn-r00.dtb \
 			 msm8996-sec-heroqlte-jpn-r15.dtb
 endif
 
-ifeq ($(filter y,$(CONFIG_MACH_HERO2QLTE_DCM) $(CONFIG_MACH_HERO2QLTE_KDI)),y)
+ifeq ($(filter y,$(CONFIG_MACH_HERO2QLTE_KDI)),y)
 dtb-y = msm8996-sec-hero2qlte-jpn-r00.dtb \
 			 msm8996-sec-hero2qlte-jpn-r01.dtb \
 			 msm8996-sec-hero2qlte-jpn-r05.dtb \
@@ -101,6 +122,19 @@ dtb-y = msm8996-sec-hero2qlte-jpn-r00.dtb \
 			 msm8996-sec-hero2qlte-jpn-r11.dtb \
 			 msm8996-sec-hero2qlte-jpn-r13.dtb \
 			 msm8996-sec-hero2qlte-jpn-r15.dtb
+endif
+
+ifeq ($(filter y,$(CONFIG_MACH_HERO2QLTE_DCM)),y)
+dtb-y = msm8996-sec-hero2qlte-jpn-dcm-r00.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r01.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r05.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r06.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r07.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r08.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r10.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r11.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r13.dtb \
+                         msm8996-sec-hero2qlte-jpn-dcm-r15.dtb
 endif
 
 ifeq ($(filter y,$(CONFIG_MACH_HEROQLTE_CHNZC)),y)

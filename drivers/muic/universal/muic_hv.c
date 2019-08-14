@@ -2287,6 +2287,7 @@ int muic_afc_set_voltage(int vol)
 {
 	muic_data_t *pmuic = hv_afc.pmuic;
 
+	MUIC_INFO_K("%s: change afc voltage(%d)\n", __func__, vol);
 	if (vol == 5) {
 		hv_muic_change_afc_voltage(pmuic, MUIC_HV_5V);			
 	} else if (vol == 9) {

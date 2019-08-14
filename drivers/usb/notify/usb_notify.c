@@ -151,13 +151,6 @@ static int check_event_type(enum otg_notify_events event)
 	return ret;
 }
 
-static int check_same_event_type(enum otg_notify_events event1,
-		enum otg_notify_events event2)
-{
-	return (check_event_type(event1)
-			== check_event_type(event2));
-}
-
 const char *event_string(enum otg_notify_events event)
 {
 	int virt;
@@ -551,6 +544,11 @@ int do_notify_blockstate(struct otg_notify *n, unsigned long event,
 		break;
 	case NOTIFY_EVENT_SMARTDOCK_USB:
 	case NOTIFY_EVENT_VBUS:
+#ifdef CONFIG_USB_CHARGING_EVENT
+		if (enable) {
+			n->set_chg_current(1);
+		}
+#endif
 		break;
 	case NOTIFY_EVENT_LANHUB:
 	case NOTIFY_EVENT_HMT:
@@ -613,7 +611,6 @@ static void otg_notify_state(struct otg_notify *n,
 	struct usb_notify *u_notify = (struct usb_notify *)(n->u_notify);
 	int type = 0;
 	int virtual = 0;
-	unsigned long prev_c_type = 0;
 
 	pr_info("%s+ event=%s(%lu), enable=%s\n", __func__,
 		event_string(event), event, enable == 0 ? "off" : "on");
@@ -711,10 +708,6 @@ static void otg_notify_state(struct otg_notify *n,
 		}
 		u_notify->diable_v_drive = 0;
 		if (enable) {
-			if (check_same_event_type(prev_c_type, event)) {
-				pr_err("now host mode, skip this command\n");
-				goto err;
-			}
 			u_notify->ndev.mode = NOTIFY_HOST_MODE;
 			if (n->is_wakelock)
 				wake_lock(&u_notify->wlock);
@@ -850,8 +843,7 @@ static void otg_notify_state(struct otg_notify *n,
 				&& event != NOTIFY_EVENT_HOST) {
 		if (enable) {
 			if (n->device_check_sec) {
-				if (prev_c_type != NOTIFY_EVENT_HOST)
-					u_notify->is_device = 0;
+				u_notify->is_device = 0;
 				u_notify->check_work_complete = 0;
 				schedule_delayed_work(&u_notify->check_work,
 					n->device_check_sec*HZ);
@@ -1094,6 +1086,8 @@ int set_notify_disable(struct usb_notify_dev *udev, int disable)
 
 	switch (disable) {
 	case NOTIFY_BLOCK_TYPE_ALL:
+		send_external_notify(EXTERNAL_NOTIFY_MPSM_ENABLE,
+			EXTERNAL_NOTIFY_MPSM);
 		if (is_host_cable_enable(n) ||
 			is_client_cable_enable(n)) {
 
@@ -1165,6 +1159,8 @@ int set_notify_disable(struct usb_notify_dev *udev, int disable)
 		send_otg_notify(n, VIRT_EVENT(u_notify->c_type), 1);
 		break;
 	case NOTIFY_BLOCK_TYPE_NONE:
+		send_external_notify(EXTERNAL_NOTIFY_MPSM_DISABLE,
+			EXTERNAL_NOTIFY_MPSM);
 		send_otg_notify(n, NOTIFY_EVENT_ALL_DISABLE, 0);
 		if (!is_host_cable_block(n) && !is_client_cable_block(n))
 			goto skip;

@@ -17,19 +17,13 @@
  *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#ifndef _LINUX_WACOM_I2C_FUNC_H
-#define _LINUX_WACOM_I2C_FUNC_H
+#ifndef _LINUX_WACOM_I2C_FUNC_H_
+#define _LINUX_WACOM_I2C_FUNC_H_
 
 #define WACOM_I2C_STOP		0x30
 #define WACOM_I2C_START		0x31
 #define WACOM_I2C_GRID_CHECK	0xC9
-#define WACOM_STATUS			0xD8
-
-extern int g_aveLevel_C[];
-extern int g_aveLevel_X[];
-extern int g_aveLevel_Y[];
-extern int g_aveLevel_Trs[];
-extern int g_aveLevel_Cor[];
+#define WACOM_STATUS		0xD8
 
 extern int wacom_i2c_send(struct wacom_i2c *wac_i2c,
 			  const char *buf, int count, bool mode);
@@ -38,7 +32,6 @@ extern int wacom_i2c_recv(struct wacom_i2c *wac_i2c,
 extern int wacom_i2c_test(struct wacom_i2c *wac_i2c);
 extern int wacom_i2c_coord(struct wacom_i2c *wac_i2c);
 extern int wacom_i2c_query(struct wacom_i2c *wac_i2c);
-extern int wacom_i2c_modecheck(struct wacom_i2c *wac_i2c);
 extern int wacom_checksum(struct wacom_i2c *wac_i2c);
 extern int wacom_i2c_set_sense_mode(struct wacom_i2c *wac_i2c);
 #ifdef WACOM_USE_SURVEY_MODE

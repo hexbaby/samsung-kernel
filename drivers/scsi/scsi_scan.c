@@ -290,9 +290,9 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 
 #ifdef CONFIG_JOURNAL_DATA_TAG
 	if (shost->journal_tag == JOURNAL_TAG_ON)
-		queue_flag_set(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
+		queue_flag_set_unlocked(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
 	else
-		queue_flag_clear(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
+		queue_flag_clear_unlocked(QUEUE_FLAG_JOURNAL_TAG, sdev->request_queue);
 #endif
 
 	scsi_sysfs_device_initialize(sdev);
@@ -1537,12 +1537,12 @@ static int scsi_report_lun_scan(struct scsi_target *starget, int bflags,
  out_err:
 	kfree(lun_data);
  out:
-	scsi_device_put(sdev);
 	if (scsi_device_created(sdev))
 		/*
 		 * the sdev we used didn't appear in the report luns scan
 		 */
 		__scsi_remove_device(sdev);
+	scsi_device_put(sdev);
 	return ret;
 }
 

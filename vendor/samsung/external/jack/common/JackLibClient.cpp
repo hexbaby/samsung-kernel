@@ -62,11 +62,13 @@ ShutDown is called:
 (Not needed since the synch object used (Sema of Fifo will fails when server quits... see ShutDown))
 */
 
-void JackLibClient::ShutDown()
+void JackLibClient::ShutDown(bool forcedCleanup)
 {
     jack_log("JackLibClient::ShutDown");
-    JackGlobals::fServerRunning = false;
-    JackClient::ShutDown();
+    if (GetClientControl() && GetClientControl()->fRefNum >= 0 && GetClientControl()->fRefNum < CLIENT_NUM) {
+        JackGlobals::fServerRunning[GetClientControl()->fRefNum] = false;
+    }
+    JackClient::ShutDown(forcedCleanup);
 }
 
 JackLibClient::JackLibClient(JackSynchro* table): JackClient(table)
@@ -121,23 +123,24 @@ int JackLibClient::Open(const char* server_name, const char* name, int uuid, jac
 
     SetupDriverSync(false);
 
-    if ( GetClientControl()->fRefNum < 0 || GetClientControl()->fRefNum >= CLIENT_NUM ) {
+    if ( GetClientControl() && GetClientControl()->fRefNum < 0 || GetClientControl()->fRefNum >= CLIENT_NUM ) {
         jack_error("JackLibClient error fRefNum = %d", GetClientControl()->fRefNum);		
         goto error;
     }
 
     // Connect shared synchro : the synchro must be usable in I/O mode when several clients live in the same process
-    if (!fSynchroTable[GetClientControl()->fRefNum].Connect(name_res, fServerName)) {
+    if (GetClientControl() && !fSynchroTable[GetClientControl()->fRefNum].Connect(name_res, fServerName)) {
         jack_error("Cannot ConnectSemaphore %s client", name_res);
         goto error;
     }
 
-
-    JackGlobals::fClientTable[GetClientControl()->fRefNum] = this;
-    JackGlobals::fServerRunning = true;
+    if ( GetClientControl() ) {
+        JackGlobals::fClientTable[GetClientControl()->fRefNum] = this;
+        JackGlobals::fServerRunning[GetClientControl()->fRefNum] = true;
+    }
 
     SetClockSource(GetEngineControl()->fClockSource);
-    jack_log("JackLibClient::Open name = %s refnum = %ld", name_res, GetClientControl()->fRefNum);
+    jack_log("JackLibClient::Open name = %s refnum = %ld", name_res, GetClientControl() != 0 ? GetClientControl()->fRefNum : -1);
     return 0;
 
 error:

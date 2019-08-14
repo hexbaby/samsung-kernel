@@ -10,9 +10,14 @@
  * Foundation; either version of 2 of the License,
  * or (at your option) any later version.
  */
+ 
+#include <linux/kernel.h>
+#include <linux/i2c.h>
+#include <linux/delay.h>
+#include <linux/slab.h>
+ 
 #include "wacom.h"
 #include "wacom_i2c_func.h"
-#include "wacom_i2c_firm.h"
 #include "w9014_flash.h"
 
 #if 0
@@ -679,13 +684,13 @@ int wacom_i2c_flash(struct wacom_i2c *wac_i2c)
 {
 	int ret;
 
-	if (fw_data == NULL) {
+	if (wac_i2c->fw_data == NULL) {
 		printk(KERN_ERR "epen:Data is NULL. Exit.\n");
 		return -1;
 	}
 
-	wac_i2c->pdata->compulsory_flash_mode(true);
-	wac_i2c->pdata->reset_platform_hw();
+	wac_i2c->compulsory_flash_mode(wac_i2c, true);
+	wac_i2c->reset_platform_hw(wac_i2c);
 	msleep(200);
 
 
@@ -705,7 +710,7 @@ int wacom_i2c_flash(struct wacom_i2c *wac_i2c)
 
 	printk(KERN_NOTICE"epen:%s pass flash_query_w9014 \n", __func__);
 
-	ret = wacom_i2c_flash_w9014(wac_i2c, fw_data);
+	ret = wacom_i2c_flash_w9014(wac_i2c, wac_i2c->fw_data);
 	if (ret < 0) {
 		printk(KERN_NOTICE"epen:%s Error: flash failed \n", __func__);
 		ret = -EXIT_FAIL;
@@ -714,47 +719,9 @@ int wacom_i2c_flash(struct wacom_i2c *wac_i2c)
 
 	msleep(200);
  end_wacom_flash:
-	wac_i2c->pdata->compulsory_flash_mode(false);
-	wac_i2c->pdata->reset_platform_hw();
+	wac_i2c->compulsory_flash_mode(wac_i2c, false);
+	wac_i2c->reset_platform_hw(wac_i2c);
 	msleep(200);
 
-	return ret;
-}
-
-int wacom_i2c_usermode(struct wacom_i2c *wac_i2c)
-{
-	int ret;
-
-#if 0
-	bool bRet = false;
-
-	wac_i2c->pdata->compulsory_flash_mode(true);
-
-	ret = wacom_flash_cmd(wac_i2c);
-	if (ret < 0) {
-		printk(KERN_NOTICE"epen:%s cannot send flash command at user-mode \n", __func__);
-		return ret;
-	}
-
-	/*Return to the user mode */
-	printk(KERN_NOTICE"epen:%s closing the boot mode \n", __func__);
-	bRet = flash_end_w9014(wac_i2c);
-	if (!bRet) {
-		printk(KERN_NOTICE"epen:%s closing boot mode failed  \n", __func__);
-		ret = -EXIT_FAIL_WRITING_MARK_NOT_SET;
-		goto end_usermode;
-	}
-
-
-	wac_i2c->pdata->compulsory_flash_mode(false);
-
-	printk(KERN_NOTICE"epen:%s making user-mode completed \n", __func__);
-	ret = EXIT_OK;
-
-
- end_usermode:
-#else
-	ret = 0;
-#endif
 	return ret;
 }

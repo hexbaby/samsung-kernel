@@ -17,8 +17,8 @@
 
 &soc {
 	samsung,vibrator {
-		samsung,m_default = <2>;
-		samsung,n_default = <92>;
+		samsung,m_default = <3>;
+		samsung,n_default = <137>;
 		samsung,motor_strength = <94>;
 	};
 };

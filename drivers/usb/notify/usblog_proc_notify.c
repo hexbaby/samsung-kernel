@@ -771,9 +771,19 @@ EXPORT_SYMBOL(store_ccic_version);
 int register_usblog_proc(void)
 {
 	int ret = 0;
+	struct otg_notify *o_notify = get_otg_notify();
 
 	if (usblog_root.init) {
 		pr_err("%s already registered\n", __func__);
+		if (o_notify != NULL)
+			if ((usblog_root.ccic_ver.sw_main[0] == 0xFF 
+				&& usblog_root.ccic_ver.sw_main[1] == 0xFF)
+			|| (usblog_root.ccic_ver.sw_main[0] == 0x0 
+			&& usblog_root.ccic_ver.sw_main[1] == 0x0)){
+				o_notify->hw_param[USB_CCIC_I2C_ERROR_COUNT]++;
+				pr_info("sw version %d %d\n", usblog_root.ccic_ver.sw_main[0],
+					usblog_root.ccic_ver.sw_main[1]);
+			}
 		goto err;
 	}
 	spin_lock_init(&usblog_root.usblog_lock);

@@ -113,9 +113,13 @@ namespace android {
 
     Shm* Shm::Instantiate() {
         if(Shm::ref == NULL) {
-            jack_d("shm::Instantiate is called");
-            Shm::ref = new Shm;
-            //AndroidShm::instantiate();
+			pthread_mutex_lock(&mutex);
+			if (Shm::ref == NULL) {
+				jack_d("shm::Instantiate is called");
+				Shm::ref = new Shm;
+				//AndroidShm::instantiate();
+			}
+			pthread_mutex_unlock(&mutex);
         }
         return ref;
     }
@@ -216,7 +220,7 @@ namespace android {
 
     void Shm::remove_shm (jack_shm_id_t *id) {
         int shm_fd = -1;
-//        jack_d("remove_id [%s]",(char*)id);
+        jack_d("remove_id [%s]",(char*)id);
         if(!strcmp((const char*)id, JACK_REGISTRY_NAME)) {
             shm_fd = registry_fd;
         } else {
@@ -235,8 +239,10 @@ namespace android {
             } else {
             	jack_error("shm service is null");
             }
-        }
-        jack_d ("[APA] jack_remove_shm : ok ");
+			jack_d ("[APA] jack_remove_shm : ok ");
+        } else {
+			jack_d("Removing nonallocated registry, normal");
+		}
     }
 
     int Shm::access_registry (jack_shm_info_t * ri) {
@@ -257,9 +263,8 @@ namespace android {
             //        strerror (errno));
             jack_error ("Cannot mmap shm registry segment");
             //close (shm_fd);
-            ri->ptr.attached_at = NULL;
             registry_fd = JACK_SHM_REGISTRY_FD;
-            return EINVAL;
+            return ENOENT;
         }
 
         ri->fd = shm_fd;
@@ -268,9 +273,8 @@ namespace android {
 
         if(ri->ptr.attached_at == NULL) {
             ALOGE("attached pointer is null !");
-            jack_shm_header = NULL;
-            jack_shm_registry = NULL;
-            return 0;
+            registry_fd = JACK_SHM_REGISTRY_FD;
+            return ENOENT;
         }
 
         /* set up global pointers */
@@ -404,13 +408,19 @@ namespace android {
     
         jack_d("server_initialize_shm\n");
     
-        if (jack_shm_header)
-            return 0;        /* already initialized */
-    
         if (shm_lock_registry () < 0) {
             jack_error ("jack_shm_lock_registry fails...");
             return -1;
         }
+
+        /*
+         * We always want to initialize the registry, otherwise we may
+         * have broken state in global variables.
+         * (Caused by destroy calls being removed etc.)
+         * As opposed to other SHM, Android version of access_registry
+         * does not mmap or shm_open, just grabs pointers from the
+         * service, which is idempotent - same pointer results.
+         */
     
         rc = access_registry (&registry_info);
     
@@ -534,16 +544,22 @@ namespace android {
 
     int Shm::initialize_shm (const char *server_name) {
         int rc;
-        
-        if (jack_shm_header)
-            return 0;       /* already initialized */
-        
-        set_server_prefix (server_name);
-        
+                
         if (shm_lock_registry () < 0) {
             jack_error ("jack_shm_lock_registry fails...");
             return -1;
         }
+
+        /*
+         * We always want to initialize the registry, otherwise we may
+         * have broken state in global variables.
+         * (Caused by destroy calls being removed etc.)
+         * As opposed to other SHM, Android version of access_registry
+         * does not mmap or shm_open, just grabs pointers from the
+         * service, which is idempotent - same pointer results.
+         */
+        
+        set_server_prefix (server_name);
         
         if ((rc = access_registry (&registry_info)) == 0) {
             if ((rc = shm_validate_registry ()) != 0) {
@@ -686,7 +702,7 @@ namespace android {
         registry->fd = shm_fd;
         si->fd = shm_fd;
         si->index = registry->index;
-        si->ptr.attached_at = MAP_FAILED;  /* not attached */
+        si->ptr.attached_at = NULL;  /* not attached */
         rc = 0;  /* success */
         
         jack_d ("[APA] jack_shmalloc : ok ");
@@ -699,9 +715,14 @@ unlock:
     void Shm::release_shm (jack_shm_info_t* /*si*/) {
         // do nothing
     }
-    
-    void Shm::release_lib_shm (jack_shm_info_t* /*si*/) {
-        // do nothing
+
+	// Cleanup to be sure we don't have wrong jack_shm_info_t around.
+    void Shm::release_lib_shm (jack_shm_info_t* si) {
+        /* must NOT have the registry locked */
+        if (si->index == JACK_SHM_NULL_INDEX)
+            return;            /* segment not allocated */
+
+        release_shm_info (si->index);
     }
     
     void Shm::destroy_shm (jack_shm_info_t* si) {
@@ -718,7 +739,7 @@ unlock:
 
         if((si->ptr.attached_at = shm_addr(registry->fd)) == NULL) {
             jack_error ("Cannot mmap shm segment %s", registry->id);
-            close (si->fd);
+            //close (si->fd);
             return -1;
         }
         return 0;
@@ -736,7 +757,7 @@ unlock:
 
         if((si->ptr.attached_at = shm_addr(registry->fd)) == NULL) {
             jack_error ("Cannot mmap shm segment %s", registry->id);
-            close (si->fd);
+            //close (si->fd);
             return -1;
         }
         return 0;

@@ -498,13 +498,14 @@ static ssize_t mdss_samsung_panel_lpm_ctrl_debug(struct file *file,
 	struct mdss_dsi_ctrl_pdata *ctrl;
 	int mode, ret = count;
 	char buf[10];
+	size_t buf_size = min(count, sizeof(buf) - 1);
 
 	if (IS_ERR_OR_NULL(vdd)) {
 		ret = -EFAULT;
 		goto end;
 	}
 
-	if (copy_from_user(buf, user_buf, count)) {
+	if (copy_from_user(buf, user_buf, buf_size)) {
 		ret = -EFAULT;
 		goto end;
 	}
@@ -1680,6 +1681,7 @@ int mdss_samsung_panel_on_post(struct mdss_panel_data *pdata)
 	mutex_unlock(&vdd->mfd_dsi[DISPLAY_1]->bl_lock);
 
 	if (vdd->support_mdnie_lite){
+		vdd->mdnie_lcd_on_notifiy = true;
 		update_dsi_tcon_mdnie_register(vdd);
 		if(vdd->support_mdnie_trans_dimming)
 			vdd->mdnie_disable_trans_dimming = false;
@@ -2377,7 +2379,7 @@ static void update_packet_level_key_disable(struct mdss_dsi_ctrl_pdata *ctrl, st
 	}
 }
 
-int mdss_samsung_hbm_brightenss_packet_set(struct mdss_dsi_ctrl_pdata *ctrl)
+int mdss_samsung_hbm_brightness_packet_set(struct mdss_dsi_ctrl_pdata *ctrl)
 {
 	int ndx;
 	int cmd_cnt = 0;
@@ -2441,7 +2443,7 @@ int mdss_samsung_hbm_brightenss_packet_set(struct mdss_dsi_ctrl_pdata *ctrl)
 	return cmd_cnt;
 }
 
-int mdss_samsung_normal_brightenss_packet_set(struct mdss_dsi_ctrl_pdata *ctrl)
+int mdss_samsung_normal_brightness_packet_set(struct mdss_dsi_ctrl_pdata *ctrl)
 {
 	int ndx;
 	int cmd_cnt = 0;
@@ -2691,10 +2693,10 @@ int mdss_samsung_brightness_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 	hbm_min_level = vdd->dtsi_data[ndx].hbm_candela_map_table[vdd->panel_revision].hbm_min_lv;
 
 	if (vdd->bl_level >= hbm_min_level && !vdd->dtsi_data[ndx].tft_common_support) {
-		cmd_cnt = mdss_samsung_hbm_brightenss_packet_set(ctrl);
+		cmd_cnt = mdss_samsung_hbm_brightness_packet_set(ctrl);
 		cmd_cnt > 0 ? vdd->display_status_dsi[ndx].hbm_mode = true : false;
 	} else {
-		cmd_cnt = mdss_samsung_normal_brightenss_packet_set(ctrl);
+		cmd_cnt = mdss_samsung_normal_brightness_packet_set(ctrl);
 		cmd_cnt > 0 ? vdd->display_status_dsi[ndx].hbm_mode = false : false;
 	}
 
@@ -3689,7 +3691,26 @@ void mdss_samsung_panel_parse_dt_cmds(struct device_node *np,
 
 	}
 }
+void mdss_samsung_update_current_resolution(struct mdss_panel_timing *timing)
+{
+	struct samsung_display_driver_data *vdd = samsung_get_vdd();
 
+	if(vdd->multires_stat.is_support)
+	{
+		switch(vdd->multires_stat.curr_mode)
+		{
+			case 0:
+				sec_set_param(param_index_lcd_resolution, "WQHD");
+				break;
+			case 1:
+				sec_set_param(param_index_lcd_resolution, "FHD");
+				break;
+			case 2:
+				sec_set_param(param_index_lcd_resolution, "HD");
+				break;
+		}
+	}
+}
 void mdss_samsung_check_hw_config(struct platform_device *pdev)
 {
 	struct mdss_dsi_data *dsi_res = platform_get_drvdata(pdev);
@@ -3758,6 +3779,7 @@ void mdss_samsung_panel_pbaboot_config(struct device_node *np,
 		pinfo->mipi.lp11_init = false;
 
 		vdd->support_mdnie_lite = false;
+		vdd->mdnie_lcd_on_notifiy = false;
 		vdd->support_mdnie_trans_dimming = false;
 		vdd->mdnie_disable_trans_dimming = false;
 
@@ -4389,6 +4411,9 @@ static ssize_t tuning_store(struct device *dev,
 			    size_t size)
 {
 	char *pt;
+
+	if (buf == NULL || strchr(buf, '.') || strchr(buf, '/'))
+		return size;
 
 	memset(tuning_file, 0, sizeof(tuning_file));
 	snprintf(tuning_file, MAX_FILE_NAME, "%s%s", TUNING_FILE_PATH, buf);
@@ -5480,6 +5505,7 @@ static void mdss_samsung_panel_lpm_ctrl(struct mdss_panel_data *pdata, int enabl
 		mutex_unlock(&vdd->mfd_dsi[DISPLAY_1]->bl_lock);
 
 		if (vdd->support_mdnie_lite) {
+			vdd->mdnie_lcd_on_notifiy = true;
 			update_dsi_tcon_mdnie_register(vdd);
 			if(vdd->support_mdnie_trans_dimming)
 				vdd->mdnie_disable_trans_dimming = false;
@@ -6299,6 +6325,98 @@ static ssize_t mdss_samsung_mipi_clk_store(struct device *dev,
 	return size;
 }
 
+#ifdef CONFIG_DISPLAY_USE_INFO
+static int dpui_notifier_callback(struct notifier_block *self,
+				 unsigned long event, void *data)
+{
+	struct samsung_display_driver_data *vdd = container_of(self,
+			struct samsung_display_driver_data, dpui_notif);
+	struct dpui_info *dpui = data;
+	char tbuf[MAX_DPUI_VAL_LEN];
+	int ndx;
+	int *cell_id;
+	int year, mon, day, hour, min, sec;
+	int lcd_id;
+	int size;
+
+	if (dpui == NULL) {
+		LCD_ERR("err: dpui is null\n");
+		return 0;
+	}
+
+	if (vdd == NULL) {
+		LCD_ERR("err: vdd is null\n");
+		return 0;
+	}
+
+	ndx = display_ndx_check(vdd->ctrl_dsi[DSI_CTRL_0]);
+
+	/* manufacture date and time */
+	cell_id = &vdd->cell_id_dsi[ndx][0];
+	year = ((cell_id[0] >> 4) & 0xF) + 2011;
+	mon = cell_id[0] & 0xF;
+	day = cell_id[1] & 0x1F;
+	hour = cell_id[2] & 0x1F;
+	min = cell_id[3] & 0x3F;
+	sec = cell_id[4] & 0x3F;
+
+	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%04d%02d%02d", year, mon, day);
+	set_dpui_field(DPUI_KEY_MAID_DATE, tbuf, size);
+	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%02d%02d%02d", hour, min, sec);
+	set_dpui_field(DPUI_KEY_MAID_TIME, tbuf, size);
+
+	/* lcd id */
+	lcd_id = vdd->manufacture_id_dsi[ndx];
+
+	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", ((lcd_id  & 0xFF0000) >> 16));
+	set_dpui_field(DPUI_KEY_LCDID1, tbuf, size);
+	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", ((lcd_id  & 0xFF00) >> 8));
+	set_dpui_field(DPUI_KEY_LCDID2, tbuf, size);
+	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", (lcd_id  & 0xFF));
+	set_dpui_field(DPUI_KEY_LCDID3, tbuf, size);
+
+	return 0;
+}
+
+static int mdss_samsung_register_dpui(struct samsung_display_driver_data *vdd)
+{
+	memset(&vdd->dpui_notif, 0,
+			sizeof(vdd->dpui_notif));
+	vdd->dpui_notif.notifier_call = dpui_notifier_callback;
+
+	return dpui_logging_register(&vdd->dpui_notif, DPUI_TYPE_PANEL);
+}
+
+/*
+ * HW PARAM LOGGING SYSFS NODE
+ */
+static ssize_t mdss_samsung_dpui_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	update_dpui_log(DPUI_LOG_LEVEL_INFO);
+	get_dpui_log(buf, DPUI_LOG_LEVEL_INFO);
+
+	pr_info("%s\n", buf);
+
+	return strlen(buf);
+}
+
+/*
+ * [DEV ONLY]
+ * HW PARAM LOGGING SYSFS NODE
+ */
+static ssize_t mdss_samsung_dpui_dbg_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	update_dpui_log(DPUI_LOG_LEVEL_DEBUG);
+	get_dpui_log(buf, DPUI_LOG_LEVEL_DEBUG);
+
+	pr_info("%s\n", buf);
+
+	return strlen(buf);
+}
+#endif
+
 static DEVICE_ATTR(lcd_type, S_IRUGO, mdss_samsung_disp_lcdtype_show, NULL);
 static DEVICE_ATTR(cell_id, S_IRUGO, mdss_samsung_disp_cell_id_show, NULL);
 static DEVICE_ATTR(octa_id, S_IRUGO, mdss_samsung_disp_octa_id_show, NULL);
@@ -6328,6 +6446,10 @@ static DEVICE_ATTR(SVC_OCTA, S_IRUGO, mdss_samsung_disp_SVC_OCTA_show, NULL);
 static DEVICE_ATTR(SVC_OCTA2, S_IRUGO, mdss_samsung_disp_SVC_OCTA2_show, NULL);
 static DEVICE_ATTR(esd_check, S_IRUGO , mipi_samsung_esd_check_show, NULL);
 static DEVICE_ATTR(mipi_clk, S_IRUSR | S_IWUSR, NULL, mdss_samsung_mipi_clk_store);
+#ifdef CONFIG_DISPLAY_USE_INFO
+static DEVICE_ATTR(dpui, S_IRUSR|S_IRGRP, mdss_samsung_dpui_show, NULL);
+static DEVICE_ATTR(dpui_dbg, S_IRUSR|S_IRGRP, mdss_samsung_dpui_dbg_show, NULL);
+#endif
 
 static struct attribute *panel_sysfs_attributes[] = {
 	&dev_attr_lcd_type.attr,
@@ -6359,6 +6481,10 @@ static struct attribute *panel_sysfs_attributes[] = {
 	&dev_attr_SVC_OCTA2.attr,
 	&dev_attr_esd_check.attr,
 	&dev_attr_mipi_clk.attr,
+#ifdef CONFIG_DISPLAY_USE_INFO
+	&dev_attr_dpui.attr,
+	&dev_attr_dpui_dbg.attr,
+#endif
 	NULL
 };
 static const struct attribute_group panel_sysfs_group = {
@@ -6499,6 +6625,10 @@ int mdss_samsung_create_sysfs(void *data)
 		LCD_ERR("sysfs create fail-%s\n", dev_attr_csc_cfg.attr.name);
 		return rc;
 	}
+
+#ifdef CONFIG_DISPLAY_USE_INFO
+	mdss_samsung_register_dpui(data);
+#endif
 
 	sysfs_enable = 1;
 

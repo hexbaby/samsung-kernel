@@ -26,9 +26,6 @@
  *
  */
 
-#ifndef ANDROID
-#include <sys/shm.h>
-#endif
 #include <sys/ioctl.h>
 #include <limits.h>
 #include "pcm_local.h"
@@ -43,7 +40,7 @@ int snd_pcm_generic_close(snd_pcm_t *pcm)
 	if (generic->close_slave)
 		err = snd_pcm_close(generic->slave);
 	free(generic);
-	return 0;
+	return err;
 }
 
 int snd_pcm_generic_nonblock(snd_pcm_t *pcm, int nonblock)
@@ -103,7 +100,7 @@ int snd_pcm_generic_hw_refine(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
 int snd_pcm_generic_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return _snd_pcm_hw_params(generic->slave, params);
+	return _snd_pcm_hw_params_internal(generic->slave, params);
 }
 
 int snd_pcm_generic_prepare(snd_pcm_t *pcm)
@@ -238,25 +235,25 @@ int snd_pcm_generic_unlink(snd_pcm_t *pcm)
 snd_pcm_sframes_t snd_pcm_generic_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_writei(generic->slave, buffer, size);
+	return _snd_pcm_writei(generic->slave, buffer, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_writen(generic->slave, bufs, size);
+	return _snd_pcm_writen(generic->slave, bufs, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_readi(generic->slave, buffer, size);
+	return _snd_pcm_readi(generic->slave, buffer, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_readn(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_readn(generic->slave, bufs, size);
+	return _snd_pcm_readn(generic->slave, bufs, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_mmap_commit(snd_pcm_t *pcm, 
@@ -290,13 +287,13 @@ int snd_pcm_generic_real_htimestamp(snd_pcm_t *pcm, snd_pcm_uframes_t *avail,
 	int ok = 0;
 
 	while (1) {
-		avail1 = snd_pcm_avail_update(pcm);
+		avail1 = __snd_pcm_avail_update(pcm);
 		if (avail1 < 0)
 			return avail1;
 		if (ok && (snd_pcm_uframes_t)avail1 == *avail)
 			break;
 		*avail = avail1;
-		gettimestamp(tstamp, pcm->monotonic);
+		gettimestamp(tstamp, pcm->tstamp_type);
 		ok = 1;
 	}
 	return 0;
@@ -323,6 +320,30 @@ int snd_pcm_generic_munmap(snd_pcm_t *pcm)
 		pcm->stopped_areas = NULL;
 	}
 	return 0;
+}
+
+snd_pcm_chmap_query_t **snd_pcm_generic_query_chmaps(snd_pcm_t *pcm)
+{
+	snd_pcm_generic_t *generic = pcm->private_data;
+	return snd_pcm_query_chmaps(generic->slave);
+}
+
+snd_pcm_chmap_t *snd_pcm_generic_get_chmap(snd_pcm_t *pcm)
+{
+	snd_pcm_generic_t *generic = pcm->private_data;
+	return snd_pcm_get_chmap(generic->slave);
+}
+
+int snd_pcm_generic_set_chmap(snd_pcm_t *pcm, const snd_pcm_chmap_t *map)
+{
+	snd_pcm_generic_t *generic = pcm->private_data;
+	return snd_pcm_set_chmap(generic->slave, map);
+}
+
+int snd_pcm_generic_may_wait_for_avail_min(snd_pcm_t *pcm, snd_pcm_uframes_t avail ATTRIBUTE_UNUSED)
+{
+	snd_pcm_generic_t *generic = pcm->private_data;
+	return snd_pcm_may_wait_for_avail_min(generic->slave, snd_pcm_mmap_avail(generic->slave));
 }
 
 #endif /* DOC_HIDDEN */

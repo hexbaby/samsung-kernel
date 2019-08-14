@@ -22,14 +22,20 @@ static const char * SYSTEM_DEV = "/dev/block/platform/15570000.ufs/by-name/SYSTE
 static const char * SYSTEM_DEV = "/dev/block/platform/155a0000.ufs/by-name/SYSTEM";
 #elif defined(EXYNOS_8895)
 static const char * SYSTEM_DEV = "/dev/block/platform/11120000.ufs/by-name/SYSTEM";
+#elif defined(EXYNOS_9810)
+static const char * SYSTEM_DEV = "/dev/block/platform/11120000.ufs/by-name/SYSTEM";
 #elif TRE_PROJECT
 static const char * SYSTEM_DEV = "/dev/block/mmcblk0p18";
-#elif defined(EXYNOS_7580) || defined(EXYNOS_3475) || defined(EXYNOS_7570) || defined(EXYNOS_7870)
+#elif defined(EXYNOS_7580) || defined(EXYNOS_3475) || defined(EXYNOS_7570) || defined(EXYNOS_7870) || defined(EXYNOS_7880)
 static const char * SYSTEM_DEV = "/dev/block/platform/13540000.dwmmc0/by-name/SYSTEM";
 #elif defined(EXYNOS_5433) || defined(EXYNOS_5430)
 static const char * SYSTEM_DEV = "/dev/block/platform/15540000.dwmmc0/by-name/SYSTEM";
 #elif defined(APQ_8084)
 static const char * SYSTEM_DEV = "/dev/block/platform/msm_sdcc.1/by-name/system";
+#elif defined(MT6757)
+static const char * SYSTEM_DEV = "/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/system";
+#elif defined(EXYNOS_7885)
+static const char * SYSTEM_DEV = "/dev/block/platform/13500000.dwmmc0/by-name/SYSTEM";
 #else
 static const char * SYSTEM_DEV = "/dev/block/bootdevice/by-name/system";
 #endif
@@ -281,10 +287,10 @@ static int verify_verity(const int meta_version, const int dm_verity_version,
         printf("wrong version in table\n");
         goto exit_malloc;
     }
-    if (0 != strcmp(data_dev_str, data_device)) {
+    /*if (0 != strcmp(data_dev_str, data_device)) {
         printf("wrong data device in table");
         goto exit_malloc;
-    }
+    }*/
     if ((ssize_t)block_size != atoi(data_blk_size_str)) {
         printf("wrong block_size in table\n");
         goto exit_malloc;
@@ -398,7 +404,7 @@ static int rehash_verity(const int meta_version, const int dm_verity_version,
     int ret = 0;
 	  
 	uint64_t part_size;
-	if(ext4_part_size(TARGET_DEV, &part_size)) {
+	if(ext4_part_size(data_device, &part_size)) {
         printf("failed to get part size.\n");
         return -1;
     }
@@ -454,8 +460,8 @@ static int rehash_verity(const int meta_version, const int dm_verity_version,
     }  
 
 
-    int table_size = nDigits(dm_verity_version) + 1 + strlen(TARGET_DEV) + 1
-        + strlen(TARGET_DEV) + 1 + nDigits(DMVERITY_BLOCK_SIZE) + 1
+    int table_size = nDigits(dm_verity_version) + 1 + strlen(data_device) + 1
+        + strlen(data_device) + 1 + nDigits(DMVERITY_BLOCK_SIZE) + 1
         + nDigits(DMVERITY_BLOCK_SIZE) + 1 + nDigits(data_blocks) + 1
         + nDigits(hash_start) + 1 + strlen(hash_name) + 1 + digest_size * 2
         + 1 + digest_size * 2 + 1;
@@ -466,8 +472,8 @@ static int rehash_verity(const int meta_version, const int dm_verity_version,
         goto rehash_out;
     }
     table[table_size-1] = 0;
-    i = sprintf(table, "%d %s %s %lld %lld %lld %lld %s ", dm_verity_version, TARGET_DEV,
-                TARGET_DEV, (long long int) DMVERITY_BLOCK_SIZE,
+    i = sprintf(table, "%d %s %s %lld %lld %lld %lld %s ", dm_verity_version, data_device,
+                data_device, (long long int) DMVERITY_BLOCK_SIZE,
                 (long long int) DMVERITY_BLOCK_SIZE, (long long int) data_blocks,
                 (long long int) hash_start, hash_name);
     if(i <= 0){
@@ -552,13 +558,12 @@ rehash_out:
 int main(int argc, char *argv[])
 {
 	const int dm_verity_version = 1;
-	if (argc != 2)
+	if (argc != 3)
 		return ERR_WRONG_NR_PARAMETER;
-
 	if (!strcmp(argv[1], "verify")) {
-		return verify_verity(0, 1, TARGET_DEV, DMVERITY_BLOCK_SIZE);
+		return verify_verity(0, 1, argv[2], DMVERITY_BLOCK_SIZE);
 	} else if (!strcmp(argv[1], "rehash")) {
-		return rehash_verity(0, 1, TARGET_DEV, DMVERITY_BLOCK_SIZE);
+		return rehash_verity(0, 1, argv[2], DMVERITY_BLOCK_SIZE);
 	} else {
 		return ERR_NO_SUCH_OPERATION;
 	}

@@ -932,7 +932,6 @@ static int tmc_enable(struct tmc_drvdata *drvdata, enum tmc_mode mode)
 
 	dev_info(drvdata->dev, "TMC enabled\n");
 	return 0;
-
 err0:
 	mutex_unlock(&drvdata->usb_lock);
 	clk_disable_unprepare(drvdata->clk);
@@ -1587,6 +1586,7 @@ out:
 	dev_dbg(drvdata->dev, "%s: %zu bytes copied, %d bytes left\n",
 		__func__, len, (int) (drvdata->size - *ppos));
 
+	mutex_unlock(&drvdata->usb_lock);
 	mutex_lock(&drvdata->usb_lock);
 	return len;
 }

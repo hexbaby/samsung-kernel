@@ -479,9 +479,14 @@ int process4(jack_nframes_t nframes, void *arg)
 
 	jack_nframes_t cur_time = jack_frame_time(client);
 	jack_nframes_t delta_time = cur_time - last_time;
+	jack_nframes_t check_data = (jack_nframes_t)(delta_time - cur_buffer_size);
 
 	Log("calling process4 callback : jack_frame_time = %ld delta_time = %ld\n", cur_time, delta_time);
-	if (delta_time > 0  && (jack_nframes_t)abs(delta_time - cur_buffer_size) > tolerance) {
+	if (check_data < 0) {
+	    check_data *= -1;
+	}
+
+	if (delta_time > 0  && check_data > tolerance) {
 		printf("!!! ERROR !!! jack_frame_time seems to return incorrect values cur_buffer_size = %d, delta_time = %d tolerance %d\n", cur_buffer_size, delta_time, tolerance);
 	}
 

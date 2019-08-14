@@ -130,6 +130,7 @@ enum {
 
 static struct device_attribute sm5705_charger_attrs[] = {
 	SM5705_CHARGER_ATTR(chip_id),
+	SM5705_CHARGER_ATTR(charger_op_mode),
 };
 
 /**
@@ -420,8 +421,8 @@ static unsigned char _calc_FASTCHG_current_offset_to_mA(unsigned short mA)
 {
 	unsigned char offset;
 
-	if (mA < 100) {
-		offset = 0x00;
+	if (mA < 200) {
+		offset = 0x02;
 	} else {
 		mA = (mA > 3250) ? 3250 : mA;
 		offset = ((mA - 100) / 50) & 0x3F;
@@ -800,12 +801,10 @@ static void psy_chg_set_cable_online(struct sm5705_charger_data *charger, int ca
 		/* set default value */
 		charger->afc_detect = false;
 		charger->is_charging = false;
+		charger->aicl_on = false;
 		sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_VBUS, 0);
 		sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_PWR_SHAR, 0);
-#if defined(CONFIG_SM5705_SUPPORT_LANHUB)
-		if(prev_cable_type != POWER_SUPPLY_TYPE_LAN_HUB)
-#endif
-		sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_OTG, 0);
+
 		if (charger->pdata->support_slow_charging)
 			cancel_delayed_work(&charger->aicl_work);
 
@@ -824,6 +823,15 @@ static void psy_chg_set_cable_online(struct sm5705_charger_data *charger, int ca
 			charger->pdata->charging_current[charger->cable_type].input_current_limit;
 
 		sm5705_charger_oper_push_event(SM5705_CHARGER_OP_EVENT_VBUS, 1);
+		if (charger->pdata->support_slow_charging) {
+			pr_info("request aicl work for 5V-TA\n");
+			queue_delayed_work(charger->wqueue, &charger->aicl_work, msecs_to_jiffies(3000));
+		}
+
+		charger->aicl_on = false;
+		cancel_delayed_work(&charger->slow_chg_work);
+		queue_delayed_work(charger->wqueue, 
+				&charger->slow_chg_work, msecs_to_jiffies(3000));
 	}
 
 	pr_info("[end] is_charging=%d(%d), fc = %d, il = %d, t1 = %d, t2 = %d, cable = %d,"
@@ -1066,15 +1074,15 @@ static int psy_chg_get_charge_type(struct sm5705_charger_data *charger)
 	int charge_type;
 
 	if (sm5705_charger_get_charging_on_status(charger)) {
-		if (sm5705_get_input_current(charger) == SLOW_CHARGING_CURRENT_STANDARD) {
+		if(charger->aicl_on==true)
 			charge_type = POWER_SUPPLY_CHARGE_TYPE_SLOW;
-		} else {
+		else 
 			charge_type = POWER_SUPPLY_CHARGE_TYPE_FAST;
-		}
 	} else {
 		charge_type = POWER_SUPPLY_CHARGE_TYPE_NONE;
 	}
-
+	
+	pr_info("%s charge_type(%d)\n",__func__,charge_type);
 	return charge_type;
 }
 
@@ -1135,11 +1143,19 @@ create_attrs_failed:
 ssize_t sm5705_chg_show_attrs(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	const ptrdiff_t offset = attr - sm5705_charger_attrs;
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sm5705_charger_data *charger =
+		container_of(psy, struct sm5705_charger_data, psy_chg);
 	int i = 0;
+	unsigned char reg_data;
 
 	switch (offset){
 	case CHIP_ID:
 		i += scnprintf(buf + i, PAGE_SIZE - i, "%s\n", "SM5705");
+		break;
+	case CHARGER_OP_MODE:
+	    sm5705_read_reg(charger->i2c, SM5705_REG_CNTL, &reg_data);
+		i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n",reg_data);
 		break;
 	default:
 		return -EINVAL;
@@ -1151,10 +1167,27 @@ ssize_t sm5705_chg_store_attrs(struct device *dev, struct device_attribute *attr
 {
 	const ptrdiff_t offset = attr - sm5705_charger_attrs;
 	int ret = 0;
+	int x = 0;
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sm5705_charger_data *charger =
+		container_of(psy, struct sm5705_charger_data, psy_chg);
 
 	switch(offset){
 	case CHIP_ID:
 		ret = count;
+		break;
+	case CHARGER_OP_MODE:
+		if (sscanf(buf, "%10d\n", &x) == 1) {
+			if (x == 2) {
+				sm5705_update_reg(charger->i2c, SM5705_REG_CNTL, SM5705_CHARGER_OP_MODE_SUSPEND, 0x07);
+			}else if(x == 1){
+				sm5705_update_reg(charger->i2c, SM5705_REG_CNTL, SM5705_CHARGER_OP_MODE_CHG_ON, 0x07);
+			}else {
+				pr_info("change charger op mode fail\n");
+				return -EINVAL;
+			}
+			ret = count;
+		}
 		break;
 	default:
 		ret = -EINVAL;
@@ -1304,6 +1337,8 @@ static int sm5705_otg_get_property(struct power_supply *psy,
 static int sm5705_otg_set_property(struct power_supply *psy,
 				enum power_supply_property psp, const union power_supply_propval *val)
 {
+	struct sm5705_charger_data *charger =
+		container_of(psy, struct sm5705_charger_data, psy_otg);
 	union power_supply_propval value;
 
 	switch (psp) {
@@ -1320,6 +1355,7 @@ static int sm5705_otg_set_property(struct power_supply *psy,
 		}
 		psy_do_property("sm5705-charger", set, POWER_SUPPLY_PROP_ONLINE, value);
 #endif
+		power_supply_changed(&charger->psy_otg);
 		break;
 	default:
 		return -EINVAL;
@@ -1487,6 +1523,7 @@ static void _check_slow_charging(struct sm5705_charger_data *charger, int input_
 			input_current, charger->cable_type);
 
 		value.intval = POWER_SUPPLY_CHARGE_TYPE_SLOW;
+		charger->aicl_on = true;
 		psy_do_property("battery", set, POWER_SUPPLY_PROP_CHARGE_TYPE, value);
 	}
 }
@@ -1551,6 +1588,24 @@ static void afc_detect_work(struct work_struct *work)
 		real_input_limit = _calc_input_limit_current_with_siop(charger);
 		sm5705_set_input_current(charger, real_input_limit);
 	}
+}
+
+static void slow_chg_detect_work(struct work_struct *work)
+{
+	struct sm5705_charger_data *charger = 
+		container_of(work, struct sm5705_charger_data, slow_chg_work.work);
+	union power_supply_propval value;
+
+	if (sm5705_get_input_current(charger) <= SLOW_CHARGING_CURRENT_STANDARD){
+		if(charger->aicl_on != true){
+			charger->aicl_on = true;
+			value.intval = POWER_SUPPLY_CHARGE_TYPE_SLOW;
+			psy_do_property("battery", set, POWER_SUPPLY_PROP_CHARGE_TYPE, value);
+		}
+	}else
+		charger->aicl_on = false;
+
+	pr_info("%s aicl_on(%d)\n",__func__,charger->aicl_on);
 }
 
 static void wc_afc_detect_work(struct work_struct *work)
@@ -1727,6 +1782,35 @@ static irqreturn_t sm5705_chg_done_isr(int irq, void *data)
 	msleep(10);
 	//gpio_direction_output(charger->pdata->chg_gpio_en, !(charger->is_charging));
 
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t sm5705_chg_otg_fail_isr(int irq, void *data)
+{
+	struct sm5705_charger_data *charger = data;
+	union power_supply_propval value = {0, };
+	u8 otg_state = 0;
+#ifdef CONFIG_USB_HOST_NOTIFY
+	struct otg_notify *o_notify;
+
+	o_notify = get_otg_notify();
+#endif
+
+	pr_info("%s: start.\n", __func__);
+
+	otg_state = sm5705_CHG_get_INT_STATUS(charger, SM5705_INT_STATUS3, SM5705_INT_STATUS3_OTGFAIL);
+	if(otg_state) {
+		dev_info(charger->dev, "%s OTG fail !! \n", __func__);
+#ifdef CONFIG_USB_HOST_NOTIFY
+		send_otg_notify(o_notify, NOTIFY_EVENT_OVERCURRENT, 0);
+        o_notify->hw_param[USB_CCIC_OVC_COUNT]++;
+#endif
+		/* disable the register values just related to OTG and
+				keep the values about the charging */
+		value.intval = 0;
+		psy_do_property("otg", set,
+				POWER_SUPPLY_PROP_ONLINE, value);
+	}
 	return IRQ_HANDLED;
 }
 
@@ -1950,7 +2034,7 @@ static int sm5705_charger_parse_dt(struct sm5705_charger_data *charger,
 	struct device_node *np;
 	int ret;
 
-    np = of_find_node_by_name(NULL, "sm5705-charger");
+	np = of_find_node_by_name(NULL, "sm5705-charger");
 	if (np == NULL) {
 		pr_err("fail to find dt_node:sm5705-charger\n");
 		return -ENOENT;
@@ -2050,6 +2134,7 @@ static int _init_sm5705_charger_info(struct platform_device *pdev,
 	}
 
 	INIT_DELAYED_WORK(&charger->afc_work, afc_detect_work);
+	INIT_DELAYED_WORK(&charger->slow_chg_work, slow_chg_detect_work);	
 	INIT_DELAYED_WORK(&charger->wpc_work, wpc_detect_work);
 	INIT_DELAYED_WORK(&charger->wc_afc_work, wc_afc_detect_work);
 	if (charger->pdata->support_slow_charging)
@@ -2071,6 +2156,7 @@ static int _init_sm5705_charger_info(struct platform_device *pdev,
 	charger->irq_aicl = pdata->irq_base + SM5705_AICL_IRQ;
 	charger->irq_topoff = pdata->irq_base + SM5705_TOPOFF_IRQ;
 	charger->irq_done = pdata->irq_base + SM5705_DONE_IRQ;
+	charger->irq_otgfail = pdata->irq_base + SM5705_OTGFAIL_IRQ;
 
 	pr_info("init process done..\n");
 
@@ -2115,13 +2201,14 @@ static void sm5705_charger_initialize(struct sm5705_charger_data *charger)
 
 	sm5705_chg_test_read(charger);
 
+	charger->aicl_on=false;
+
 	pr_info("charger initial hardware condition process done.\n");
 }
 
 static int sm5705_charger_probe(struct platform_device *pdev)
 {
 	struct sm5705_dev *sm5705 = dev_get_drvdata(pdev->dev.parent);
-	struct sm5705_platform_data *pdata = dev_get_platdata(sm5705->dev);
 	struct sm5705_charger_data *charger;
 	int ret = 0;
 
@@ -2207,6 +2294,13 @@ static int sm5705_charger_probe(struct platform_device *pdev)
 		goto err_power_supply_register_otg;
 	}
 
+	ret = request_threaded_irq(charger->irq_otgfail, NULL,
+			sm5705_chg_otg_fail_isr, 0, "otgfail-irq", charger);
+	if (ret < 0) {
+		pr_err("fail to request otgfail IRQ: %d: %d\n", charger->irq_otgfail, ret);
+		goto err_power_supply_register_otg;
+	}
+
 	ret = sm5705_chg_create_attrs(charger->psy_chg.dev);
 	if (ret){
 		pr_err("Failed to create_attrs\n");
@@ -2223,9 +2317,6 @@ err_power_supply_register_chg:
 	power_supply_unregister(&charger->psy_chg);
 err_power_supply_register:
 	destroy_workqueue(charger->wqueue);
-#ifdef CONFIG_OF
-	kfree(pdata->charger_data);
-#endif
 	mutex_destroy(&charger->charger_mutex);
 err_free:
 	kfree(charger);
@@ -2238,6 +2329,7 @@ static int sm5705_charger_remove(struct platform_device *pdev)
 	struct sm5705_charger_data *charger = platform_get_drvdata(pdev);
 
 	cancel_delayed_work(&charger->afc_work);
+	cancel_delayed_work(&charger->slow_chg_work);
 	cancel_delayed_work(&charger->wpc_work);
 	cancel_delayed_work(&charger->wc_afc_work);
 	if (charger->pdata->support_slow_charging)
@@ -2249,6 +2341,7 @@ static int sm5705_charger_remove(struct platform_device *pdev)
 	free_irq(charger->irq_vbus_pok, NULL);
 //	free_irq(charger->irq_topoff, NULL);
 	free_irq(charger->irq_done, NULL);
+	free_irq(charger->irq_otgfail, NULL);
 	power_supply_unregister(&charger->psy_chg);
 	mutex_destroy(&charger->charger_mutex);
 	kfree(charger);

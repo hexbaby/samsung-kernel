@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +18,7 @@
 #include <linux/interrupt.h>
 
 struct subsys_device;
+extern struct bus_type subsys_bus_type;
 
 enum {
 	RESET_SOC = 0,
@@ -49,6 +50,8 @@ struct module;
  * @sysmon_shutdown_ret: Return value for the call to sysmon_send_shutdown
  * @system_debug: If "set", triggers a device restart when the
  * subsystem's wdog bite handler is invoked.
+ * @ignore_ssr_failure: SSR failures are usually fatal and results in panic. If
+ * set will ignore failure.
  * @edge: GLINK logical name of the subsystem
  */
 struct subsys_desc {
@@ -84,6 +87,7 @@ struct subsys_desc {
 	u32 sysmon_pid;
 	int sysmon_shutdown_ret;
 	bool system_debug;
+	bool ignore_ssr_failure;
 	const char *edge;
 };
 
@@ -121,6 +125,7 @@ extern void subsys_unregister(struct subsys_device *dev);
 extern void subsys_default_online(struct subsys_device *dev);
 extern void subsys_set_crash_status(struct subsys_device *dev, bool crashed);
 extern bool subsys_get_crash_status(struct subsys_device *dev);
+extern void subsys_set_error(struct subsys_device *dev, const char *error_msg);
 void notify_proxy_vote(struct device *device);
 void notify_proxy_unvote(struct device *device);
 void complete_err_ready(struct subsys_device *subsys);
@@ -128,7 +133,10 @@ extern int wait_for_shutdown_ack(struct subsys_desc *desc);
 extern int subsystem_crash(const char *name);
 extern void subsys_force_stop(const char *name, bool val);
 extern int subsys_shutdown_check(void);
-
+#ifdef CONFIG_SEC_NAD
+int subsystem_get_count_for_NAD(void *subsystem);
+struct subsys_device *find_subsys_for_NAD(const char *str);
+#endif
 #else
 
 static inline int subsys_get_restart_level(struct subsys_device *dev)

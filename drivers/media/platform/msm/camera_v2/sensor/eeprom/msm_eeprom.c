@@ -33,7 +33,9 @@ extern uint32_t rear_af_cal_macro;
 extern char rear_sensor_id[FROM_SENSOR_ID_SIZE + 1];
 extern char front_sensor_id[FROM_SENSOR_ID_SIZE + 1];
 
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 extern uint8_t rear_module_id[FROM_MODULE_ID_SIZE + 1];
+#endif
 
 static int msm_eeprom_get_dt_data(struct msm_eeprom_ctrl_t *e_ctrl);
 static long msm_eeprom_subdev_fops_ioctl32(struct file *file, unsigned int cmd, unsigned long arg);
@@ -167,13 +169,16 @@ static void eeprom_write_cal_data_sysfs(struct msm_eeprom_ctrl_t *e_ctrl)
 		rear_sensor_id[5], rear_sensor_id[6], rear_sensor_id[7], rear_sensor_id[8], rear_sensor_id[9], 
 		rear_sensor_id[10], rear_sensor_id[11], rear_sensor_id[12], rear_sensor_id[13], rear_sensor_id[14], rear_sensor_id[15]);
 
+#if defined(CONFIG_REAR_MODULE_ID_SUPPORT)
 	/* read module id */
 	memcpy(rear_module_id, &e_ctrl->cal_data.mapdata[FROM_MODULE_ID_ADDR], FROM_MODULE_ID_SIZE);
 	rear_module_id[FROM_MODULE_ID_SIZE] = '\0';
 	CDBG("%s : %d rear_module_id = %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n", __func__, e_ctrl->subdev_id,
 		rear_module_id[0], rear_module_id[1], rear_module_id[2], rear_module_id[3], rear_module_id[4],
 		rear_module_id[5], rear_module_id[6], rear_module_id[7], rear_module_id[8], rear_module_id[9]);
+#endif
 }
+
 static int eeprom_config_read_cal_data(struct msm_eeprom_ctrl_t *e_ctrl,
 	struct msm_eeprom_cfg_data *cdata)
 {
@@ -687,7 +692,11 @@ static int msm_eeprom_power_up(struct msm_eeprom_ctrl_t *e_ctrl, bool *down, boo
 		rc = msm_eeprom_match_id(e_ctrl, bShowLog);
 		if (rc < 0) {
 			pr_err("%s : msm_eeprom_match_id failed\n", __func__);
-			msm_eeprom_power_down(e_ctrl, *down);
+			if (down) {
+				msm_eeprom_power_down(e_ctrl, *down);
+			} else {
+				msm_eeprom_power_down(e_ctrl, NULL);
+			}
 		}
 	}
 	return rc;

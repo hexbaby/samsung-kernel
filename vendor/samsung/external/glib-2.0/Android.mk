@@ -1,5 +1,7 @@
 # This file is the top android makefile for all sub-modules.
 
+ifeq (true,$(call spf_check,SEC_PRODUCT_FEATURE_AUDIO_JAM,TRUE))
+
 ifeq ($(TARGET_BOARD_PLATFORM),clovertrail)
 
 # do not build glib-2.0 in Intel platform.
@@ -52,5 +54,7 @@ include $(GLIB_TOP)/glib/Android.mk
 include $(GLIB_TOP)/gthread/Android.mk
 #include $(GLIB_TOP)/gio/Android.mk
 #include $(GLIB_TOP)/tests/Android.mk
+
+endif
 
 endif

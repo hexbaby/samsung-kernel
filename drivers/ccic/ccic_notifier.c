@@ -107,14 +107,19 @@ int ccic_notifier_unregister(struct notifier_block *nb)
 	return ret;
 }
 
-static void ccic_uevent_work(int id)
+static void ccic_uevent_work(int id, int state)
 {
 	char *water[2] = { "CCIC=WATER", NULL };
+	char *dry[2] = { "CCIC=DRY", NULL };
 	char *vconn[2] = { "CCIC=VCONN", NULL };
 
-	pr_info("usb: %s: id=%s \n", __func__, CCIC_NOTI_ID_Print[id]);
+	pr_info("usb: %s: id=%s state=%d\n", __func__, CCIC_NOTI_ID_Print[id], state);
+	
 	if (id == CCIC_NOTIFY_ID_WATER) {
-		kobject_uevent_env(&ccic_device->kobj, KOBJ_CHANGE, water);
+		if (state)
+			kobject_uevent_env(&ccic_device->kobj, KOBJ_CHANGE, water);
+		else
+			kobject_uevent_env(&ccic_device->kobj, KOBJ_CHANGE, dry);
 	} else if (id == CCIC_NOTIFY_ID_VCONN) {
 		kobject_uevent_env(&ccic_device->kobj, KOBJ_CHANGE, vconn);
 	}
@@ -173,10 +178,15 @@ int ccic_notifier_notify(CC_NOTI_TYPEDEF *p_noti, void *pd, int pdic_attach)
 			((CC_NOTI_RID_TYPEDEF *)ccic_noti)->rid);
 		break;
 	case CCIC_NOTIFY_ID_WATER:
-		ccic_uevent_work(CCIC_NOTIFY_ID_WATER);
+		pr_info("%s: src:%01x dest:%01x id:%02x attach:%02x\n", __func__,
+			((CC_NOTI_ATTACH_TYPEDEF *)p_noti)->src,
+			((CC_NOTI_ATTACH_TYPEDEF *)p_noti)->dest,
+			((CC_NOTI_ATTACH_TYPEDEF *)p_noti)->id,
+			((CC_NOTI_ATTACH_TYPEDEF *)p_noti)->attach);
+			ccic_uevent_work(CCIC_NOTIFY_ID_WATER, ((CC_NOTI_ATTACH_TYPEDEF *)p_noti)->attach);
 		break;
 	case CCIC_NOTIFY_ID_VCONN:
-		ccic_uevent_work(CCIC_NOTIFY_ID_VCONN);
+		ccic_uevent_work(CCIC_NOTIFY_ID_VCONN, 0);
 		break;
 	default:
 		pr_info("%s: src:%01x dest:%01x id:%02x "
@@ -189,7 +199,9 @@ int ccic_notifier_notify(CC_NOTI_TYPEDEF *p_noti, void *pd, int pdic_attach)
 			((CC_NOTI_TYPEDEF *)ccic_noti)->sub3);
 		break;
 	}
+#ifdef CONFIG_USB_NOTIFY_PROC_LOG
 	store_usblog_notify(NOTIFY_CCIC_EVENT, (void*)ccic_noti , NULL);
+#endif
 	ret = blocking_notifier_call_chain(&(ccic_notifier.notifier_call_chain),
 			ccic_noti->id, ccic_noti);
 

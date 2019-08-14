@@ -594,6 +594,17 @@ config KEYBOARD_STMPE
 	  To compile this driver as a module, choose M here: the module will be
 	  called stmpe-keypad.
 
+config KEYBOARD_STMPE1801_POGO
+	tristate "STMPE keypad support - pogo keyboard"
+	depends on MUIC_SUPPORT_KEYBOARDDOCK
+	select INPUT_MATRIXKMAP
+	help
+	  Say Y here if you want to use the keypad controller on STMPE I/O
+	  expanders.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called stmpe-keypad.
+
 config KEYBOARD_DAVINCI
 	tristate "TI DaVinci Key Scan"
 	depends on ARCH_DAVINCI_DM365
@@ -731,4 +742,10 @@ config TOUCHKEY_GRIP
 	depends on I2C
 	help
 	 Say Y if you want use touchkey grip.
+
+config TOUCHKEY_GRIP_SENSOR_OFF
+	tristate "Touchkey grip sensing off"
+	depends on I2C
+	help
+	 Say Y if you want to disable touchkey grip sensing.
 endif

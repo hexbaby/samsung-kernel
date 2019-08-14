@@ -28,6 +28,7 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "JackLockedEngine.h"
 #include "JackException.h"
 #include <assert.h>
+#include "JackGlobals.h"
 
 using namespace std;
 
@@ -49,7 +50,11 @@ JackAudioDriver::JackAudioDriver(const char* name, const char* alias, JackLocked
 {
 #if defined (__ANDROID__) && defined (ENABLE_JACK_LOGGER)
 //    CreateJackLog();
-	mJackLogger = new JackLogger();
+    mJackLogger = NULL;	
+    //if(JackGlobals::fVerbose == true){
+        mJackLogger = new JackLogger();
+    //}
+
 #endif
 }
 
@@ -332,10 +337,6 @@ if graph process succeed, output buffers computed at the *current cycle* are use
 
 int JackAudioDriver::ProcessSync()
 {
-#if defined (__ANDROID__) && defined (ENABLE_JACK_LOGGER)
-//    CHECK_PROCESS_TIME(JackLogger::LOG_TIME_AD_FIRSTPROCESS, JackLogger::SAVE_LOG_START)
-    if(mJackLogger && mJackLogger->isFirstProcess()) mJackLogger->checkSystemTime(JackLogger::LOG_TIME_AD_FIRSTPROCESS, JackLogger::SAVE_LOG_START);
-#endif
     // Read input buffers for the current cycle
     if (Read() < 0) {
         jack_error("JackAudioDriver::ProcessSync: read error, stopping...");
@@ -351,11 +352,6 @@ int JackAudioDriver::ProcessSync()
         return -1;
     }
     
-#if defined (__ANDROID__) && defined (ENABLE_JACK_LOGGER)
-    //CHECK_PROCESS_TIME(JackLogger::LOG_TIME_AD_FIRSTPROCESS, JackLogger::SAVE_LOG_END)
-    if(mJackLogger && mJackLogger->isFirstProcess()) mJackLogger->checkSystemTime(JackLogger::LOG_TIME_AD_FIRSTPROCESS, JackLogger::SAVE_LOG_END);
-#endif
-
     // Keep end cycle time
     JackDriver::CycleTakeEndTime();
     return 0;

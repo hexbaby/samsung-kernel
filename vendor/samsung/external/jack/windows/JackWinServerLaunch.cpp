@@ -98,10 +98,10 @@ static int start_server_aux(const char* server_name)
     char*  p;
     char*  back_slash;
     char*  forward_slash;
-    char   arguments [256];
-    char   buffer    [MAX_PATH];
-    char   filename  [MAX_PATH];
-    char   curr_wd   [MAX_PATH];
+    char   arguments [256] = {0};
+    char   buffer    [MAX_PATH] = {0};
+    char   filename  [MAX_PATH] = {0};
+    char   curr_wd   [MAX_PATH] = {0};
 
 	curr_wd[0] = '\0';
 	if (find_path_to_jackdrc(filename))
@@ -141,7 +141,7 @@ static int start_server_aux(const char* server_name)
 				while (ret != 0 && ret != EOF) {
 					strcat(arguments, buffer);
 					strcat(arguments, " ");
-					ret = fscanf(fp, "%s", buffer);
+					ret = fscanf(fp, "%255s", buffer);
 				}
 
 				if (strlen(arguments) > 0) {

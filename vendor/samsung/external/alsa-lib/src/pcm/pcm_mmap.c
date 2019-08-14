@@ -17,52 +17,17 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  */
-  
+
+#include "config.h"
 #include <stdio.h>
 #include <malloc.h>
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/mman.h>
-#ifndef ANDROID
+#ifdef HAVE_SYS_SHM_H
 #include <sys/shm.h>
 #endif
 #include "pcm_local.h"
-
-size_t page_size(void)
-{
-	long s = sysconf(_SC_PAGE_SIZE);
-	assert(s > 0);
-	return s;
-}
-
-size_t page_align(size_t size)
-{
-	size_t r;
-	long psz = page_size();
-	r = size % psz;
-	if (r)
-		return size + psz - r;
-	return size;
-}
-
-size_t page_ptr(size_t object_offset, size_t object_size, size_t *offset, size_t *mmap_offset)
-{
-	size_t r;
-	long psz = page_size();
-	assert(offset);
-	assert(mmap_offset);
-	*mmap_offset = object_offset;
-	object_offset %= psz;
-	*mmap_offset -= object_offset;
-	object_size += object_offset;
-	r = object_size % psz;
-	if (r)
-		r = object_size + psz - r;
-	else
-		r = object_size;
-	*offset = object_offset;
-	return r;
-}
 
 void snd_pcm_mmap_appl_backward(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
 {
@@ -117,12 +82,12 @@ static snd_pcm_sframes_t snd_pcm_mmap_write_areas(snd_pcm_t *pcm,
 		snd_pcm_uframes_t frames = size;
 		snd_pcm_sframes_t result;
 
-		snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
+		__snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
 		snd_pcm_areas_copy(pcm_areas, pcm_offset,
 				   areas, offset, 
 				   pcm->channels, 
 				   frames, pcm->format);
-		result = snd_pcm_mmap_commit(pcm, pcm_offset, frames);
+		result = __snd_pcm_mmap_commit(pcm, pcm_offset, frames);
 		if (result < 0)
 			return xfer > 0 ? (snd_pcm_sframes_t)xfer : result;
 		offset += result;
@@ -149,12 +114,12 @@ static snd_pcm_sframes_t snd_pcm_mmap_read_areas(snd_pcm_t *pcm,
 		snd_pcm_uframes_t frames = size;
 		snd_pcm_sframes_t result;
 		
-		snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
+		__snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
 		snd_pcm_areas_copy(areas, offset,
 				   pcm_areas, pcm_offset,
 				   pcm->channels, 
 				   frames, pcm->format);
-		result = snd_pcm_mmap_commit(pcm, pcm_offset, frames);
+		result = __snd_pcm_mmap_commit(pcm, pcm_offset, frames);
 		if (result < 0)
 			return xfer > 0 ? (snd_pcm_sframes_t)xfer : result;
 		offset += result;
@@ -322,8 +287,13 @@ int snd_pcm_mmap(snd_pcm_t *pcm)
 		snd_pcm_channel_info_t *i = &pcm->mmap_channels[c];
 		i->channel = c;
 		err = snd_pcm_channel_info(pcm, i);
-		if (err < 0)
+		if (err < 0) {
+			free(pcm->mmap_channels);
+			free(pcm->running_areas);
+			pcm->mmap_channels = NULL;
+			pcm->running_areas = NULL;
 			return err;
+		}
 	}
 	for (c = 0; c < pcm->channels; ++c) {
 		snd_pcm_channel_info_t *i = &pcm->mmap_channels[c];
@@ -373,8 +343,8 @@ int snd_pcm_mmap(snd_pcm_t *pcm)
 			}
 			i->addr = ptr;
 			break;
-#ifndef ANDROID
 		case SND_PCM_AREA_SHM:
+#ifdef HAVE_SYS_SHM_H
 			if (i->u.shm.shmid < 0) {
 				int id;
 				/* FIXME: safer permission? */
@@ -419,6 +389,9 @@ int snd_pcm_mmap(snd_pcm_t *pcm)
 			}
 			i->addr = ptr;
 			break;
+#else
+			SYSERR("shm support not available");
+			return -ENOSYS;
 #endif
 		case SND_PCM_AREA_LOCAL:
 			ptr = malloc(size);
@@ -500,8 +473,8 @@ int snd_pcm_munmap(snd_pcm_t *pcm)
 			}
 			errno = 0;
 			break;
-#ifndef ANDROID
 		case SND_PCM_AREA_SHM:
+#ifdef HAVE_SYS_SHM_H
 			if (i->u.shm.area) {
 				snd_shm_area_destroy(i->u.shm.area);
 				i->u.shm.area = NULL;
@@ -518,6 +491,9 @@ int snd_pcm_munmap(snd_pcm_t *pcm)
 				}
 			}
 			break;
+#else
+			SYSERR("shm support not available");
+			return -ENOSYS;
 #endif
 		case SND_PCM_AREA_LOCAL:
 			free(i->addr);
@@ -537,6 +513,7 @@ int snd_pcm_munmap(snd_pcm_t *pcm)
 	return 0;
 }
 
+/* called in pcm lock */
 snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				     snd_pcm_uframes_t size)
 {
@@ -554,7 +531,9 @@ snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 		{
 			const snd_pcm_channel_area_t *a = snd_pcm_mmap_areas(pcm);
 			const char *buf = snd_pcm_channel_area_addr(a, offset);
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_writei(pcm, buf, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;
@@ -569,7 +548,9 @@ snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				const snd_pcm_channel_area_t *a = &areas[c];
 				bufs[c] = snd_pcm_channel_area_addr(a, offset);
 			}
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_writen(pcm, bufs, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;
@@ -588,6 +569,7 @@ snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 	return err;
 }
 
+/* called in pcm lock */
 snd_pcm_sframes_t snd_pcm_read_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				    snd_pcm_uframes_t size)
 {
@@ -605,7 +587,9 @@ snd_pcm_sframes_t snd_pcm_read_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 		{
 			const snd_pcm_channel_area_t *a = snd_pcm_mmap_areas(pcm);
 			char *buf = snd_pcm_channel_area_addr(a, offset);
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_readi(pcm, buf, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;
@@ -620,9 +604,12 @@ snd_pcm_sframes_t snd_pcm_read_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				const snd_pcm_channel_area_t *a = &areas[c];
 				bufs[c] = snd_pcm_channel_area_addr(a, offset);
 			}
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_readn(pcm->fast_op_arg, bufs, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
+			break;
 		}
 		default:
 			SNDMSG("invalid access type %d", pcm->access);

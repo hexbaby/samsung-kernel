@@ -12,8 +12,8 @@
 /* #define HAVE_CELT_API_0_7 0 */
 /* #define HAVE_CELT_API_0_5 0 */
 /* #define HAVE_READLINE 0 */
-#define CLIENT_NUM 32
-#define PORT_NUM_FOR_CLIENT 32
+#define CLIENT_NUM 64 // 32
+#define PORT_NUM_FOR_CLIENT 64  //32
 #define PORT_NUM 256
 #define PORT_NUM_MAX 512
 #define ADDON_DIR /*"/system/lib64/jack"*/ "/system/lib/jack"

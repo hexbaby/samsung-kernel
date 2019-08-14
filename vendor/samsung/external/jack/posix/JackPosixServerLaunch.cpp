@@ -79,9 +79,9 @@ static int start_server_dbus(const char* server_name)
 static void start_server_classic_aux(const char* server_name)
 {
     FILE* fp = 0;
-    char filename[255];
-    char arguments[255];
-    char buffer[255];
+    char filename[255] = {0};
+    char arguments[255] = {0};
+    char buffer[255] = {0};
     char* command = 0;
     size_t pos = 0;
     size_t result = 0;
@@ -103,11 +103,11 @@ static void start_server_classic_aux(const char* server_name)
 
     if (fp) {
         arguments[0] = '\0';
-        ret = fscanf(fp, "%s", buffer);
+        ret = fscanf(fp, "%254s", buffer);
         while (ret != 0 && ret != EOF) {
             strcat(arguments, buffer);
             strcat(arguments, " ");
-            ret = fscanf(fp, "%s", buffer);
+            ret = fscanf(fp, "%254s", buffer);
         }
         if (strlen(arguments) > 0) {
             good = 1;
